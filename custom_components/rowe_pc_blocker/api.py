@@ -497,6 +497,7 @@ class AndroidBackupConfigView(HomeAssistantView):
             {
                 "enabled": settings is not None,
                 "initial_sync_wifi_only": True,
+                "requires_external_power": True,
                 "max_file_bytes": MAX_BACKUP_BYTES,
                 "configuration_id": (
                     _backup_configuration_id(settings) if settings is not None else ""

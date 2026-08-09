@@ -66,6 +66,12 @@ public final class MediaBackupJobService extends JobService {
                 finish(parameters, false);
                 return;
             }
+            if (!MediaBackupScheduler.isExternallyPowered(this)) {
+                postStatus(client, "waiting_for_power",
+                        MediaBackupScheduler.isInitialComplete(this), 0, "");
+                finish(parameters, true);
+                return;
+            }
 
             try (MediaBackupDatabase database = new MediaBackupDatabase(this)) {
                 if (MediaBackupScheduler.destinationChanged(
@@ -74,9 +80,16 @@ public final class MediaBackupJobService extends JobService {
                 }
                 boolean wasInitialComplete = MediaBackupScheduler.isInitialComplete(this);
                 Network wifiNetwork = MediaBackupScheduler.wifiNetwork(this);
+                boolean externallyPowered = MediaBackupScheduler.isExternallyPowered(this);
                 if (!BackupNetworkPolicy.mayUpload(
-                        wasInitialComplete, wifiNetwork != null)) {
-                    postStatus(client, "waiting_for_wifi", false, 0, "");
+                        wasInitialComplete,
+                        wifiNetwork != null,
+                        externallyPowered)) {
+                    postStatus(client,
+                            externallyPowered ? "waiting_for_wifi" : "waiting_for_power",
+                            wasInitialComplete,
+                            0,
+                            "");
                     finish(parameters, true);
                     return;
                 }
@@ -103,14 +116,31 @@ public final class MediaBackupJobService extends JobService {
                         retry = true;
                         break;
                     }
-                    HomeAssistantClient.PresignedUpload grant = client.requestMediaUpload(
-                            item.relativePath, item.displayName, item.size);
-                    upload(item, grant, wasInitialComplete ? null : wifiNetwork);
-                    database.markUploaded(item.identity, item.size, item.modified);
+                    if (!MediaBackupScheduler.isExternallyPowered(this)) {
+                        postStatus(client, "waiting_for_power", wasInitialComplete,
+                                scan.skipped, "");
+                        finish(parameters, true);
+                        return;
+                    }
+                    try {
+                        HomeAssistantClient.PresignedUpload grant = client.requestMediaUpload(
+                                item.relativePath, item.displayName, item.size);
+                        upload(item, grant, wasInitialComplete ? null : wifiNetwork);
+                        database.markUploaded(item.identity, item.size, item.modified);
+                    } catch (PowerDisconnectedException exception) {
+                        postStatus(client, "waiting_for_power", wasInitialComplete,
+                                scan.skipped, "");
+                        finish(parameters, true);
+                        return;
+                    }
                 }
 
-                boolean initialComplete = wasInitialComplete
-                        || (scan.pendingCount <= scan.pending.size() && !stopped);
+                boolean initialComplete = BackupNetworkPolicy.shouldMarkInitialComplete(
+                        wasInitialComplete,
+                        scan.pendingCount,
+                        scan.pending.size(),
+                        stopped,
+                        retry);
                 if (initialComplete) {
                     MediaBackupScheduler.setInitialComplete(this, true);
                     postStatus(
@@ -242,17 +272,27 @@ public final class MediaBackupJobService extends JobService {
                 }
                 byte[] buffer = new byte[128 * 1024];
                 int read;
-                while (!stopped && (read = input.read(buffer)) != -1) {
+                while (!stopped
+                        && MediaBackupScheduler.isExternallyPowered(this)
+                        && (read = input.read(buffer)) != -1) {
                     output.write(buffer, 0, read);
                 }
                 if (stopped) {
                     throw new IOException("Backup job was stopped");
+                }
+                if (!MediaBackupScheduler.isExternallyPowered(this)) {
+                    throw new PowerDisconnectedException();
                 }
             }
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
                 throw new IOException("Object storage returned " + status);
             }
+        } catch (IOException exception) {
+            if (!MediaBackupScheduler.isExternallyPowered(this)) {
+                throw new PowerDisconnectedException();
+            }
+            throw exception;
         } finally {
             connection.disconnect();
         }
@@ -319,6 +359,12 @@ public final class MediaBackupJobService extends JobService {
             this.relativePath = relativePath == null ? "" : relativePath;
             this.size = size;
             this.modified = modified;
+        }
+    }
+
+    private static final class PowerDisconnectedException extends IOException {
+        PowerDisconnectedException() {
+            super("External power was disconnected");
         }
     }
 

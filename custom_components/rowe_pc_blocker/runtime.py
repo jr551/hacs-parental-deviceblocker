@@ -227,6 +227,7 @@ class PcRuntime:
             "idle",
             "syncing",
             "waiting_for_wifi",
+            "waiting_for_power",
             "permission_required",
             "complete",
             "complete_with_skips",

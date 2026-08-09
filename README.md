@@ -66,13 +66,13 @@ To enable the one-hour parent override, open the integration entry's options and
 Build on macOS or Linux with .NET 8, or with Docker when .NET is absent:
 
 ```bash
-./scripts/build-release.sh 0.9.2
+./scripts/build-release.sh 0.9.3
 ```
 
 The script creates:
 
-- `artifacts/ParentalDeviceBlocker-0.9.2-win-x64.zip`;
-- `artifacts/parental_device_blocker-hacs-0.9.2.zip`.
+- `artifacts/ParentalDeviceBlocker-0.9.3-win-x64.zip`;
+- `artifacts/parental_device_blocker-hacs-0.9.3.zip`.
 
 Extract the Windows ZIP and run an Administrator PowerShell prompt:
 
@@ -117,9 +117,9 @@ The Docker build runs unit tests, lint, and signed APK assembly:
 ./scripts/build-android-docker.sh
 ```
 
-The output is `artifacts/android/ParentalDeviceBlocker-0.4.1-debug.apk`. This is a sideloadable debug-signed build for supervised testing, not a Play Store package.
+The output is `artifacts/android/ParentalDeviceBlocker-0.4.2-debug.apk`. This is a sideloadable debug-signed build for supervised testing, not a Play Store package.
 
-The first build creates a protected generic signing key under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.1; uninstalling clears its local PIN, configuration, and backup index.
+The first build creates a protected generic signing key under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.2; uninstalling clears its local PIN, configuration, and backup index.
 
 On first launch, the parent must create and confirm a local configuration PIN before entering the Home Assistant URL, device ID, and device key. There is no default PIN. Losing it requires clearing app data and provisioning the app again.
 
@@ -146,9 +146,9 @@ An Android entry can optionally back up the device's MediaStore photos and video
 
 The S3 credentials remain in Home Assistant and are never returned to Android. For each file, the authenticated phone requests a 15-minute SigV4 PUT URL that is restricted to the configured prefix and signed content length. Use a dedicated S3 key limited to `PutObject` for only that bucket/prefix; do not use an administrator key.
 
-The parent must grant Android photo and video access from the PIN-protected setup screen. The first full-library sync is strictly Wi-Fi-only. After it completes, Android schedules quiet incremental batches on any connected network. Home Assistant receives a filename, relative MediaStore path, and byte count transiently to construct each signed object path, but does not retain that metadata, thumbnails, or media content. The status endpoint reports only counts and bounded errors.
+The parent must grant Android photo and video access from the PIN-protected setup screen. Every media upload requires the phone to be connected to external power. The first full-library sync additionally requires Wi-Fi; after it completes, Android schedules quiet powered incremental batches on any connected network. Home Assistant receives a filename, relative MediaStore path, and byte count transiently to construct each signed object path, but does not retain that metadata, thumbnails, or media content. The status endpoint reports only counts and bounded errors.
 
-The resumable local index skips unchanged files and overwrites the same object when Android reports that file as modified. Deleting a file from the phone does not delete its S3 copy. Changing the endpoint, bucket, region, or prefix resets the local index and performs a new Wi-Fi-only initial sync. The Home Assistant status sensor is device-reported progress, so confirm object counts and perform a restore from S3 independently.
+The resumable local index skips unchanged files and overwrites the same object when Android reports that file as modified. Deleting a file from the phone does not delete its S3 copy. Changing the endpoint, bucket, region, or prefix resets the local index and performs a new powered, Wi-Fi-only initial sync. The Home Assistant status sensor is device-reported progress, so confirm object counts and perform a restore from S3 independently.
 
 Empty MediaStore entries and individual files larger than 20 GiB are skipped and counted explicitly in the status sensor instead of being reported as successfully backed up.
 
@@ -172,7 +172,7 @@ Restrict Home Assistant access and configure an appropriate Recorder retention p
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m compileall -q custom_components/rowe_pc_blocker
 ./scripts/build-android-docker.sh
-./scripts/build-release.sh 0.9.2
+./scripts/build-release.sh 0.9.3
 ```
 
 `tests/android_fake_stack.py` provides a synthetic HTTPS Home Assistant/S3
