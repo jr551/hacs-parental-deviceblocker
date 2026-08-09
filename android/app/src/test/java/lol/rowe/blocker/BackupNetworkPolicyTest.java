@@ -17,4 +17,10 @@ public final class BackupNetworkPolicyTest {
         assertTrue(BackupNetworkPolicy.mayUpload(true, false));
         assertTrue(BackupNetworkPolicy.mayUpload(true, true));
     }
+
+    @Test
+    public void onlyInitialJobTransitionsToPeriodicSchedule() {
+        assertTrue(BackupNetworkPolicy.shouldInstallPeriodicSchedule(false));
+        assertFalse(BackupNetworkPolicy.shouldInstallPeriodicSchedule(true));
+    }
 }

@@ -89,7 +89,7 @@ public final class MediaBackupJobService extends JobService {
                             true,
                             scan.skipped,
                             skippedMessage(scan.skipped));
-                    if (!wasInitialComplete) {
+                    if (BackupNetworkPolicy.shouldInstallPeriodicSchedule(wasInitialComplete)) {
                         MediaBackupScheduler.schedule(this);
                     }
                     finish(parameters, false);
@@ -119,7 +119,7 @@ public final class MediaBackupJobService extends JobService {
                             true,
                             scan.skipped,
                             skippedMessage(scan.skipped));
-                    if (!wasInitialComplete) {
+                    if (BackupNetworkPolicy.shouldInstallPeriodicSchedule(wasInitialComplete)) {
                         MediaBackupScheduler.schedule(this);
                     }
                 } else {
