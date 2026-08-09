@@ -183,7 +183,7 @@ if [[ ${configured_automatically:-0} -eq 0 ]]; then
      • Tap Save
      • If S3 backup is enabled for this entry, tap the optional media-backup
        button and grant full photo/video access; uploads wait for external power
-       and the initial upload also waits for Wi-Fi
+       and the initial full-library synchronisation also waits for Wi-Fi
 MANUAL
   pause
 else
@@ -193,7 +193,7 @@ else
      • The Home Assistant URL, device id, and key were provisioned securely
      • If S3 backup is enabled, grant full photo/video access from the optional
        media-backup button; uploads wait for external power and the initial
-       upload also waits for Wi-Fi
+       full-library synchronisation also waits for Wi-Fi
 MANUAL
   pause
 fi

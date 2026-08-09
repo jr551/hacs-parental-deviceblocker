@@ -136,7 +136,17 @@ class FakeStackHandler(BaseHTTPRequestHandler):
         remaining = max(length, 0)
         chunks: list[bytes] = []
         while remaining:
-            chunk = self.rfile.read(min(64 * 1024, remaining))
+            try:
+                chunk = self.rfile.read(min(64 * 1024, remaining))
+            except ConnectionError:
+                self._record(
+                    {
+                        "event": "upload_incomplete",
+                        "expected_size": length,
+                        "received_size": sum(map(len, chunks)),
+                    }
+                )
+                return
             if not chunk:
                 break
             chunks.append(chunk)

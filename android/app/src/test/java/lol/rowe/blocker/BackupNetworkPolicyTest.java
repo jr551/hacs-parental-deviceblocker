@@ -31,4 +31,16 @@ public final class BackupNetworkPolicyTest {
         assertTrue(BackupNetworkPolicy.shouldInstallPeriodicSchedule(false));
         assertFalse(BackupNetworkPolicy.shouldInstallPeriodicSchedule(true));
     }
+
+    @Test
+    public void interruptedInitialBatchNeverCompletesInitialSync() {
+        assertFalse(BackupNetworkPolicy.shouldMarkInitialComplete(
+                false, 1, 1, false, true));
+        assertFalse(BackupNetworkPolicy.shouldMarkInitialComplete(
+                false, 1, 1, true, false));
+        assertTrue(BackupNetworkPolicy.shouldMarkInitialComplete(
+                false, 1, 1, false, false));
+        assertTrue(BackupNetworkPolicy.shouldMarkInitialComplete(
+                true, 20, 1, true, true));
+    }
 }

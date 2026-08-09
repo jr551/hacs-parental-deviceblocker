@@ -69,7 +69,9 @@ final class MediaBackupScheduler {
             NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
             if (capabilities != null
                     && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                    && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                    && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    && capabilities.hasCapability(
+                            NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
                 return network;
             }
         }
