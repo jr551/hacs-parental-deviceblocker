@@ -173,6 +173,7 @@ def main() -> None:
     server.events = events
     server.uploads = uploads
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(args.cert, args.key)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     server.serve_forever()
