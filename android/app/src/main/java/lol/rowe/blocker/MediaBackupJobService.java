@@ -49,6 +49,10 @@ public final class MediaBackupJobService extends JobService {
                 finish(parameters, false);
                 return;
             }
+            if (!MediaBackupScheduler.isExternallyPowered(this)) {
+                finish(parameters, true);
+                return;
+            }
             HomeAssistantClient client = new HomeAssistantClient(appConfig);
             HomeAssistantClient.MediaBackupConfig backupConfig =
                     client.getMediaBackupConfig();
@@ -75,7 +79,9 @@ public final class MediaBackupJobService extends JobService {
                 boolean wasInitialComplete = MediaBackupScheduler.isInitialComplete(this);
                 Network wifiNetwork = MediaBackupScheduler.wifiNetwork(this);
                 if (!BackupNetworkPolicy.mayUpload(
-                        wasInitialComplete, wifiNetwork != null)) {
+                        wasInitialComplete,
+                        wifiNetwork != null,
+                        MediaBackupScheduler.isExternallyPowered(this))) {
                     postStatus(client, "waiting_for_wifi", false, 0, "");
                     finish(parameters, true);
                     return;
@@ -99,7 +105,7 @@ public final class MediaBackupJobService extends JobService {
                 postStatus(client, "syncing", wasInitialComplete, scan.skipped,
                         skippedMessage(scan.skipped));
                 for (MediaItem item : scan.pending) {
-                    if (stopped) {
+                    if (stopped || !MediaBackupScheduler.isExternallyPowered(this)) {
                         retry = true;
                         break;
                     }
@@ -242,11 +248,16 @@ public final class MediaBackupJobService extends JobService {
                 }
                 byte[] buffer = new byte[128 * 1024];
                 int read;
-                while (!stopped && (read = input.read(buffer)) != -1) {
+                while (!stopped
+                        && MediaBackupScheduler.isExternallyPowered(this)
+                        && (read = input.read(buffer)) != -1) {
                     output.write(buffer, 0, read);
                 }
                 if (stopped) {
                     throw new IOException("Backup job was stopped");
+                }
+                if (!MediaBackupScheduler.isExternallyPowered(this)) {
+                    throw new IOException("External power was disconnected");
                 }
             }
             int status = connection.getResponseCode();

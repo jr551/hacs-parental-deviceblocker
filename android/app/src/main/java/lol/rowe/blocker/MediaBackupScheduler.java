@@ -3,8 +3,11 @@ package lol.rowe.blocker;
 import android.Manifest;
 import android.app.job.JobInfo;
 import android.app.job.JobScheduler;
+import android.os.BatteryManager;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -28,6 +31,7 @@ final class MediaBackupScheduler {
         JobInfo.Builder job = new JobInfo.Builder(
                 JOB_ID, new ComponentName(context, MediaBackupJobService.class))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                .setRequiresCharging(true)
                 .setPersisted(true);
         if (initialComplete) {
             job.setPeriodic(15 * 60 * 1000L);
@@ -70,6 +74,13 @@ final class MediaBackupScheduler {
             }
         }
         return null;
+    }
+
+    static boolean isExternallyPowered(Context context) {
+        Intent battery = context.registerReceiver(
+                null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        return battery != null
+                && battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
     }
 
     static boolean isInitialComplete(Context context) {

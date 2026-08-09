@@ -102,7 +102,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
-                android:text="Enable the blocker accessibility service, then set Battery usage to Unrestricted. Optional media backup needs separate photo/video permission; its initial sync runs only on unmetered Wi-Fi."
+                android:text="Enable the blocker accessibility service, then set Battery usage to Unrestricted. Optional media backup needs separate photo/video permission and only uploads while connected to external power; its initial sync also requires unmetered Wi-Fi."
                 android:textColor="@color/muted"
                 android:textSize="14sp" />
         </LinearLayout>

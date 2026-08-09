@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import ssl
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -83,6 +84,8 @@ class FakeStackHandler(BaseHTTPRequestHandler):
                 200,
                 {
                     "enabled": True,
+                    "initial_sync_wifi_only": True,
+                    "requires_external_power": True,
                     "max_file_bytes": 10 * 1024 * 1024,
                     "configuration_id": "synthetic-destination-v1",
                 },
@@ -130,8 +133,25 @@ class FakeStackHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         length = int(self.headers.get("Content-Length", "-1"))
-        body = self.rfile.read(max(length, 0))
+        remaining = max(length, 0)
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = self.rfile.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+            if self.server.upload_chunk_delay_ms:
+                time.sleep(self.server.upload_chunk_delay_ms / 1000)
+        body = b"".join(chunks)
         if length < 0 or len(body) != length:
+            self._record(
+                {
+                    "event": "upload_incomplete",
+                    "expected_size": length,
+                    "received_size": len(body),
+                }
+            )
             self._json(400, {"error": "length mismatch"})
             return
         name = path.rsplit("/", 1)[-1]
@@ -156,6 +176,7 @@ def main() -> None:
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--device-id", default="fake-android")
     parser.add_argument("--device-key", default="public-lab-test-key")
+    parser.add_argument("--upload-chunk-delay-ms", type=int, default=0)
     args = parser.parse_args()
 
     args.state_dir.mkdir(parents=True, exist_ok=True)
@@ -172,6 +193,7 @@ def main() -> None:
     server.mode_file = mode_file
     server.events = events
     server.uploads = uploads
+    server.upload_chunk_delay_ms = max(0, args.upload_chunk_delay_ms)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(args.cert, args.key)

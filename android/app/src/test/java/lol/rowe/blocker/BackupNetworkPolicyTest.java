@@ -7,15 +7,23 @@ import org.junit.Test;
 
 public final class BackupNetworkPolicyTest {
     @Test
-    public void initialSyncRequiresWifi() {
-        assertFalse(BackupNetworkPolicy.mayUpload(false, false));
-        assertTrue(BackupNetworkPolicy.mayUpload(false, true));
+    public void everyUploadRequiresExternalPower() {
+        assertFalse(BackupNetworkPolicy.mayUpload(false, false, false));
+        assertFalse(BackupNetworkPolicy.mayUpload(false, true, false));
+        assertFalse(BackupNetworkPolicy.mayUpload(true, false, false));
+        assertFalse(BackupNetworkPolicy.mayUpload(true, true, false));
     }
 
     @Test
-    public void incrementalSyncAllowsAnyConnectedJobNetwork() {
-        assertTrue(BackupNetworkPolicy.mayUpload(true, false));
-        assertTrue(BackupNetworkPolicy.mayUpload(true, true));
+    public void poweredInitialSyncStillRequiresWifi() {
+        assertFalse(BackupNetworkPolicy.mayUpload(false, false, true));
+        assertTrue(BackupNetworkPolicy.mayUpload(false, true, true));
+    }
+
+    @Test
+    public void poweredIncrementalSyncAllowsAnyConnectedJobNetwork() {
+        assertTrue(BackupNetworkPolicy.mayUpload(true, false, true));
+        assertTrue(BackupNetworkPolicy.mayUpload(true, true, true));
     }
 
     @Test

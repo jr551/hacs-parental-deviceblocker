@@ -55,7 +55,7 @@
           "screen_schedule_mode": "Manual creates only the Check screen now button. Fixed and random also run automatically.",
           "kilo_base_url": "Leave unchanged to use the documented Kilo Gateway default.",
           "kilo_model": "The official balanced automatic route is kilo-auto/balanced.",
-          "s3_prefix": "Objects are stored below this prefix. The initial library sync always requires unmetered Wi-Fi."
+          "s3_prefix": "Objects are stored below this prefix. Every upload requires external power; the initial library sync also requires unmetered Wi-Fi."
         }
       }
     },

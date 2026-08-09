@@ -103,6 +103,7 @@ class MediaBackupSensor(ParentalDeviceEntity, SensorEntity):
             "skipped": self.runtime.backup_skipped,
             "initial_complete": self.runtime.backup_initial_complete,
             "initial_sync_wifi_only": True,
+            "requires_external_power": True,
             "last_success": (
                 self.runtime.backup_last_success.isoformat()
                 if self.runtime.backup_last_success

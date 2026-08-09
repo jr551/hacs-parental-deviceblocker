@@ -382,7 +382,7 @@ public final class MainActivity extends Activity {
             MediaBackupScheduler.setInitialComplete(this, false);
             MediaBackupScheduler.schedule(this);
             Toast.makeText(this,
-                    "Backup access granted. Initial sync will wait for Wi-Fi.",
+                    "Backup access granted. Uploads wait for external power; initial sync also waits for Wi-Fi.",
                     Toast.LENGTH_LONG).show();
         } else {
             Toast.makeText(this, "Full photo and video access was not granted.",
@@ -406,10 +406,12 @@ public final class MainActivity extends Activity {
                     message = "Optional media backup is disabled in Home Assistant.";
                 } else if (!MediaBackupScheduler.hasMediaPermission(this)) {
                     message = "Media backup is enabled; parent permission is required.";
+                } else if (!MediaBackupScheduler.isExternallyPowered(this)) {
+                    message = "Media backup is waiting for external power.";
                 } else if (!MediaBackupScheduler.isInitialComplete(this)) {
-                    message = "Initial photo/video sync is waiting for or using Wi-Fi.";
+                    message = "Initial photo/video sync is waiting for or using Wi-Fi while powered.";
                 } else {
-                    message = "Initial media sync is complete; incremental backup is scheduled.";
+                    message = "Initial media sync is complete; powered incremental backup is scheduled.";
                 }
             } catch (Exception exception) {
                 message = "Could not read media backup status from Home Assistant.";
