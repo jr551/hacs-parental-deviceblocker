@@ -2,4 +2,11 @@
 <network-security-config>
     <!-- Needed for a direct home-LAN Home Assistant URL. Prefer HTTPS when available. -->
     <base-config cleartextTrafficPermitted="true" />
+    <!-- Debug APKs can exercise HTTPS against a disposable local test CA.
+         This block is ignored by non-debuggable release builds. -->
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
 </network-security-config>

@@ -89,7 +89,9 @@ public final class MediaBackupJobService extends JobService {
                             true,
                             scan.skipped,
                             skippedMessage(scan.skipped));
-                    MediaBackupScheduler.schedule(this);
+                    if (!wasInitialComplete) {
+                        MediaBackupScheduler.schedule(this);
+                    }
                     finish(parameters, false);
                     return;
                 }
@@ -117,7 +119,9 @@ public final class MediaBackupJobService extends JobService {
                             true,
                             scan.skipped,
                             skippedMessage(scan.skipped));
-                    MediaBackupScheduler.schedule(this);
+                    if (!wasInitialComplete) {
+                        MediaBackupScheduler.schedule(this);
+                    }
                 } else {
                     postStatus(client, "syncing", false, scan.skipped,
                             skippedMessage(scan.skipped));

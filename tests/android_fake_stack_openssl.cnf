@@ -1,0 +1,12 @@
+[req]
+distinguished_name = subject
+x509_extensions = extensions
+prompt = no
+
+[subject]
+CN = Parental Device Blocker Android Lab
+
+[extensions]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,digitalSignature,keyEncipherment
+subjectAltName = IP:10.0.2.2,DNS:localhost

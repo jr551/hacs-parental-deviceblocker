@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="ha_url">https://10.0.2.2:18443</string>
+    <string name="device_id">fake-android</string>
+    <string name="device_key">public-lab-test-key</string>
+</map>

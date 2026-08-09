@@ -175,4 +175,9 @@ python3 -m compileall -q custom_components/rowe_pc_blocker
 ./scripts/build-release.sh 0.9.2
 ```
 
+`tests/android_fake_stack.py` provides a synthetic HTTPS Home Assistant/S3
+surface for disposable Android-emulator validation. Its companion preference
+and OpenSSL fixtures contain test-only values. Debug APKs trust user-installed
+test CAs for this purpose; non-debuggable release APKs do not.
+
 The project is licensed under the [MIT License](LICENSE).
