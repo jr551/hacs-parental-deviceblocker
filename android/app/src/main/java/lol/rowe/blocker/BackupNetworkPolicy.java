@@ -6,4 +6,8 @@ final class BackupNetworkPolicy {
     static boolean mayUpload(boolean initialSyncComplete, boolean wifiConnected) {
         return initialSyncComplete || wifiConnected;
     }
+
+    static boolean shouldInstallPeriodicSchedule(boolean wasInitialSyncComplete) {
+        return !wasInitialSyncComplete;
+    }
 }

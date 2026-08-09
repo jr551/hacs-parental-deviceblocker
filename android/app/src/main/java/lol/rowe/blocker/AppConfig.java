@@ -14,9 +14,17 @@ final class AppConfig {
     final String deviceKey;
 
     AppConfig(String homeAssistantUrl, String deviceId, String deviceKey) {
-        this.homeAssistantUrl = homeAssistantUrl.replaceAll("/+$", "");
+        this.homeAssistantUrl = withoutTrailingSlashes(homeAssistantUrl);
         this.deviceId = deviceId;
         this.deviceKey = deviceKey;
+    }
+
+    private static String withoutTrailingSlashes(String value) {
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
     }
 
     boolean isConfigured() {
