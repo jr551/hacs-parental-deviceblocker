@@ -1,0 +1,46 @@
+# Example only: replace every entity and notification service before use.
+- id: parental_device_blocker_enforcement_health_alert
+  alias: Parental Device Blocker - Enforcement Health Alert
+  description: >-
+    Alerts parents when a powered PC is requested blocked but its agent is offline.
+  mode: queued
+  max: 10
+  trigger:
+    - platform: template
+      id: child_one
+      value_template: >-
+        {{ is_state('switch.child_one_pc_blocked', 'on')
+           and is_state('binary_sensor.child_one_pc_agent_online', 'off')
+           and states('sensor.child_one_pc_power') | float(0) > 10 }}
+      for: "00:02:00"
+    - platform: template
+      id: child_two
+      value_template: >-
+        {{ is_state('switch.child_two_pc_blocked', 'on')
+           and is_state('binary_sensor.child_two_pc_agent_online', 'off')
+           and states('sensor.child_two_pc_power') | float(0) > 10 }}
+      for: "00:02:00"
+  action:
+    - variables:
+        child: "{{ 'Child One' if trigger.id == 'child_one' else 'Child Two' }}"
+        device_id: "{{ 'child_one_pc' if trigger.id == 'child_one' else 'child_two_pc' }}"
+        message: >-
+          {{ child }}'s PC is powered on and requested blocked, but its blocker
+          agent is offline. Treat the PC as unblocked until it reconnects.
+    - service: persistent_notification.create
+      data:
+        title: "PC block could not be enforced - {{ child }}"
+        message: "{{ message }}"
+        notification_id: "parental_device_enforcement_{{ device_id }}"
+    - service: notify.parent_one
+      data:
+        message: "{{ message }}"
+    - service: notify.parent_two
+      data:
+        message: "{{ message }}"
+    - service: notify.mobile_app_parent_phone
+      data:
+        title: "PC block could not be enforced - {{ child }}"
+        message: "{{ message }}"
+        data:
+          tag: "parental_device_enforcement_{{ device_id }}"

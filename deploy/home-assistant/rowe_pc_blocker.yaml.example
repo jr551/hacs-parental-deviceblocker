@@ -1,0 +1,12 @@
+rowe_pc_blocker:
+  devices:
+    - device_id: child-pc
+      device_name: Child PC
+      device_type: windows
+      windows_username: child
+      api_key: !secret parental_device_blocker_child_pc_key
+    - device_id: child-phone
+      device_name: Child Phone
+      device_type: android
+      windows_username: child
+      api_key: !secret parental_device_blocker_child_phone_key

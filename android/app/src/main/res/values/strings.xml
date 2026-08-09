@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Parental Device Blocker</string>
+    <string name="accessibility_description">Checks the current foreground app while a parent-controlled Home Assistant block is active. WhatsApp and Google Maps remain available.</string>
+</resources>

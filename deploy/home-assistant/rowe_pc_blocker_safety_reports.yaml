@@ -1,0 +1,78 @@
+# Examples only: replace entity IDs and notification services before use.
+- id: parental_device_blocker_high_safety_alert
+  alias: Parental Device Blocker - High Safety Alert
+  description: >-
+    Privately alerts parents when the optional text-only screen classifier
+    reports high or critical concern. It never auto-blocks from an AI result.
+  mode: queued
+  max: 10
+  trigger:
+    - platform: event
+      event_type: rowe_pc_blocker_safety_alert
+  action:
+    - variables:
+        child: "{{ trigger.event.data.device_name }}"
+        message: >-
+          {{ child }} screen safety alert:
+          {{ trigger.event.data.risk_level }}
+          ({{ trigger.event.data.risk_score }}/5), category
+          {{ trigger.event.data.category | replace('_', ' ') }}.
+          {{ trigger.event.data.summary }}
+          This is an AI flag for parental review, not proof or punishment.
+    - service: persistent_notification.create
+      data:
+        title: "Screen safety alert - {{ child }}"
+        message: "{{ message }}"
+        notification_id: "parental_device_safety_{{ trigger.event.data.device_id }}"
+    - service: notify.parent_one
+      data:
+        message: "{{ message }}"
+    - service: notify.parent_two
+      data:
+        message: "{{ message }}"
+
+- id: parental_device_blocker_weekly_child_summaries
+  alias: Parental Device Blocker - Weekly Child Summaries
+  description: Sends one private rolling-seven-day text report per configured child.
+  mode: single
+  trigger:
+    - platform: time
+      at: "18:00:00"
+  condition:
+    - condition: time
+      weekday: [sun]
+  action:
+    - service: homeassistant.update_entity
+      target:
+        entity_id:
+          - sensor.child_one_pc_weekly_activity_summary
+          - sensor.child_two_pc_weekly_activity_summary
+    - variables:
+        child_one_message: >-
+          Child One weekly device check-in: checks
+          {{ state_attr('sensor.child_one_pc_weekly_activity_summary', 'checks') | int(0) }},
+          highest concern
+          {{ state_attr('sensor.child_one_pc_weekly_activity_summary', 'highest_risk_score') | int(0) }}/5,
+          checks needing review
+          {{ state_attr('sensor.child_one_pc_weekly_activity_summary', 'high_or_critical_checks') | int(0) }}.
+          Text-only spot checks; AI flags are prompts to review, not proof.
+        child_two_message: >-
+          Child Two weekly device check-in: checks
+          {{ state_attr('sensor.child_two_pc_weekly_activity_summary', 'checks') | int(0) }},
+          highest concern
+          {{ state_attr('sensor.child_two_pc_weekly_activity_summary', 'highest_risk_score') | int(0) }}/5,
+          checks needing review
+          {{ state_attr('sensor.child_two_pc_weekly_activity_summary', 'high_or_critical_checks') | int(0) }}.
+          Text-only spot checks; AI flags are prompts to review, not proof.
+    - service: notify.parent_one
+      data:
+        message: "{{ child_one_message }}"
+    - service: notify.parent_two
+      data:
+        message: "{{ child_one_message }}"
+    - service: notify.parent_one
+      data:
+        message: "{{ child_two_message }}"
+    - service: notify.parent_two
+      data:
+        message: "{{ child_two_message }}"

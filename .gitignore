@@ -1,0 +1,12 @@
+bin/
+obj/
+src/RowePcBlocker/appsettings.Local.json
+artifacts/
+.secrets/
+**/__pycache__/
+.DS_Store
+android/.gradle/
+android/local.properties
+android/**/build/
+.idea/
+deploy/home-assistant/rowe_pc_blocker.yaml

@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RowePcActivity/RowePcActivity.csproj" />
+    <Project Path="src/RowePcBlocker/RowePcBlocker.csproj" />
+  </Folder>
+</Solution>

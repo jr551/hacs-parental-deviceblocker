@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/block_background">
+
+    <ScrollView
+        android:id="@+id/setupScroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Parental Device Blocker"
+                android:textColor="@color/white"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Not configured"
+                android:textColor="@color/muted"
+                android:textSize="16sp" />
+
+            <EditText
+                android:id="@+id/homeAssistantUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:hint="Home Assistant URL"
+                android:inputType="textUri"
+                android:textColor="@color/white"
+                android:textColorHint="@color/muted" />
+
+            <EditText
+                android:id="@+id/deviceId"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Device ID, e.g. keithphone"
+                android:inputType="text"
+                android:textColor="@color/white"
+                android:textColorHint="@color/muted" />
+
+            <EditText
+                android:id="@+id/deviceKey"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Device API key"
+                android:inputType="textPassword"
+                android:textColor="@color/white"
+                android:textColorHint="@color/muted" />
+
+            <Button
+                android:id="@+id/saveButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="18dp"
+                android:text="Save configuration" />
+
+            <Button
+                android:id="@+id/accessibilityButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="12dp"
+                android:text="Enable blocker accessibility service" />
+
+            <Button
+                android:id="@+id/changePinButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="12dp"
+                android:text="Change parent PIN" />
+
+            <Button
+                android:id="@+id/mediaBackupPermissionButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="12dp"
+                android:text="Allow optional photo/video backup" />
+
+            <TextView
+                android:id="@+id/mediaBackupStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Media backup status will appear here."
+                android:textColor="@color/muted"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="Enable the blocker accessibility service, then set Battery usage to Unrestricted. Optional media backup needs separate photo/video permission; its initial sync runs only on unmetered Wi-Fi."
+                android:textColor="@color/muted"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/blockedPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="28dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/blockTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="This phone is paused"
+            android:textColor="@color/white"
+            android:textSize="32sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/blockMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:text="A parent has paused this device."
+            android:textColor="@color/muted"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/blockCountdown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:text="Blocking shortly."
+            android:textColor="@color/white"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/extensionButton"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="24dp"
+            android:text="Give me another 5 minutes" />
+
+        <Button
+            android:id="@+id/parentOverrideButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="12dp"
+            android:text="Parent: give 1 more hour" />
+
+        <Button
+            android:id="@+id/whatsAppButton"
+            android:layout_width="match_parent"
+            android:layout_height="86dp"
+            android:layout_marginTop="24dp"
+            android:backgroundTint="@color/whatsapp"
+            android:text="Open WhatsApp"
+            android:textColor="@color/white"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/mapsButton"
+            android:layout_width="match_parent"
+            android:layout_height="86dp"
+            android:layout_marginTop="18dp"
+            android:backgroundTint="@color/maps"
+            android:text="Open Google Maps"
+            android:textColor="@color/white"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="30dp"
+            android:gravity="center"
+            android:text="Only WhatsApp and Google Maps are available until a parent unblocks this phone. Emergency calling remains available from Android's lock screen."
+            android:textColor="@color/muted"
+            android:textSize="14sp" />
+    </LinearLayout>
+</FrameLayout>

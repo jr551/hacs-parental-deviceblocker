@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">Parental Device Blocker</title>
+  <desc id="description">A blue shield containing a white pause symbol.</desc>
+  <defs>
+    <linearGradient id="shield" x1="48" y1="30" x2="205" y2="225" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22B8C7"/>
+      <stop offset="1" stop-color="#087EA4"/>
+    </linearGradient>
+  </defs>
+  <path
+    d="M128 14c33 20 62 27 92 33v69c0 58-36 101-92 124-56-23-92-66-92-124V47c30-6 59-13 92-33Z"
+    fill="url(#shield)"
+    stroke="#063B4C"
+    stroke-width="8"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M128 28c27 16 51 23 77 29v59c0 47-28 83-77 105-49-22-77-58-77-105V57c26-6 50-13 77-29Z"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-opacity="0.18"
+    stroke-width="4"
+  />
+  <rect x="82" y="73" width="30" height="101" rx="15" fill="#FFFFFF"/>
+  <rect x="144" y="73" width="30" height="101" rx="15" fill="#FFFFFF"/>
+</svg>

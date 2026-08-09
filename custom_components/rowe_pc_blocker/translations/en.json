@@ -1,0 +1,74 @@
+{
+  "title": "Parental Device Blocker",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a device",
+        "description": "Keep the generated API key private. It will be copied into that device's agent configuration.",
+        "data": {
+          "device_id": "Device ID",
+          "device_name": "Display name",
+          "device_type": "Device type",
+          "windows_username": "Windows child username or Android owner label",
+          "api_key": "Device API key"
+        }
+      }
+    },
+    "error": {
+      "invalid_device_id": "Use letters, numbers, hyphens, or underscores."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Device blocker options",
+        "description": "Set optional parent controls, screen assessment, and Android media backup. S3 credentials stay in Home Assistant; the phone receives only short-lived upload URLs. Leave a secret field blank to keep its saved value.",
+        "data": {
+          "screen_monitor_enabled": "Enable screen assessment",
+          "vnc_host": "VNC host or IP address",
+          "vnc_port": "VNC port",
+          "vnc_password": "VNC viewer password",
+          "screen_schedule_mode": "Automatic schedule",
+          "screen_fixed_interval_minutes": "Fixed interval (minutes)",
+          "screen_random_min_minutes": "Random interval minimum (minutes)",
+          "screen_random_max_minutes": "Random interval maximum (minutes)",
+          "kilo_api_key": "Kilo Gateway API key",
+          "parent_pin": "Parent override PIN (optional)",
+          "clear_parent_pin": "Disable parent PIN override",
+          "clear_screen_credentials": "Clear saved VNC and Kilo credentials",
+          "media_backup_enabled": "Enable Android photo and video backup",
+          "s3_endpoint": "S3 HTTPS endpoint",
+          "s3_region": "S3 region",
+          "s3_bucket": "S3 bucket",
+          "s3_access_key": "S3 access key",
+          "s3_secret_key": "S3 secret key",
+          "s3_prefix": "Device/user folder prefix",
+          "clear_s3_credentials": "Disable backup and clear saved S3 credentials",
+          "kilo_base_url": "OpenAI-compatible base URL",
+          "kilo_model": "Model",
+          "screen_prompt": "Assessment instructions"
+        },
+        "data_description": {
+          "screen_schedule_mode": "Manual creates only the Check screen now button. Fixed and random also run automatically.",
+          "kilo_base_url": "Leave unchanged to use the documented Kilo Gateway default.",
+          "kilo_model": "The official balanced automatic route is kilo-auto/balanced.",
+          "s3_prefix": "Objects are stored below this prefix. The initial library sync always requires unmetered Wi-Fi."
+        }
+      }
+    },
+    "error": {
+      "random_range": "The maximum must be greater than or equal to the minimum.",
+      "invalid_provider_url": "Enter a valid HTTPS base URL without credentials, a query, or a fragment.",
+      "invalid_s3_endpoint": "Enter an HTTPS S3 origin without credentials, a path, query, or fragment.",
+      "invalid_s3_bucket": "Enter a valid DNS-style S3 bucket name.",
+      "invalid_s3_region": "Enter a valid S3 region such as us-east-1.",
+      "invalid_s3_prefix": "Enter a folder prefix containing at least one safe path segment.",
+      "android_only": "Media backup can be enabled only for an Android device entry.",
+      "parent_pin_too_short": "Use a parent PIN with at least four characters.",
+      "required_when_enabled": "This value is required when screen assessment is enabled."
+    }
+  }
+}

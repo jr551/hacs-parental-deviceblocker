@@ -1,0 +1,32 @@
+# Example only: replace every notification service before use.
+- id: parental_device_blocker_portal_error_alert
+  alias: Parental Device Blocker - Portal Error Alert
+  description: Alerts parents when the protected points kiosk cannot initialise.
+  mode: queued
+  max: 10
+  trigger:
+    - platform: event
+      event_type: rowe_pc_blocker_portal_error
+  action:
+    - variables:
+        child: "{{ trigger.event.data.device_name }}"
+        message: >-
+          {{ child }}'s blocked-PC points portal needs attention.
+          Check its portal status sensor in Home Assistant.
+    - service: persistent_notification.create
+      data:
+        title: "Points portal problem - {{ child }}"
+        message: "{{ message }}"
+        notification_id: "parental_device_portal_{{ trigger.event.data.device_id }}"
+    - service: notify.parent_one
+      data:
+        message: "{{ message }}"
+    - service: notify.parent_two
+      data:
+        message: "{{ message }}"
+    - service: notify.mobile_app_parent_phone
+      data:
+        title: "Points portal problem - {{ child }}"
+        message: "{{ message }}"
+        data:
+          tag: "parental_device_portal_{{ trigger.event.data.device_id }}"

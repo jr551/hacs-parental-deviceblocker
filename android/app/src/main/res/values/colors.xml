@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="block_background">#111827</color>
+    <color name="panel_background">#1F2937</color>
+    <color name="primary">#2563EB</color>
+    <color name="whatsapp">#128C7E</color>
+    <color name="maps">#4285F4</color>
+    <color name="white">#FFFFFF</color>
+    <color name="muted">#CBD5E1</color>
+</resources>
