@@ -166,7 +166,7 @@ def main() -> None:
     events = args.state_dir / "events.jsonl"
     events.write_text("", encoding="utf-8")
 
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), FakeStackHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), FakeStackHandler)
     server.device_id = args.device_id
     server.device_key = args.device_key
     server.mode_file = mode_file
