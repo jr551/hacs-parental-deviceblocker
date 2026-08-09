@@ -17,6 +17,9 @@ Use GitHub's **Report a vulnerability** / private security advisory feature for 
 - Use a dedicated write-only S3 key scoped to one device prefix. S3 credentials
   stay in Home Assistant; Android receives only short-lived, size-bound PUT URLs.
 - Prefer HTTPS Home Assistant URLs.
+- Keep VNC on a trusted private network or authenticated tunnel. Classic RFB
+  password authentication uses protocol-mandated DES and is not secure enough
+  for an internet-exposed service, even with a view-only password.
 - Keep Home Assistant and device agents updated.
 - Use standard child accounts and retain a separate parent administrator recovery path.
 - Test fail-open/fail-closed behavior appropriate to each platform before relying on enforcement.
