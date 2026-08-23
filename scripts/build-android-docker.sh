@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 image_name="parental-device-blocker-android:local"
-artifact_name="ParentalDeviceBlocker-0.4.2-debug.apk"
+artifact_name="ParentalDeviceBlocker-0.4.3-debug.apk"
 legacy_keystore_dir="${XDG_CONFIG_HOME:-$HOME/.config}/rowe-pc-blocker"
 default_keystore_dir="${XDG_CONFIG_HOME:-$HOME/.config}/parental-device-blocker"
 if [[ "${PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY:-0}" == "1" ]]; then

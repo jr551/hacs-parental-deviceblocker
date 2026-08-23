@@ -44,7 +44,13 @@ internal sealed class AgentApplicationContext : ApplicationContext
     public AgentApplicationContext(AgentConfiguration configuration)
     {
         _configuration = configuration;
-        _http = new HttpClient { BaseAddress = new Uri(configuration.HomeAssistantUrl.TrimEnd('/') + "/") };
+        _http = new HttpClient
+        {
+            BaseAddress = new Uri(configuration.HomeAssistantUrl.TrimEnd('/') + "/"),
+            // Keep a stalled Home Assistant connection from stretching the 2 s
+            // tick cadence to the HttpClient default of 100 s.
+            Timeout = TimeSpan.FromSeconds(10)
+        };
         _http.DefaultRequestHeaders.Add("X-Device-Blocker-Key", configuration.DeviceApiKey);
         _overlay = new BlockOverlayForm(configuration);
         _overlay.ExtensionRequested += async (_, _) => await RequestExtensionAsync();

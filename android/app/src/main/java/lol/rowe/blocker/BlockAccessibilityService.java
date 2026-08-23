@@ -23,7 +23,6 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private volatile Policy currentPolicy = Policy.UNBLOCKED;
     private volatile String foregroundPackage = "";
     private volatile long lastBlockLaunch;
-    private volatile String lastGraceWarningKey = "";
     private String lastReportedPackage = "";
     private String lastReportedTitle = "";
     private long lastHeartbeat;
@@ -98,13 +97,11 @@ public final class BlockAccessibilityService extends AccessibilityService {
             if (decision.shouldShowBlockScreen(policy.shouldCaptureForeground(), foregroundPackage)) {
                 showBlockScreen(policy);
             } else if (policy.shouldWarnGrace()) {
-                // Show the grace warning (countdown + extension button) once per deadline,
-                // then let the device holder return to their app until enforce_at.
-                String warningKey = String.valueOf(policy.enforceAt);
-                if (!warningKey.equals(lastGraceWarningKey)) {
-                    lastGraceWarningKey = warningKey;
-                    showBlockScreen(policy);
-                }
+                // Re-show the grace warning (countdown + extension button) on
+                // every poll during the grace window: a holder who dismissed
+                // the screen or was away must still see the deadline before
+                // enforcement turns it into a hard block.
+                showBlockScreen(policy);
             }
         } catch (Exception ignored) {
             failOpen();
@@ -161,7 +158,6 @@ public final class BlockAccessibilityService extends AccessibilityService {
 
     private void failOpen() {
         currentPolicy = Policy.UNBLOCKED;
-        lastGraceWarningKey = "";
         MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
     }
 

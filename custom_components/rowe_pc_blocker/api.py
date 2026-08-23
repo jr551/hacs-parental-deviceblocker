@@ -456,10 +456,10 @@ class PcParentOverrideView(HomeAssistantView):
             )
 
         _pin_attempts(hass).pop(device_id, None)
+        until = await runtime.async_grant_parent_override()
         context = _portal_context(hass, runtime)
         child_id = context[0].child_id if context else ""
         child_name = context[0].name if context else runtime.device_name
-        until = dt_util.utcnow() + timedelta(minutes=PARENT_OVERRIDE_MINUTES)
         hass.bus.async_fire(
             EVENT_PARENT_OVERRIDE,
             {

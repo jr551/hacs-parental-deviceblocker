@@ -42,9 +42,13 @@ public sealed class WindowsAccountBlocker(
     {
         // `quser` returns one row per active session; a failed query simply means no active session.
         string sessions = await RunAsync("quser", username, cancellationToken, ignoreFailure: true);
+        // quser columns are whitespace-padded but the session id can abut the
+        // preceding column (e.g. "child rdp-tcp#0  4 Active"), so match a whole
+        // number bounded by start/whitespace on the left and whitespace/end on
+        // the right instead of requiring surrounding spaces on both sides.
         foreach (string sessionId in sessions.Split('\n')
                      .Skip(1)
-                     .Select(line => System.Text.RegularExpressions.Regex.Match(line, @"\s(\d+)\s"))
+                     .Select(line => Regex.Match(line, @"(?:^|\s)(\d+)(?:\s|$)"))
                      .Where(match => match.Success)
                      .Select(match => match.Groups[1].Value))
         {

@@ -24,7 +24,11 @@ $configuration = Get-Content -Raw $path | ConvertFrom-Json
 $enabled = -not [bool]$Disable
 $configuration.Blocker | Add-Member -NotePropertyName PortalEnabled -NotePropertyValue $enabled -Force
 $configuration.Blocker | Add-Member -NotePropertyName PortalUrl -NotePropertyValue $PortalUrl -Force
-$configuration.Blocker | Add-Member -NotePropertyName KeepSessionForPortal -NotePropertyValue $enabled -Force
+# KeepSessionForPortal belongs to the kiosk UI, not to the portal: disabling
+# the portal must never flip enforcement into account-disabling while the
+# full-screen UI is still enabled.
+$configuration.Blocker | Add-Member -NotePropertyName KeepSessionForPortal `
+    -NotePropertyValue [bool]$configuration.Blocker.UserInterfaceEnabled -Force
 $configuration | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $path
 
 Restart-Service -Name 'RowePcBlocker'
