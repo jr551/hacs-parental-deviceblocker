@@ -16,6 +16,7 @@ from .const import (
     EXTENSION_COOLDOWN_SECONDS,
     EXTENSION_SECONDS,
     INITIAL_GRACE_SECONDS,
+    PARENT_OVERRIDE_MINUTES,
     SIGNAL_UPDATE,
 )
 
@@ -164,6 +165,21 @@ class PcRuntime:
         await self.async_save()
         self.notify()
         return True
+
+    async def async_grant_parent_override(self) -> datetime:
+        """Give one parent-PIN hour by reusing the agent-visible extension path.
+
+        Agents already render ``extension_until`` as free-time banner mode with a
+        countdown driven by ``enforce_at``, so an override needs no agent-side
+        changes. ``extension_used_at`` is deliberately untouched: a parent grant
+        neither consumes nor extends the child's own save-work extension.
+        """
+        self.extension_until = dt_util.utcnow() + timedelta(
+            minutes=PARENT_OVERRIDE_MINUTES
+        )
+        await self.async_save()
+        self.notify()
+        return self.extension_until
 
     def update_activity(self, payload: dict) -> None:
         self.last_seen = dt_util.utcnow()

@@ -201,7 +201,7 @@ final class HomeAssistantClient {
             }
             try {
                 String error = optionalString(new JSONObject(body), "error");
-                if (!error.isEmpty()) {
+                if (error != null && !error.isEmpty()) {
                     return error;
                 }
             } catch (Exception ignored) {
