@@ -2,6 +2,7 @@ package lol.rowe.blocker;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.util.Locale;
 
 final class AppConfig {
     private static final String PREFS = "rowe_blocker";
@@ -14,17 +15,18 @@ final class AppConfig {
     final String deviceKey;
 
     AppConfig(String homeAssistantUrl, String deviceId, String deviceKey) {
-        this.homeAssistantUrl = withoutTrailingSlashes(homeAssistantUrl);
-        this.deviceId = deviceId;
-        this.deviceKey = deviceKey;
+        this.homeAssistantUrl = withoutTrailingSlashes(homeAssistantUrl == null ? "" : homeAssistantUrl.trim());
+        this.deviceId = deviceId == null ? "" : deviceId.trim().toLowerCase(Locale.ROOT);
+        this.deviceKey = deviceKey == null ? "" : deviceKey.trim();
     }
 
     private static String withoutTrailingSlashes(String value) {
-        int end = value.length();
-        while (end > 0 && value.charAt(end - 1) == '/') {
+        String trimmed = value.trim();
+        int end = trimmed.length();
+        while (end > 0 && trimmed.charAt(end - 1) == '/') {
             end--;
         }
-        return value.substring(0, end);
+        return trimmed.substring(0, end);
     }
 
     boolean isConfigured() {

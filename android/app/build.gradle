@@ -10,8 +10,8 @@ android {
         applicationId "lol.rowe.blocker"
         minSdk 29
         targetSdk 35
-        versionCode 9
-        versionName "0.4.3"
+        versionCode 10
+        versionName "0.4.4"
 
         testInstrumentationRunner "android.test.InstrumentationTestRunner"
     }

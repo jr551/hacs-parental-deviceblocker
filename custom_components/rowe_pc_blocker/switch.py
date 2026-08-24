@@ -35,15 +35,25 @@ class PcBlockedSwitch(ParentalDeviceEntity, SwitchEntity, RestoreEntity):
         if old is not None:
             self.runtime.blocked = old.state == "on"
             if self.runtime.blocked and self.runtime.block_requested_at is None:
-                await self.runtime.async_set_blocked(True)
-
+                # Do not grant a fresh 30s grace after restart — the original
+                # block time is lost, so enforce immediately (keep any active
+                # override/extension, but do not create a new grace window).
+                from homeassistant.util import dt as dt_util
+                from datetime import timedelta
+                from .const import INITIAL_GRACE_SECONDS
+                # Set requested to grace-ago so enforce_at == now.
+                self.runtime.block_requested_at = dt_util.utcnow() - timedelta(
+                    seconds=INITIAL_GRACE_SECONDS
+                )
+                await self.runtime.async_save()
+                self.runtime.notify()
     async def async_turn_on(self, **kwargs) -> None:
         await self.runtime.async_set_blocked(True)
 
     async def async_turn_off(self, **kwargs) -> None:
         # Unblocking is a parent action: allow admins and automations/scripts
         # (no user context), refuse everyone else and tell the parents.
-        context = self._context
+        context = self.context
         if context is not None and context.user_id:
             user = await self.hass.auth.async_get_user(context.user_id)
             if user is not None and not user.is_admin:

@@ -118,6 +118,11 @@ def _runtime_for_request(hass: HomeAssistant, device_id: str):
 
 
 def _authorised(request: web.Request, runtime, *, allow_query: bool = False) -> bool:
+    # Portal initial page uses query param for kiosk simplicity (WebView2 loads
+    # a single URL). Mitigations: no-store, no-referrer, CSP frame-ancestors
+    # none, and portal JS immediately clears the query via history.replaceState
+    # so the secret does not persist in history/Referer. Data/action endpoints
+    # require header only.
     supplied = request.headers.get("X-Device-Blocker-Key", "")
     if not supplied:
         supplied = request.headers.get("X-Rowe-Key", "")
@@ -457,6 +462,10 @@ class PcParentOverrideView(HomeAssistantView):
 
         _pin_attempts(hass).pop(device_id, None)
         until = await runtime.async_grant_parent_override()
+        if until is None:
+            return self.json(
+                {"error": "Device is not currently blocked."}, status_code=409
+            )
         context = _portal_context(hass, runtime)
         child_id = context[0].child_id if context else ""
         child_name = context[0].name if context else runtime.device_name
