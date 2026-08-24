@@ -584,6 +584,9 @@ public final class MainActivity extends Activity {
     }
 
     private void launchPackage(String packageName, String missingMessage) {
+        // Only resolves packages visible to the current user/profile; Secure
+        // Folder / Dual Messenger clones (separate users) are not visible via
+        // getLaunchIntentForPackage — primary profile's install is launched.
         Intent launch = getPackageManager().getLaunchIntentForPackage(packageName);
         if (launch == null) {
             Toast.makeText(this, missingMessage, Toast.LENGTH_LONG).show();
