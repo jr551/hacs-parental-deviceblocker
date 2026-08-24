@@ -133,7 +133,7 @@ After configuration:
 6. Perform a supervised block test and verify WhatsApp, Maps, Back, Home, Settings redirection, and emergency calling.
 7. Disconnect Home Assistant during a block and verify that the phone immediately fails open.
 
-Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13) is supported with targetSdk 35 and minSdk 29. The 0.4.5 build correctly handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED) for newer Samsung devices, and treats wireless charging as external power.
+Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13) is supported with targetSdk 35 and minSdk 29. The 0.4.6 build correctly handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED) for newer Samsung devices, and treats wireless charging as external power. Note: WhatsApp/Maps `getLaunchIntentForPackage` only resolves the current user/profile — clones in Samsung Secure Folder / Dual Messenger work profile are isolated and will not be launched; the primary profile’s install is used. Test Secure Folder explicitly if you rely on it.
 
 Accessibility enforcement is parental friction, not kiosk-grade Device Owner enforcement. A determined user may disable Accessibility, uninstall the app, enter safe mode, or reset the phone.
 
