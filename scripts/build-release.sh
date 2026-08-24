@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-version="${1:-0.9.6}"
+version="${1:-0.9.7}"
 release_root="$repo_root/artifacts/ParentalDeviceBlocker-$version-win-x64"
 cd "$repo_root"
 
