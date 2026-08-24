@@ -66,13 +66,13 @@ To enable the one-hour parent override, open the integration entry's options and
 Build on macOS or Linux with .NET 8, or with Docker when .NET is absent:
 
 ```bash
-./scripts/build-release.sh 0.9.5
+./scripts/build-release.sh 0.9.6
 ```
 
 The script creates:
 
-- `artifacts/ParentalDeviceBlocker-0.9.5-win-x64.zip`;
-- `artifacts/parental_device_blocker-hacs-0.9.5.zip`.
+- `artifacts/ParentalDeviceBlocker-0.9.6-win-x64.zip`;
+- `artifacts/parental_device_blocker-hacs-0.9.6.zip`.
 
 Extract the Windows ZIP and run an Administrator PowerShell prompt:
 
@@ -117,9 +117,9 @@ The Docker build runs unit tests, lint, and signed APK assembly:
 ./scripts/build-android-docker.sh
 ```
 
-The output is `artifacts/android/ParentalDeviceBlocker-0.4.4-debug.apk`. This is a sideloadable debug-signed build for supervised testing, not a Play Store package.
+The output is `artifacts/android/ParentalDeviceBlocker-0.4.5-debug.apk`. This is a sideloadable debug-signed build for supervised testing, not a Play Store package.
 
-The first build creates a protected generic signing key under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.4; uninstalling clears its local PIN, configuration, and backup index.
+The first build creates a protected generic signing key under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.5; uninstalling clears its local PIN, configuration, and backup index.
 
 On first launch, the parent must create and confirm a local configuration PIN before entering the Home Assistant URL, device ID, and device key. There is no default PIN. Losing it requires clearing app data and provisioning the app again.
 
@@ -127,11 +127,13 @@ After configuration:
 
 1. Enable **Parental Device Blocker** under Android Accessibility settings.
 2. Allow restricted settings if Android requests it.
-3. Set battery use to unrestricted and exclude the app from sleep/optimization.
+3. Set battery use to unrestricted and exclude the app from sleep/optimization. On Samsung Galaxy S20 (One UI / Android 13) this is Settings → Apps → Parental Device Blocker → Battery → Unrestricted; also disable Put unused apps to sleep.
 4. On Xiaomi/MIUI, enable Autostart and background pop-up windows.
 5. Confirm online/activity telemetry while the HA switch is off.
 6. Perform a supervised block test and verify WhatsApp, Maps, Back, Home, Settings redirection, and emergency calling.
 7. Disconnect Home Assistant during a block and verify that the phone immediately fails open.
+
+Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13) is supported with targetSdk 35 and minSdk 29. The 0.4.5 build correctly handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED) for newer Samsung devices, and treats wireless charging as external power.
 
 Accessibility enforcement is parental friction, not kiosk-grade Device Owner enforcement. A determined user may disable Accessibility, uninstall the app, enter safe mode, or reset the phone.
 
@@ -172,7 +174,7 @@ Restrict Home Assistant access and configure an appropriate Recorder retention p
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m compileall -q custom_components/rowe_pc_blocker
 ./scripts/build-android-docker.sh
-./scripts/build-release.sh 0.9.5
+./scripts/build-release.sh 0.9.6
 ```
 
 `tests/android_fake_stack.py` provides a synthetic HTTPS Home Assistant/S3

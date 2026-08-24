@@ -50,6 +50,18 @@ final class MediaBackupScheduler {
     }
 
     static boolean hasMediaPermission(Context context) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            boolean full = context.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES)
+                            == PackageManager.PERMISSION_GRANTED
+                    && context.checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO)
+                            == PackageManager.PERMISSION_GRANTED;
+            boolean partial = context.checkSelfPermission("android.permission.READ_MEDIA_VISUAL_USER_SELECTED")
+                            == PackageManager.PERMISSION_GRANTED;
+            // Samsung One UI on Android 14 surfaces partial user-selected access;
+            // treat it as permission granted for a filtered backup (Galaxy S20
+            // on Android 13 is unaffected, but S22/S23 on 14 need this).
+            return full || partial;
+        }
         if (Build.VERSION.SDK_INT >= 33) {
             return context.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES)
                             == PackageManager.PERMISSION_GRANTED
@@ -59,7 +71,6 @@ final class MediaBackupScheduler {
         return context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
                 == PackageManager.PERMISSION_GRANTED;
     }
-
     static Network wifiNetwork(Context context) {
         ConnectivityManager manager = context.getSystemService(ConnectivityManager.class);
         if (manager == null) {
