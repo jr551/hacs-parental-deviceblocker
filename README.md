@@ -66,13 +66,13 @@ To enable the one-hour parent override, open the integration entry's options and
 Build on macOS or Linux with .NET 8, or with Docker when .NET is absent:
 
 ```bash
-./scripts/build-release.sh 0.9.11
+./scripts/build-release.sh 0.9.12
 ```
 
 The script creates:
 
-- `artifacts/ParentalDeviceBlocker-0.9.11-win-x64.zip`;
-- `artifacts/parental_device_blocker-hacs-0.9.11.zip`.
+- `artifacts/ParentalDeviceBlocker-0.9.12-win-x64.zip`;
+- `artifacts/parental_device_blocker-hacs-0.9.12.zip`.
 
 Extract the Windows ZIP and run an Administrator PowerShell prompt:
 
@@ -174,7 +174,7 @@ Restrict Home Assistant access and configure an appropriate Recorder retention p
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m compileall -q custom_components/rowe_pc_blocker
 ./scripts/build-android-docker.sh
-./scripts/build-release.sh 0.9.11
+./scripts/build-release.sh 0.9.12
 ```
 
 `tests/android_fake_stack.py` provides a synthetic HTTPS Home Assistant/S3
