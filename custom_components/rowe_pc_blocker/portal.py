@@ -263,6 +263,10 @@ PORTAL_HTML = r"""<!doctype html>
 (() => {
   "use strict";
   const key = new URLSearchParams(location.search).get("key") || "";
+  // Remove the secret from the visible URL/history immediately; the
+  // initial page was authenticated via query param for kiosk simplicity,
+  // but subsequent API calls use the header. Mitigates Referer/history.
+  try { if (key && history.replaceState) history.replaceState(null, "", location.pathname); } catch (e) {}
   const root = location.pathname.replace(/\/portal$/, "");
   let busy = false;
   const text = (value) => String(value ?? "");

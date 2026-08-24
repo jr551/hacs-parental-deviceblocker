@@ -127,6 +127,10 @@ $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
 $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
     'BUILTIN\Users', 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
 Set-Acl -Path $installRoot -AclObject $acl
+# Propagate to already-copied children (parent ACL does not retroactively fix them).
+Get-ChildItem -Path $installRoot -Recurse -Force | ForEach-Object {
+    try { Set-Acl -Path $_.FullName -AclObject $acl } catch {}
+}
 
 $serviceExe = Join-Path $serviceRoot 'RowePcBlocker.exe'
 New-Service -Name 'RowePcBlocker' -BinaryPathName ('"{0}"' -f $serviceExe) `

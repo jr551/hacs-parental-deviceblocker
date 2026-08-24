@@ -37,9 +37,8 @@ class S3BackupSettings:
             and valid_bucket(self.bucket)
             and self.access_key
             and self.secret_key
-            and self.prefix
+            and clean_prefix(self.prefix)
         )
-
 
 def valid_s3_endpoint(value: str) -> bool:
     """Accept only an HTTPS origin, without embedded credentials or URL extras."""

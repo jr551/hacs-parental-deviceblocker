@@ -31,7 +31,7 @@
 
         <activity
             android:name=".MainActivity"
-            android:excludeFromRecents="false"
+            android:excludeFromRecents="true"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>

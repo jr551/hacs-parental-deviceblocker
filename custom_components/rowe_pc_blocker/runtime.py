@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import asyncio
 from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
@@ -70,6 +71,7 @@ class PcRuntime:
     extra: dict[str, str] = field(default_factory=dict)
     screen_monitor: ScreenMonitor | None = field(default=None, repr=False)
     _store: Store | None = field(default=None, repr=False)
+    _portal_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     @property
     def signal(self) -> str:
@@ -82,7 +84,15 @@ class PcRuntime:
     def enforce_at(self) -> datetime | None:
         if not self.blocked:
             return None
-        requested = self.block_requested_at or dt_util.utcnow()
+        if self.block_requested_at is None:
+            # No persisted grace start (e.g. old store or manual edit): do not
+            # give a fresh 30s window after restart — enforce immediately.
+            requested = dt_util.utcnow()
+            # If an override/extension is already active, honour it instead.
+            if self.extension_until is not None and self.extension_until > requested:
+                return self.extension_until
+            return requested
+        requested = self.block_requested_at
         deadline = requested + timedelta(seconds=INITIAL_GRACE_SECONDS)
         if self.extension_until is not None and self.extension_until > deadline:
             deadline = self.extension_until
@@ -141,12 +151,13 @@ class PcRuntime:
 
     async def async_reserve_portal_reward(self, reward_id: str) -> bool:
         """Atomically reserve one reward purchase for this blocked session."""
-        if not self.effective_blocked or reward_id in self.portal_reward_claims:
-            return False
-        self.portal_reward_claims.add(reward_id)
-        await self.async_save()
-        self.notify()
-        return True
+        async with self._portal_lock:
+            if not self.effective_blocked or reward_id in self.portal_reward_claims:
+                return False
+            self.portal_reward_claims.add(reward_id)
+            await self.async_save()
+            self.notify()
+            return True
 
     async def async_release_portal_reward(self, reward_id: str) -> None:
         """Release a reservation only when Home Assistant rejected the press."""
@@ -166,7 +177,7 @@ class PcRuntime:
         self.notify()
         return True
 
-    async def async_grant_parent_override(self) -> datetime:
+    async def async_grant_parent_override(self) -> datetime | None:
         """Give one parent-PIN hour by reusing the agent-visible extension path.
 
         Agents already render ``extension_until`` as free-time banner mode with a
@@ -174,6 +185,8 @@ class PcRuntime:
         changes. ``extension_used_at`` is deliberately untouched: a parent grant
         neither consumes nor extends the child's own save-work extension.
         """
+        if not self.blocked:
+            return None
         self.extension_until = dt_util.utcnow() + timedelta(
             minutes=PARENT_OVERRIDE_MINUTES
         )

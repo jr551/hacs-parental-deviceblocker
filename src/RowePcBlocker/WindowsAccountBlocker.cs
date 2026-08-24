@@ -41,7 +41,7 @@ public sealed class WindowsAccountBlocker(
     private async Task LogOffAsync(string username, CancellationToken cancellationToken)
     {
         // `quser` returns one row per active session; a failed query simply means no active session.
-        string sessions = await RunAsync("quser", username, cancellationToken, ignoreFailure: true);
+        string sessions = await RunAsync("quser", $"\"{username}\"", cancellationToken, ignoreFailure: true);
         // quser columns are whitespace-padded but the session id can abut the
         // preceding column (e.g. "child rdp-tcp#0  4 Active"), so match a whole
         // number bounded by start/whitespace on the left and whitespace/end on

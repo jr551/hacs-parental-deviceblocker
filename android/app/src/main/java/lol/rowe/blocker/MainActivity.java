@@ -56,9 +56,17 @@ public final class MainActivity extends Activity {
     private boolean pinDialogShowing;
     private int pinFailures;
 
+    private void loadPinFailures() {
+        pinFailures = getSharedPreferences("rowe_blocker", MODE_PRIVATE).getInt("pin_failures", 0);
+    }
+
+    private void savePinFailures() {
+        getSharedPreferences("rowe_blocker", MODE_PRIVATE).edit().putInt("pin_failures", pinFailures).apply();
+    }
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        loadPinFailures();
         setContentView(R.layout.activity_main);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -167,10 +175,12 @@ public final class MainActivity extends Activity {
                     pinDialogShowing = false;
                     if (ParentPin.verify(this, input.getText().toString().trim())) {
                         pinFailures = 0;
+                        savePinFailures();
                         unlockSetup();
                         return;
                     }
                     pinFailures++;
+                    savePinFailures();
                     if (pinFailures >= ParentPin.MAX_ATTEMPTS) {
                         Toast.makeText(this, "Incorrect PIN. Closing.", Toast.LENGTH_LONG).show();
                         finish();
