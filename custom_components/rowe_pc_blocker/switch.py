@@ -53,7 +53,7 @@ class PcBlockedSwitch(ParentalDeviceEntity, SwitchEntity, RestoreEntity):
     async def async_turn_off(self, **kwargs) -> None:
         # Unblocking is a parent action: allow admins and automations/scripts
         # (no user context), refuse everyone else and tell the parents.
-        context = self.context
+        context = getattr(self, "context", None) or getattr(self, "_context", None)
         if context is not None and context.user_id:
             user = await self.hass.auth.async_get_user(context.user_id)
             if user is not None and not user.is_admin:
