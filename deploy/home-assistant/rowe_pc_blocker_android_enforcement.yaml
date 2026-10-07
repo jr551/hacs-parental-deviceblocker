@@ -1,0 +1,37 @@
+# Example only: replace every entity and notification service before use.
+# Android fails open. This alert tells a parent when that happened during a
+# requested block, or when Accessibility was switched off.
+- id: parental_device_blocker_android_enforcement_alert
+  alias: Parental Device Blocker - Android enforcement needs a parent
+  description: >-
+    Alerts when a phone reports fail-open during a block, or Accessibility is off.
+  mode: queued
+  max: 10
+  trigger:
+    - platform: event
+      event_type: rowe_pc_blocker_enforcement_degraded
+  action:
+    - variables:
+        child: "{{ trigger.event.data.device_name }}"
+        status: "{{ trigger.event.data.status }}"
+        message: >-
+          {{ child }}'s phone reported {{ status }}.
+          Treat the phone as unblocked until Enforcement status is enforcing
+          or monitoring again. Accessibility off and uninstall are still possible.
+    - service: persistent_notification.create
+      data:
+        title: "Phone block is not enforced - {{ child }}"
+        message: "{{ message }}"
+        notification_id: "parental_device_android_{{ trigger.event.data.device_id }}"
+    - service: notify.parent_one
+      data:
+        message: "{{ message }}"
+    - service: notify.parent_two
+      data:
+        message: "{{ message }}"
+    - service: notify.mobile_app_parent_phone
+      data:
+        title: "Phone block is not enforced - {{ child }}"
+        message: "{{ message }}"
+        data:
+          tag: "parental_device_android_{{ trigger.event.data.device_id }}"

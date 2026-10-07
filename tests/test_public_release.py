@@ -32,6 +32,9 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertIn("PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY", script)
         self.assertIn("SIGNING_KEY_ID", script)
         self.assertIn("ARG SIGNING_KEY_ID", dockerfile)
+        self.assertIn("assembleRelease", dockerfile)
+        self.assertIn("android-release.keystore", script)
+        self.assertIn('mode="${1:-release}"', script)
         self.assertNotIn('if [[ -f "$legacy_keystore_dir/android-debug.keystore" ]]', script)
 
     def test_household_only_deployment_files_are_not_published(self):

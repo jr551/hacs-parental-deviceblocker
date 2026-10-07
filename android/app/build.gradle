@@ -10,10 +10,23 @@ android {
         applicationId "lol.rowe.blocker"
         minSdk 29
         targetSdk 35
-        versionCode 12
-        versionName "0.4.6"
+        versionCode 13
+        versionName "0.4.7"
 
         testInstrumentationRunner "android.test.InstrumentationTestRunner"
+    }
+
+    def releaseStore = System.getenv("PDB_STORE_FILE")
+
+    signingConfigs {
+        release {
+            if (releaseStore) {
+                storeFile file(releaseStore)
+                storePassword System.getenv("PDB_STORE_PASSWORD")
+                keyAlias System.getenv("PDB_KEY_ALIAS")
+                keyPassword System.getenv("PDB_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -22,7 +35,11 @@ android {
             versionNameSuffix "-debug"
         }
         release {
+            debuggable false
             minifyEnabled false
+            if (releaseStore) {
+                signingConfig signingConfigs.release
+            }
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
     }

@@ -14,7 +14,7 @@ COPY . .
 RUN gradle --no-daemon testDebugUnitTest
 RUN gradle --no-daemon lintDebug
 
-FROM test AS build
+FROM test AS debug
 ARG SIGNING_KEY_ID
 RUN --mount=type=secret,id=parental_device_blocker_keystore,required=true \
     test -n "$SIGNING_KEY_ID" && \
@@ -23,3 +23,10 @@ RUN --mount=type=secret,id=parental_device_blocker_keystore,required=true \
       -Pandroid.injected.signing.store.password=android \
       -Pandroid.injected.signing.key.alias=androiddebugkey \
       -Pandroid.injected.signing.key.password=android
+
+FROM test AS release
+ARG SIGNING_KEY_ID
+# assembleRelease (non-debug, release-signed) is performed by assemble-release.sh.
+RUN --mount=type=secret,id=parental_device_blocker_keystore,required=true \
+    --mount=type=secret,id=parental_device_blocker_signing,required=true \
+    sh /workspace/assemble-release.sh

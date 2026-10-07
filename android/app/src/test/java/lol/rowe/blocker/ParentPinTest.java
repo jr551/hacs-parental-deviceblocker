@@ -41,6 +41,18 @@ public class ParentPinTest {
     }
 
     @Test
+    public void lockoutStartsAfterTwoFailuresAndLastsFifteenMinutes() {
+        assertEquals(0L, ParentPin.lockoutDeadline(1, 1_000L));
+        long deadline = ParentPin.lockoutDeadline(ParentPin.MAX_ATTEMPTS, 1_000L);
+        assertEquals(1_000L + ParentPin.LOCKOUT_MILLIS, deadline);
+        assertEquals(ParentPin.LOCKOUT_MILLIS, ParentPin.remainingMillis(deadline, 1_000L));
+        assertEquals(0L, ParentPin.remainingMillis(deadline, deadline));
+        assertEquals(15, ParentPin.wholeMinutesRemaining(ParentPin.LOCKOUT_MILLIS));
+        assertEquals(1, ParentPin.wholeMinutesRemaining(1L));
+        assertEquals(0, ParentPin.wholeMinutesRemaining(0L));
+    }
+
+    @Test
     public void storedPinMustMatchItsSaltedDigest() {
         String salt = "abcd";
         String expected = ParentPin.digest("6789", salt);

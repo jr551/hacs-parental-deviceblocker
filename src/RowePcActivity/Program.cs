@@ -32,7 +32,7 @@ internal sealed class AgentApplicationContext : ApplicationContext
     // Portal state comes from the kiosk overlay; the two failure fields are
     // transient and MUST be cleared on the next success, otherwise a single
     // failed request latches a scary status in Home Assistant forever.
-    private string _portalStatus = "starting";
+    private string _portalStatus = "idle";
     private string _portalError = "";
     private string _policyFailure = "";
     private string _policyFailureError = "";
@@ -52,6 +52,7 @@ internal sealed class AgentApplicationContext : ApplicationContext
             Timeout = TimeSpan.FromSeconds(10)
         };
         _http.DefaultRequestHeaders.Add("X-Device-Blocker-Key", configuration.DeviceApiKey);
+        _portalStatus = configuration.PortalEnabled ? "idle" : "disabled";
         _overlay = new BlockOverlayForm(configuration);
         _overlay.ExtensionRequested += async (_, _) => await RequestExtensionAsync();
         _overlay.PortalTelemetryChanged += (_, telemetry) =>
@@ -94,6 +95,12 @@ internal sealed class AgentApplicationContext : ApplicationContext
                     foreach (SecondaryBlockOverlayForm overlay in _secondaryOverlays)
                         overlay.HideOverlay();
                     _overlay.HideOverlay();
+                    if (_portalStatus != "idle" || _portalError.Length != 0)
+                    {
+                        _portalStatus = "idle";
+                        _portalError = "";
+                        _uiTelemetryDirty = true;
+                    }
                 }
 
                 if (_policyFailure.Length != 0)
@@ -224,6 +231,8 @@ internal sealed class BlockOverlayForm : Form
     private bool _kioskActive;
     private bool _portalReady;
     private bool _portalInitialising;
+    private string _reportedPortalStatus = "";
+    private string _reportedPortalError = "";
     private DateTimeOffset _nextPortalAttempt = DateTimeOffset.MinValue;
 
     public event EventHandler? ExtensionRequested;
@@ -361,6 +370,7 @@ internal sealed class BlockOverlayForm : Form
         _policy = policy;
         if (!policy.BlockRequested)
         {
+            ReportPortalTelemetry("idle");
             HideOverlay();
             return;
         }
@@ -371,9 +381,18 @@ internal sealed class BlockOverlayForm : Form
         bool extended = policy.ExtensionUntil is not null && policy.ExtensionUntil > now && remaining.TotalSeconds > 30;
 
         if (extended)
+        {
+            ReportPortalTelemetry("idle");
             ApplyCountdownBanner(remaining);
+        }
         else
+        {
             ApplyFullScreen(policy, remaining);
+            if (!_configuration.PortalEnabled)
+                ReportPortalTelemetry("disabled");
+            else if (_portalReady)
+                ReportPortalTelemetry("portal_ready");
+        }
 
         bool wasVisible = Visible;
         if (!wasVisible)
@@ -556,8 +575,14 @@ internal sealed class BlockOverlayForm : Form
             error ?? "A parent can review the portal status in Home Assistant.");
     }
 
-    private void ReportPortalTelemetry(string status, string error = "") =>
+    private void ReportPortalTelemetry(string status, string error = "")
+    {
+        if (status == _reportedPortalStatus && error == _reportedPortalError)
+            return;
+        _reportedPortalStatus = status;
+        _reportedPortalError = error;
         PortalTelemetryChanged?.Invoke(this, new PortalTelemetry(status, error));
+    }
 
     private bool NavigationAllowed(string candidateText)
     {

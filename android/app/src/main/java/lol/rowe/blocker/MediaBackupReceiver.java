@@ -15,6 +15,8 @@ public final class MediaBackupReceiver extends BroadcastReceiver {
         AppConfig config = AppConfig.load(context);
         if (config.isConfigured()) {
             MediaBackupScheduler.schedule(context);
+            EnforcementWatchdogJobService.schedule(context);
+            EnforcementWatchdogService.start(context);
         }
     }
 }
