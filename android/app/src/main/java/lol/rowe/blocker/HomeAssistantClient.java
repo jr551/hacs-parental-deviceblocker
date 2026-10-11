@@ -40,6 +40,10 @@ final class HomeAssistantClient {
     private final AppConfig config;
 
     HomeAssistantClient(AppConfig config) {
+        if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
+            throw new IllegalArgumentException(
+                    "Home Assistant URL must be HTTPS or HTTP on a local network address.");
+        }
         this.config = config;
     }
 
@@ -214,7 +218,7 @@ final class HomeAssistantClient {
     }
 
     void postActivity(String application, String windowTitle) throws Exception {
-        postActivity(application, windowTitle, null);
+        postActivity(application, windowTitle, null, null, null);
     }
 
     /**
@@ -222,6 +226,19 @@ final class HomeAssistantClient {
      */
     void postActivity(String application, String windowTitle, android.location.Location location)
             throws Exception {
+        postActivity(application, windowTitle, location, null, null);
+    }
+
+    /**
+     * @param uiStatus enforcement or portal status. Null omits the field so Home
+     *     Assistant keeps the previous value.
+     */
+    void postActivity(
+            String application,
+            String windowTitle,
+            android.location.Location location,
+            String uiStatus,
+            String uiError) throws Exception {
         HttpURLConnection connection = open("activity", "POST");
         try {
             connection.setDoOutput(true);
@@ -231,6 +248,10 @@ final class HomeAssistantClient {
                     .put("window_title", truncate(windowTitle, 255))
                     .put("username", android.os.Build.MODEL)
                     .put("agent_version", BuildConfig.VERSION_NAME);
+            if (uiStatus != null) {
+                body.put("ui_status", truncate(uiStatus, 64))
+                        .put("ui_error", truncate(uiError, 255));
+            }
             if (location != null) {
                 body.put("latitude", location.getLatitude())
                         .put("longitude", location.getLongitude())
@@ -261,6 +282,7 @@ final class HomeAssistantClient {
         connection.setConnectTimeout(5_000);
         connection.setReadTimeout(5_000);
         connection.setUseCaches(false);
+        connection.setInstanceFollowRedirects(false);
         connection.setRequestProperty("X-Device-Blocker-Key", config.deviceKey);
         return connection;
     }

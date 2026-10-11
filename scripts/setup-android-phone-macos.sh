@@ -18,7 +18,7 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-package="lol.rowe.blocker.debug"          # debug builds carry the .debug suffix
+package="lol.rowe.blocker"               # release APK; debug builds add .debug below
 service="$package/lol.rowe.blocker.BlockAccessibilityService"
 prefs="rowe_blocker"
 
@@ -76,7 +76,19 @@ ok "$brand $model on Android $release"
 step "3/8  Installing the app"
 if [[ $do_install -eq 1 ]]; then
   if [[ -z "$apk" ]]; then
-    apk="$(ls -t "$repo_root"/artifacts/android/*.apk 2>/dev/null | head -1 || true)"
+    version_name="$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' "$repo_root/android/app/build.gradle" | head -1)"
+    if [[ -n "$version_name" ]]; then
+      apk="$repo_root/artifacts/android/ParentalDeviceBlocker-${version_name}.apk"
+      [[ -f "$apk" ]] || apk=""
+    fi
+    if [[ -z "$apk" ]]; then
+      die "No APK found for version ${version_name:-unknown}. Build one with scripts/build-android-docker.sh or pass --apk PATH."
+    fi
+  fi
+  if [[ "$apk" == *-debug.apk ]]; then
+    package="lol.rowe.blocker.debug"
+    service="$package/lol.rowe.blocker.BlockAccessibilityService"
+    warn "This is a debug APK. Use the release APK for a child's phone."
   fi
   [[ -n "$apk" && -f "$apk" ]] || die "No APK found. Build one with scripts/build-android-docker.sh or pass --apk PATH."
   ok "using $(basename "$apk")"
@@ -111,9 +123,10 @@ fi
 ha_url="${ha_url%/}"
 
 step "5/8  Writing the app configuration"
-# The debug build is debuggable, so its own sandbox is writable via run-as. This
-# saves typing a long key on a phone keyboard; the config screen is PIN-gated
-# anyway. If run-as is refused, fall back to typing it in the app.
+# Debug builds are debuggable, so run-as can seed plaintext preferences. The
+# app seals the device key into the Android Keystore on next launch and deletes
+# the plaintext copy. Release builds are not debuggable: run-as will fail and
+# the parent types the key into the PIN-gated screen.
 prefs_xml=$(cat <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -157,10 +170,14 @@ step "7/8  Battery — the usual reason enforcement dies silently"
 adb_cmd shell dumpsys deviceidle whitelist "+$package" >/dev/null 2>&1 &&
   ok "added to the doze whitelist" || warn "Could not set the doze whitelist over adb."
 cat <<SAMSUNG
-   Samsung's own battery manager still needs two manual changes:
+   Samsung's own battery manager still needs manual changes
+   (Galaxy S20, S20+ / SM-G986B, and Galaxy S22):
      • Settings → Apps → Parental Device Blocker → Battery → Unrestricted
-     • Settings → Battery → Background usage limits →
-         make sure the app is NOT in "Sleeping"/"Deep sleeping" apps
+     • Settings → Battery and device care → Battery → Background usage limits
+         make sure the app is NOT in "Sleeping" or "Deep sleeping" apps
+     • Turn off "Put unused apps to sleep" for this app, or add it to Never sleeping
+     • The S22 is often stricter than the S20. Re-check after One UI updates
+       and after the phone has sat idle overnight.
 SAMSUNG
 adb_cmd shell am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d "package:$package" >/dev/null 2>&1
 pause
@@ -213,6 +230,11 @@ Setup finished. Worth confirming in Home Assistant:
   • toggling its Blocked switch shows the block screen, then turn it back off
 Reminders:
   • The config screen is protected by the parent PIN you just created.
+    Two wrong attempts lock it for 15 minutes. There is no default PIN.
+  • Turn Developer options and USB debugging OFF before handing the phone back.
   • Samsung battery settings are the most common cause of blocking stopping
     days later; re-check them if enforcement ever goes quiet.
+  • In Home Assistant, Enforcement status should read monitoring while allowed.
+    fail_open and accessibility_disabled mean the phone is not enforcing.
+  • This is not Device Owner. Uninstall and Accessibility off still bypass it.
 DONE

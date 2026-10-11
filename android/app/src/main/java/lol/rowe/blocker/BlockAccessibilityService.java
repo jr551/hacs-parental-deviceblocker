@@ -21,7 +21,10 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private final AtomicBoolean pollRunning = new AtomicBoolean();
     private final AtomicBoolean pollScheduled = new AtomicBoolean();
     private volatile Policy currentPolicy = Policy.UNBLOCKED;
+    private volatile String enforcementStatus = EnforcementStatus.MONITORING;
+    private volatile String enforcementDetail = "";
     private volatile String foregroundPackage = "";
+    private long lastStatusPost;
     private volatile long lastBlockLaunch;
     private String lastReportedPackage = "";
     private String lastReportedTitle = "";
@@ -35,6 +38,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
         decision = new PolicyDecision(getPackageName());
         if (AppConfig.load(this).isConfigured()) {
             MediaBackupScheduler.schedule(this);
+            EnforcementWatchdogJobService.schedule(this);
+            EnforcementWatchdogService.start(this);
         }
         // onServiceConnected can run more than once for the same instance; schedule one poller.
         if (pollScheduled.compareAndSet(false, true)) {
@@ -60,7 +65,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
-        failOpen();
+        failOpen(EnforcementStatus.ACCESSIBILITY_INTERRUPTED, "Accessibility was interrupted.");
     }
 
     @Override
@@ -68,7 +73,27 @@ public final class BlockAccessibilityService extends AccessibilityService {
         if (activeInstance == this) {
             activeInstance = null;
         }
-        failOpen();
+        currentPolicy = Policy.UNBLOCKED;
+        enforcementStatus = EnforcementStatus.ACCESSIBILITY_DISABLED;
+        enforcementDetail = "Accessibility service stopped.";
+        EnforcementNote.record(this, enforcementStatus, enforcementDetail);
+        MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
+        String status = enforcementStatus;
+        String detail = enforcementDetail;
+        String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
+        Thread reporter = new Thread(() -> {
+            try {
+                AppConfig config = AppConfig.load(this);
+                if (config.isConfigured()) {
+                    new HomeAssistantClient(config).postActivity(
+                            application, "", null, status, detail);
+                }
+            } catch (Exception ignored) {
+                // The watchdog job reports the same state if the process survives.
+            }
+        });
+        reporter.setDaemon(true);
+        reporter.start();
         policyExecutor.shutdownNow();
         activityExecutor.shutdownNow();
         super.onDestroy();
@@ -88,11 +113,15 @@ public final class BlockAccessibilityService extends AccessibilityService {
         try {
             AppConfig config = AppConfig.load(this);
             if (!config.isConfigured()) {
-                failOpen();
+                failOpen(EnforcementStatus.NOT_CONFIGURED, "Home Assistant is not configured.");
                 return;
             }
             Policy policy = new HomeAssistantClient(config).getPolicy();
             currentPolicy = policy;
+            publishStatus(
+                    policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
+                    "",
+                    false);
             MainActivity.applyPolicySnapshot(policy);
             if (decision.shouldShowBlockScreen(policy.shouldCaptureForeground(), foregroundPackage)) {
                 showBlockScreen(policy);
@@ -103,8 +132,13 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 // enforcement turns it into a hard block.
                 showBlockScreen(policy);
             }
-        } catch (Exception ignored) {
-            failOpen();
+        } catch (Exception exception) {
+            String detail = exception.getMessage();
+            failOpen(
+                    EnforcementStatus.FAIL_OPEN,
+                    detail == null || detail.trim().isEmpty()
+                            ? "Could not verify Home Assistant policy."
+                            : detail);
         } finally {
             pollRunning.set(false);
         }
@@ -128,7 +162,12 @@ public final class BlockAccessibilityService extends AccessibilityService {
                     // cheap but pointless on every foreground-app change.
                     android.location.Location location =
                             heartbeat ? PassiveLocation.latest(this) : null;
-                    new HomeAssistantClient(config).postActivity(packageName, title, location);
+                    new HomeAssistantClient(config).postActivity(
+                            packageName,
+                            title,
+                            location,
+                            enforcementStatus,
+                            enforcementDetail);
                 }
             } catch (Exception ignored) {
                 // The next foreground event or heartbeat retries.
@@ -156,9 +195,37 @@ public final class BlockAccessibilityService extends AccessibilityService {
         mainHandler.post(() -> startActivity(intent));
     }
 
-    private void failOpen() {
+    private void failOpen(String status, String detail) {
         currentPolicy = Policy.UNBLOCKED;
         MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
+        publishStatus(status, detail == null ? "" : detail, true);
+    }
+
+    private void publishStatus(String status, String detail, boolean force) {
+        boolean changed = !status.equals(enforcementStatus) || !detail.equals(enforcementDetail);
+        enforcementStatus = status;
+        enforcementDetail = detail;
+        long now = SystemClock.elapsedRealtime();
+        if (!changed && !force) {
+            return;
+        }
+        if (!changed && now - lastStatusPost < 60_000) {
+            return;
+        }
+        lastStatusPost = now;
+        EnforcementNote.record(this, status, detail);
+        String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
+        activityExecutor.execute(() -> {
+            try {
+                AppConfig config = AppConfig.load(this);
+                if (config.isConfigured()) {
+                    new HomeAssistantClient(config).postActivity(
+                            application, "", null, status, detail);
+                }
+            } catch (Exception ignored) {
+                // The next poll or watchdog retries.
+            }
+        });
     }
 
     private static String eventTitle(CharSequence className) {

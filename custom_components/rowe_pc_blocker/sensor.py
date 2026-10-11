@@ -12,6 +12,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         ActiveApplicationSensor(runtime),
         ActiveWindowSensor(runtime),
         PortalStatusSensor(runtime),
+        EnforcementStatusSensor(runtime),
         ScreenAssessmentSensor(runtime),
         ScreenSafetySensor(runtime),
         DailyActivitySummarySensor(runtime),
@@ -79,6 +80,35 @@ class PortalStatusSensor(ParentalDeviceEntity, SensorEntity):
                 else None
             ),
             "agent_version": self.runtime.agent_version or None,
+        }
+
+
+class EnforcementStatusSensor(ParentalDeviceEntity, SensorEntity):
+    """Android fail-open / Accessibility state, and the same field on Windows."""
+
+    _attr_name = "Enforcement status"
+    _attr_icon = "mdi:shield-alert"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_enforcement_status"
+
+    @property
+    def native_value(self) -> str:
+        return self.runtime.ui_status or "unknown"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "detail": self.runtime.ui_error or None,
+            "reported_at": (
+                self.runtime.ui_reported_at.isoformat()
+                if self.runtime.ui_reported_at
+                else None
+            ),
+            "fail_open": self.runtime.ui_status == "fail_open",
+            "accessibility_disabled": self.runtime.ui_status
+            == "accessibility_disabled",
         }
 
 

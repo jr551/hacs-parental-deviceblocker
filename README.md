@@ -38,7 +38,9 @@ They are compatibility tokens, not current product branding. New UI, documentati
 - Every device has its own randomly generated API key.
 - Device endpoints accept that narrow key, not a Home Assistant administrator token.
 - There is no universal parent PIN. Parent override is disabled until a PIN is explicitly configured in that device's integration options.
-- The Android configuration screen requires a parent-chosen local PIN on first launch; no recovery or factory PIN exists.
+- The Android configuration screen requires a parent-chosen local PIN on first launch; no recovery or factory PIN exists. Two wrong local PIN attempts lock that screen for 15 minutes.
+- The Android device API key is sealed with the Android Keystore. A leftover plaintext value is migrated on the next launch.
+- Android reports fail-open and Accessibility-off to the Enforcement status sensor. Blocking still fails open; it does not keep a phone locked through a Home Assistant or network outage.
 - Parent-override failures are rate limited after two incorrect attempts.
 - The built-in VNC client is screenshot-only and implements no keyboard, pointer, clipboard-write, or file-transfer operations.
 - Screen captures are resized in memory, sent once to the configured provider, and discarded.
@@ -66,13 +68,13 @@ To enable the one-hour parent override, open the integration entry's options and
 Build on macOS or Linux with .NET 8, or with Docker when .NET is absent:
 
 ```bash
-./scripts/build-release.sh 0.9.33
+./scripts/build-release.sh 0.9.34
 ```
 
 The script creates:
 
-- `artifacts/ParentalDeviceBlocker-0.9.33-win-x64.zip`;
-- `artifacts/parental_device_blocker-hacs-0.9.33.zip`.
+- `artifacts/ParentalDeviceBlocker-0.9.34-win-x64.zip`;
+- `artifacts/parental_device_blocker-hacs-0.9.34.zip`.
 
 Extract the Windows ZIP and run an Administrator PowerShell prompt:
 
@@ -109,33 +111,40 @@ A self-hosted alternative can be configured without an address bar:
 
 Do not put Home Assistant tokens or passwords in a custom URL.
 
+While a PC is not blocked, the activity app reports portal status `idle` (or `disabled` when the portal was not enabled). It no longer leaves Home Assistant on `starting` for the whole unblocked session. `idle` and `disabled` are healthy. Real portal failures still use a `portal_` status and raise `rowe_pc_blocker_portal_error`.
+
 ## Android package
 
-The Docker build runs unit tests, lint, and signed APK assembly:
+Home Assistant **0.9.34** and Android **0.4.7** ship together. Install the integration from this release before treating an older GitHub release asset as the current phone agent. The phone package is not part of the HACS zip.
+
+The Docker build runs unit tests, lint, and a signed **non-debuggable** release APK:
 
 ```bash
 ./scripts/build-android-docker.sh
 ```
 
-The output is `artifacts/android/ParentalDeviceBlocker-0.4.6-debug.apk`. This is a sideloadable debug-signed build for supervised testing, not a Play Store package.
+The output is `artifacts/android/ParentalDeviceBlocker-0.4.7.apk` plus `ParentalDeviceBlocker-0.4.7.apk.sha256`. This is still a sideload package, not a Play Store package. `./scripts/build-android-docker.sh debug` remains available for disposable emulator tests that need a user-installed CA. Do not install the debug APK on a phone a child uses.
 
-The first build creates a protected generic signing key under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.6; uninstalling clears its local PIN, configuration, and backup index.
+The first release build creates a protected signing key and password file under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.7; uninstalling clears its local PIN, configuration, and backup index.
 
-On first launch, the parent must create and confirm a local configuration PIN before entering the Home Assistant URL, device ID, and device key. There is no default PIN. Losing it requires clearing app data and provisioning the app again.
+On first launch, the parent must create and confirm a local configuration PIN before entering the Home Assistant URL, device ID, and device key. There is no default PIN. Two wrong attempts lock the configuration screen for 15 minutes. Losing the PIN requires clearing app data and provisioning the app again. Use HTTPS. Plain HTTP is accepted only for local names such as `http://192.168.x.x`, `http://homeassistant.local`, or a single-label LAN host.
 
 After configuration:
 
 1. Enable **Parental Device Blocker** under Android Accessibility settings.
 2. Allow restricted settings if Android requests it.
-3. Set battery use to unrestricted and exclude the app from sleep/optimization. On Samsung Galaxy S20 (One UI / Android 13) this is Settings → Apps → Parental Device Blocker → Battery → Unrestricted; also disable Put unused apps to sleep.
+3. Tap **Allow unrestricted battery** in the app, then on Samsung set Battery → Unrestricted and remove the app from Sleeping apps, Deep sleeping apps, and Put unused apps to sleep. Re-check this after One UI updates. Galaxy S20 (SM-G980F/G981B), S20+ (SM-G986B), and Galaxy S22 follow the same One UI path; the S22 is often more aggressive, so prove it with an overnight idle and a few days of use before relying on it.
 4. On Xiaomi/MIUI, enable Autostart and background pop-up windows.
-5. Confirm online/activity telemetry while the HA switch is off.
-6. Perform a supervised block test and verify WhatsApp, Maps, Back, Home, Settings redirection, and emergency calling.
-7. Disconnect Home Assistant during a block and verify that the phone immediately fails open.
+5. Turn Developer options and USB debugging **off** after setup.
+6. Confirm the agent online sensor and Enforcement status (`monitoring`) while the block switch is off.
+7. Perform a supervised block test and verify WhatsApp, Maps, Back, Home, and emergency calling.
+8. Disconnect Home Assistant during a block and verify that the phone fails open and Enforcement status becomes `fail_open` (or the agent goes offline if the report cannot be delivered).
 
-Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13) is supported with targetSdk 35 and minSdk 29. The 0.4.6 build correctly handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED) for newer Samsung devices, and treats wireless charging as external power. Note: WhatsApp/Maps `getLaunchIntentForPackage` only resolves the current user/profile — clones in Samsung Secure Folder / Dual Messenger work profile are isolated and will not be launched; the primary profile’s install is used. Test Secure Folder explicitly if you rely on it.
+The deploy checklist is [docs/android-deploy-checklist.md](docs/android-deploy-checklist.md). Pilot one phone and soak it before a second phone.
 
-Accessibility enforcement is parental friction, not kiosk-grade Device Owner enforcement. A determined user may disable Accessibility, uninstall the app, enter safe mode, or reset the phone.
+Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13), S20+ (SM-G986B), and Galaxy S22 (Android 13–14) are the documented targets, with targetSdk 35 and minSdk 29. The 0.4.7 build handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED), and treats wireless charging as external power. WhatsApp/Maps `getLaunchIntentForPackage` only resolves the current user/profile — clones in Samsung Secure Folder / Dual Messenger are isolated and will not be launched; the primary profile’s install is used. Test Secure Folder explicitly if you rely on it.
+
+Accessibility enforcement is parental friction, not Device Owner enforcement. There is no uninstall protection in this build. A determined user may disable Accessibility, uninstall the app, enter safe mode, or reset the phone. Disabling Accessibility is reported to Home Assistant while the watchdog process is still alive; uninstalling the app makes the agent go offline. A foreground watchdog and a 15-minute backup job reduce silent Samsung kills, but they do not survive Force stop.
 
 ### Optional S3 photo and video backup
 
@@ -174,7 +183,7 @@ Restrict Home Assistant access and configure an appropriate Recorder retention p
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m compileall -q custom_components/rowe_pc_blocker
 ./scripts/build-android-docker.sh
-./scripts/build-release.sh 0.9.33
+./scripts/build-release.sh 0.9.34
 ```
 
 `tests/android_fake_stack.py` provides a synthetic HTTPS Home Assistant/S3

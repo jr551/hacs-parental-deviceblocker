@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published release only. This project remains experimental and is not a tamper-proof security boundary.
+Security fixes are provided for the latest published release only. This project remains experimental and is not a tamper-proof security boundary. Android enforcement is an Accessibility friction control: it fails open, and it does not stop uninstall or a user turning Accessibility off.
 
 ## Reporting a vulnerability
 

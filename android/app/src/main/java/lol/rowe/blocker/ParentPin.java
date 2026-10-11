@@ -23,6 +23,8 @@ final class ParentPin {
     private static final String HASH = "parent_pin_hash";
     static final int MIN_LENGTH = 4;
     static final int MAX_ATTEMPTS = 2;
+    /** Matches the Home Assistant parent-override lockout. */
+    static final long LOCKOUT_MILLIS = 15L * 60L * 1000L;
 
     private ParentPin() {
     }
@@ -81,6 +83,27 @@ final class ParentPin {
             builder.append(Character.forDigit(item & 0xF, 16));
         }
         return builder.toString();
+    }
+
+    static long lockoutDeadline(int failures, long nowMillis) {
+        if (failures < MAX_ATTEMPTS) {
+            return 0L;
+        }
+        return nowMillis + LOCKOUT_MILLIS;
+    }
+
+    static long remainingMillis(long deadline, long nowMillis) {
+        if (deadline <= nowMillis) {
+            return 0L;
+        }
+        return deadline - nowMillis;
+    }
+
+    static int wholeMinutesRemaining(long remainingMillis) {
+        if (remainingMillis <= 0L) {
+            return 0;
+        }
+        return (int) Math.max(1L, (remainingMillis + 59_999L) / 60_000L);
     }
 
     static boolean constantTimeEquals(String left, String right) {

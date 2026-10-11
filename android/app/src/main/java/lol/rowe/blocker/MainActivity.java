@@ -3,15 +3,15 @@ package lol.rowe.blocker;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ComponentName;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.InputType;
-import android.text.TextUtils;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -55,13 +55,21 @@ public final class MainActivity extends Activity {
     private boolean setupUnlocked;
     private boolean pinDialogShowing;
     private int pinFailures;
+    private long pinLockoutUntil;
 
     private void loadPinFailures() {
-        pinFailures = getSharedPreferences("rowe_blocker", MODE_PRIVATE).getInt("pin_failures", 0);
+        android.content.SharedPreferences preferences =
+                getSharedPreferences("rowe_blocker", MODE_PRIVATE);
+        pinFailures = preferences.getInt("pin_failures", 0);
+        pinLockoutUntil = preferences.getLong("pin_lockout_until", 0L);
     }
 
     private void savePinFailures() {
-        getSharedPreferences("rowe_blocker", MODE_PRIVATE).edit().putInt("pin_failures", pinFailures).apply();
+        getSharedPreferences("rowe_blocker", MODE_PRIVATE)
+                .edit()
+                .putInt("pin_failures", pinFailures)
+                .putLong("pin_lockout_until", pinLockoutUntil)
+                .apply();
     }
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -94,6 +102,7 @@ public final class MainActivity extends Activity {
                 view -> requestMediaBackupAccess());
         findViewById(R.id.accessibilityButton).setOnClickListener(
                 view -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        findViewById(R.id.batteryButton).setOnClickListener(view -> requestUnrestrictedBattery());
         findViewById(R.id.whatsAppButton).setOnClickListener(
                 view -> launchPackage(PolicyDecision.WHATSAPP, "WhatsApp is not installed."));
         findViewById(R.id.mapsButton).setOnClickListener(
@@ -116,6 +125,8 @@ public final class MainActivity extends Activity {
         executor.scheduleWithFixedDelay(this::refreshPolicy, 0, 3, TimeUnit.SECONDS);
         if (AppConfig.load(this).isConfigured()) {
             MediaBackupScheduler.schedule(this);
+            EnforcementWatchdogJobService.schedule(this);
+            EnforcementWatchdogService.start(this);
         }
     }
 
@@ -160,6 +171,21 @@ public final class MainActivity extends Activity {
             promptForNewParentPin(true);
             return;
         }
+        long now = System.currentTimeMillis();
+        long remaining = ParentPin.remainingMillis(pinLockoutUntil, now);
+        if (remaining == 0L && pinLockoutUntil != 0L) {
+            pinFailures = 0;
+            pinLockoutUntil = 0L;
+            savePinFailures();
+        } else if (remaining == 0L && pinFailures >= ParentPin.MAX_ATTEMPTS) {
+            pinLockoutUntil = ParentPin.lockoutDeadline(pinFailures, now);
+            savePinFailures();
+            remaining = ParentPin.remainingMillis(pinLockoutUntil, now);
+        }
+        if (remaining > 0L) {
+            showPinLockout(remaining);
+            return;
+        }
         pinDialogShowing = true;
         EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
@@ -175,21 +201,42 @@ public final class MainActivity extends Activity {
                     pinDialogShowing = false;
                     if (ParentPin.verify(this, input.getText().toString().trim())) {
                         pinFailures = 0;
+                        pinLockoutUntil = 0L;
                         savePinFailures();
                         unlockSetup();
                         return;
                     }
                     pinFailures++;
-                    savePinFailures();
                     if (pinFailures >= ParentPin.MAX_ATTEMPTS) {
-                        Toast.makeText(this, "Incorrect PIN. Closing.", Toast.LENGTH_LONG).show();
-                        finish();
+                        pinLockoutUntil = ParentPin.lockoutDeadline(
+                                pinFailures, System.currentTimeMillis());
+                        savePinFailures();
+                        showPinLockout(ParentPin.remainingMillis(
+                                pinLockoutUntil, System.currentTimeMillis()));
                     } else {
+                        savePinFailures();
                         Toast.makeText(this, "Incorrect PIN.", Toast.LENGTH_SHORT).show();
                         promptForParentPin();
                     }
                 })
                 .setNegativeButton("Close", (dialog, which) -> {
+                    pinDialogShowing = false;
+                    finish();
+                })
+                .show();
+    }
+
+    private void showPinLockout(long remainingMillis) {
+        if (isFinishing() || pinDialogShowing) {
+            return;
+        }
+        pinDialogShowing = true;
+        int minutes = ParentPin.wholeMinutesRemaining(remainingMillis);
+        new AlertDialog.Builder(this)
+                .setTitle("Parent PIN locked")
+                .setMessage("Too many wrong PINs. Try again in " + minutes + " minute(s).")
+                .setCancelable(false)
+                .setPositiveButton("Close", (dialog, which) -> {
                     pinDialogShowing = false;
                     finish();
                 })
@@ -239,6 +286,8 @@ public final class MainActivity extends Activity {
                 }
                 ParentPin.set(this, pin);
                 pinFailures = 0;
+                pinLockoutUntil = 0L;
+                savePinFailures();
                 pinDialogShowing = false;
                 dialog.dismiss();
                 if (initialSetup) {
@@ -321,8 +370,24 @@ public final class MainActivity extends Activity {
             Toast.makeText(this, "Complete all three configuration fields.", Toast.LENGTH_LONG).show();
             return;
         }
-        AppConfig.save(this, config);
+        if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
+            Toast.makeText(
+                    this,
+                    "Use HTTPS, or HTTP only for a local Home Assistant address.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!AppConfig.save(this, config)) {
+            Toast.makeText(
+                    this,
+                    "Could not seal the device key in the Android Keystore. Re-enter the key and try again.",
+                    Toast.LENGTH_LONG).show();
+            updateStatus();
+            return;
+        }
         MediaBackupScheduler.schedule(this);
+        EnforcementWatchdogJobService.schedule(this);
+        EnforcementWatchdogService.start(this);
         Toast.makeText(this, "Configuration saved.", Toast.LENGTH_SHORT).show();
         updateStatus();
         executor.execute(this::refreshPolicy);
@@ -435,13 +500,25 @@ public final class MainActivity extends Activity {
         try {
             AppConfig config = AppConfig.load(this);
             if (!config.isConfigured()) {
-                mainHandler.post(() -> failOpen("Home Assistant is not configured. Blocking is disabled."));
+                mainHandler.post(() -> failOpen(
+                        EnforcementStatus.NOT_CONFIGURED,
+                        "Home Assistant is not configured. Blocking is disabled."));
                 return;
             }
             Policy policy = new HomeAssistantClient(config).getPolicy();
-            mainHandler.post(() -> applyPolicy(policy));
+            mainHandler.post(() -> {
+                EnforcementNote.record(
+                        this,
+                        policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
+                        "");
+                applyPolicy(policy);
+            });
         } catch (Exception exception) {
-            mainHandler.post(() -> failOpen("Cannot verify Home Assistant policy. Blocking is disabled."));
+            String detail = exception.getMessage();
+            String message = detail == null || detail.trim().isEmpty()
+                    ? "Cannot verify Home Assistant policy. Blocking is disabled."
+                    : detail;
+            mainHandler.post(() -> failOpen(EnforcementStatus.FAIL_OPEN, message));
         }
     }
 
@@ -456,10 +533,11 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void failOpen(String message) {
+    private void failOpen(String status, String message) {
+        EnforcementNote.record(this, status, message);
         applyPolicy(Policy.UNBLOCKED);
-        if (!isFinishing()) {
-            statusText.setText(message);
+        if (!isFinishing() && setupUnlocked) {
+            statusText.setText(EnforcementStatus.parentText(status, message));
         }
     }
 
@@ -558,29 +636,61 @@ public final class MainActivity extends Activity {
 
     private void updateStatus() {
         AppConfig config = AppConfig.load(this);
-        if (!config.isConfigured()) {
-            statusText.setText("Enter the Home Assistant device details below.");
+        StringBuilder text = new StringBuilder();
+        if (DeviceKeyStore.needsKeyReentry(this)) {
+            text.append("The sealed device key could not be read. Re-enter the Home Assistant device key.");
+        } else if (!config.isConfigured()) {
+            text.append("Enter the Home Assistant device details below.");
+        } else if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
+            text.append("The saved URL must be HTTPS, or HTTP on a local network address.");
+        } else if (!isAccessibilityEnabled()) {
+            text.append("Configured, but Accessibility enforcement still needs to be enabled.");
+        } else {
+            text.append("Configured. Accessibility enforcement is enabled.");
+        }
+        if (config.isConfigured() && DeviceKeyStore.keystoreUnavailable(this)) {
+            text.append(" Android Keystore sealing failed on the last save.");
+        } else if (config.isConfigured() && !DeviceKeyStore.isSealed(this)) {
+            text.append(" Device key is not sealed in the Android Keystore.");
+        }
+        String note = EnforcementNote.parentText(this);
+        if (!note.isEmpty()) {
+            text.append("\n").append(note);
+        }
+        statusText.setText(text.toString());
+    }
+
+    private void requestUnrestrictedBattery() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 3);
+        }
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        String packageName = getPackageName();
+        if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                Intent request = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                request.setData(Uri.parse("package:" + packageName));
+                startActivity(request);
+            } catch (RuntimeException exception) {
+                openApplicationSettings();
+            }
             return;
         }
-        statusText.setText(isAccessibilityEnabled()
-                ? "Configured. Accessibility enforcement is enabled."
-                : "Configured, but Accessibility enforcement still needs to be enabled.");
+        Toast.makeText(
+                this,
+                "Battery optimization is already unrestricted. On Samsung, also remove this app from Sleeping and Deep sleeping apps.",
+                Toast.LENGTH_LONG).show();
+        openApplicationSettings();
+    }
+
+    private void openApplicationSettings() {
+        Intent details = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        details.setData(Uri.parse("package:" + getPackageName()));
+        startActivity(details);
     }
 
     private boolean isAccessibilityEnabled() {
-        String enabled = Settings.Secure.getString(
-                getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-        if (TextUtils.isEmpty(enabled)) {
-            return false;
-        }
-        ComponentName component = new ComponentName(this, BlockAccessibilityService.class);
-        String expected = component.flattenToString();
-        for (String item : enabled.split(":")) {
-            if (expected.equalsIgnoreCase(item)) {
-                return true;
-            }
-        }
-        return false;
+        return AccessibilityEnforcement.isEnabled(this);
     }
 
     private void launchPackage(String packageName, String missingMessage) {

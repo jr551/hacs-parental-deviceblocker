@@ -12,6 +12,12 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .agent_status import (
+    is_portal_error_status,
+    resolve_ui_error,
+    resolve_ui_status,
+    should_notify_enforcement_degraded,
+)
 from .const import (
     DEFAULT_MESSAGE,
     EXTENSION_COOLDOWN_SECONDS,
@@ -47,6 +53,8 @@ class PcRuntime:
     ui_error: str = ""
     ui_reported_at: datetime | None = None
     portal_error_notified_at: datetime | None = None
+    enforcement_degraded_notified_at: datetime | None = None
+    block_state_at_last_activity: bool = False
     # Passive (cached-only) position reported by the Android agent. May be stale
     # or absent by design — the agent never asks the GPS chip for a fix.
     latitude: float | None = None
@@ -201,8 +209,9 @@ class PcRuntime:
         self.reported_username = str(payload.get("username", ""))[:128]
         self.agent_version = str(payload.get("agent_version", ""))[:64]
         previous_ui_status = self.ui_status
-        self.ui_status = str(payload.get("ui_status", "unknown"))[:64] or "unknown"
-        self.ui_error = str(payload.get("ui_error", ""))[:255]
+        previous_ui_error = self.ui_error
+        self.ui_status = resolve_ui_status(previous_ui_status, payload)
+        self.ui_error = resolve_ui_error(previous_ui_error, payload)
         self.ui_reported_at = self.last_seen
         if payload.get("latitude") is not None and payload.get("longitude") is not None:
             try:
@@ -230,8 +239,7 @@ class PcRuntime:
                 self.location_reported_at = self.last_seen
         if (
             self.ui_status != previous_ui_status
-            and self.ui_status.startswith("portal_")
-            and self.ui_status not in {"portal_initialising", "portal_ready"}
+            and is_portal_error_status(self.ui_status)
             and (
                 self.portal_error_notified_at is None
                 or self.last_seen - self.portal_error_notified_at >= timedelta(minutes=15)
@@ -247,6 +255,26 @@ class PcRuntime:
                     "message": self.ui_error,
                 },
             )
+        if should_notify_enforcement_degraded(
+            previous_ui_status,
+            self.ui_status,
+            block_requested=self.blocked,
+            previous_block_requested=self.block_state_at_last_activity,
+            last_notified_at=self.enforcement_degraded_notified_at,
+            now=self.last_seen,
+        ):
+            self.enforcement_degraded_notified_at = self.last_seen
+            self.hass.bus.async_fire(
+                "rowe_pc_blocker_enforcement_degraded",
+                {
+                    "device_id": self.device_id,
+                    "device_name": self.device_name,
+                    "status": self.ui_status,
+                    "message": self.ui_error,
+                    "block_requested": self.blocked,
+                },
+            )
+        self.block_state_at_last_activity = self.blocked
         self.notify()
 
     def update_backup_status(self, payload: dict) -> None:
