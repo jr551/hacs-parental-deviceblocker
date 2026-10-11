@@ -60,6 +60,10 @@ Wire protocol (unchanged): [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 Sideload APK from `./scripts/build-android-docker.sh`. Server-mediated S3 media backup was **removed in 0.10.0**; legacy `/backup/*` API paths still return `enabled: false` so older app builds fail gracefully. See [android deploy checklist](docs/android-deploy-checklist.md).
 
+Each phone is its own integration entry, with its own device id and API key. Set **Child name** to the chore-manager child that phone belongs to (the same match the points portal already uses: the child name, or that name inside the device name). Buying an hour spends that child's Taskmate points. Nothing in the phone app is tied to one child.
+
+The wake alarm is configured only on that device's integration options: on/off, time, weekdays (Monday–Friday until you change them), and alarm volume **0–100**. 100 is the phone's maximum alarm-stream volume, and 0 is silent. The phone reads `wake_alarm` on the existing once-a-minute state poll, caches the last schedule, and rings on the alarm stream at that volume. The person holding the phone can stop a ringing alarm. If Home Assistant cannot be reached, the block fails open and the last cached alarm stays scheduled.
+
 ## Compatibility identifiers (legacy names)
 
 Shipped agents depend on these **technical** identifiers. User-facing branding is *Parental Device Blocker*; do not rename these in releases without a coordinated client migration.

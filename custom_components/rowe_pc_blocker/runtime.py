@@ -24,6 +24,7 @@ from .const import (
     EXTENSION_SECONDS,
     INITIAL_GRACE_SECONDS,
     PARENT_OVERRIDE_MINUTES,
+    POINTS_HOUR_MINUTES,
     SIGNAL_UPDATE,
 )
 
@@ -198,6 +199,15 @@ class PcRuntime:
         self.extension_until = dt_util.utcnow() + timedelta(
             minutes=PARENT_OVERRIDE_MINUTES
         )
+        await self.async_save()
+        self.notify()
+        return self.extension_until
+
+    async def async_grant_points_hour(self) -> datetime | None:
+        """Unlock one paid hour. Call only after the points deduction succeeded."""
+        if not self.blocked:
+            return None
+        self.extension_until = dt_util.utcnow() + timedelta(minutes=POINTS_HOUR_MINUTES)
         await self.async_save()
         self.notify()
         return self.extension_until

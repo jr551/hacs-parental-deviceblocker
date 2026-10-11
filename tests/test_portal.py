@@ -43,6 +43,30 @@ class PortalTests(unittest.TestCase):
             ChildIdentity("kid2-id", "Kid 2"),
         )
 
+    def test_each_device_resolves_only_its_own_child(self) -> None:
+        children = [
+            {
+                "state": "80",
+                "attributes": {"child_id": "child-alex", "child_name": "Alex"},
+            },
+            {
+                "state": "120",
+                "attributes": {"child_id": "child-matthew", "child_name": "Matthew"},
+            },
+        ]
+        self.assertEqual(
+            resolve_child_identity("Alex", "Alex phone", children),
+            ChildIdentity("child-alex", "Alex"),
+        )
+        self.assertEqual(
+            resolve_child_identity("matthew", "Matthew phone", children),
+            ChildIdentity("child-matthew", "Matthew"),
+        )
+        self.assertEqual(
+            resolve_child_identity("", "Alex phone", children),
+            ChildIdentity("child-alex", "Alex"),
+        )
+
     def test_unique_shortened_account_name_is_supported(self) -> None:
         self.assertEqual(
             resolve_child_identity("kid2", "Bedroom PC", self.points),

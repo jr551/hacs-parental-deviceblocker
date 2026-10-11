@@ -54,9 +54,9 @@ public final class EnforcementWatchdogService extends Service {
         executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleWithFixedDelay(
                 () -> EnforcementReporter.reportIfAccessibilityDisabled(this),
-                0,
-                60,
-                TimeUnit.SECONDS);
+                ReportSchedule.HOURLY_REPORT_MS,
+                ReportSchedule.HOURLY_REPORT_MS,
+                TimeUnit.MILLISECONDS);
     }
 
     @Override
