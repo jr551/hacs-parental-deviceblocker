@@ -40,6 +40,10 @@ final class HomeAssistantClient {
     private final AppConfig config;
 
     HomeAssistantClient(AppConfig config) {
+        if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
+            throw new IllegalArgumentException(
+                    "Home Assistant URL must be HTTPS or HTTP on a local network address.");
+        }
         this.config = config;
     }
 
@@ -278,6 +282,7 @@ final class HomeAssistantClient {
         connection.setConnectTimeout(5_000);
         connection.setReadTimeout(5_000);
         connection.setUseCaches(false);
+        connection.setInstanceFollowRedirects(false);
         connection.setRequestProperty("X-Device-Blocker-Key", config.deviceKey);
         return connection;
     }

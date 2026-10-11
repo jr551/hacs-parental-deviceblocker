@@ -79,7 +79,15 @@ final class AppConfig {
             return isLocalIpv6(normalized);
         }
         if (!normalized.contains(".")) {
-            return true;
+            if (normalized.startsWith("0x")) {
+                return false;
+            }
+            for (int index = 0; index < normalized.length(); index++) {
+                if (!Character.isDigit(normalized.charAt(index))) {
+                    return true;
+                }
+            }
+            return false;
         }
         return isLocalIpv4(normalized);
     }
@@ -127,12 +135,12 @@ final class AppConfig {
                 DeviceKeyStore.read(context));
     }
 
-    static void save(Context context, AppConfig config) {
+    static boolean save(Context context, AppConfig config) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .putString(URL, config.homeAssistantUrl)
                 .putString(DEVICE_ID, config.deviceId)
                 .apply();
-        DeviceKeyStore.write(context, config.deviceKey);
+        return DeviceKeyStore.write(context, config.deviceKey);
     }
 }

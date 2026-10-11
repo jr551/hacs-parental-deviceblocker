@@ -53,6 +53,7 @@ def should_notify_enforcement_degraded(
     current: str,
     *,
     block_requested: bool,
+    previous_block_requested: bool,
     last_notified_at: datetime | None,
     now: datetime,
     cooldown_seconds: int = 15 * 60,
@@ -63,9 +64,17 @@ def should_notify_enforcement_degraded(
     alert is limited to an active block request so a routine network blip while
     the phone is allowed does not page anyone.
     """
-    if current == previous or current not in DEGRADED_UI_STATUSES:
+    if current not in DEGRADED_UI_STATUSES:
         return False
     if current == "fail_open" and not block_requested:
+        return False
+    status_changed = current != previous
+    block_escalated = (
+        current == "fail_open"
+        and block_requested
+        and not previous_block_requested
+    )
+    if not status_changed and not block_escalated:
         return False
     if (
         last_notified_at is not None

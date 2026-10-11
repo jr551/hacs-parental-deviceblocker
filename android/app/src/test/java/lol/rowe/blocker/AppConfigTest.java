@@ -40,6 +40,12 @@ public final class AppConfigTest {
     }
 
     @Test
+    public void dotlessNumericHostsAreRejected() {
+        assertFalse(AppConfig.acceptsHomeAssistantUrl("http://8123"));
+        assertFalse(AppConfig.acceptsHomeAssistantUrl("http://0xbad"));
+    }
+
+    @Test
     public void publicHttpAndEdgeAddressesAreRejected() {
         assertFalse(AppConfig.acceptsHomeAssistantUrl("http://homeassistant.example"));
         assertFalse(AppConfig.acceptsHomeAssistantUrl("http://8.8.8.8"));

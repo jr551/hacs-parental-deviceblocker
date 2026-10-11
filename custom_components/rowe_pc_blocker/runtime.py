@@ -54,6 +54,7 @@ class PcRuntime:
     ui_reported_at: datetime | None = None
     portal_error_notified_at: datetime | None = None
     enforcement_degraded_notified_at: datetime | None = None
+    block_state_at_last_activity: bool = False
     # Passive (cached-only) position reported by the Android agent. May be stale
     # or absent by design — the agent never asks the GPS chip for a fix.
     latitude: float | None = None
@@ -258,6 +259,7 @@ class PcRuntime:
             previous_ui_status,
             self.ui_status,
             block_requested=self.blocked,
+            previous_block_requested=self.block_state_at_last_activity,
             last_notified_at=self.enforcement_degraded_notified_at,
             now=self.last_seen,
         ):
@@ -272,6 +274,7 @@ class PcRuntime:
                     "block_requested": self.blocked,
                 },
             )
+        self.block_state_at_last_activity = self.blocked
         self.notify()
 
     def update_backup_status(self, payload: dict) -> None:

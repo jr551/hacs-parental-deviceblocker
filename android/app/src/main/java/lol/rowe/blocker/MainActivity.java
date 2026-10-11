@@ -377,7 +377,14 @@ public final class MainActivity extends Activity {
                     Toast.LENGTH_LONG).show();
             return;
         }
-        AppConfig.save(this, config);
+        if (!AppConfig.save(this, config)) {
+            Toast.makeText(
+                    this,
+                    "Could not seal the device key in the Android Keystore. Re-enter the key and try again.",
+                    Toast.LENGTH_LONG).show();
+            updateStatus();
+            return;
+        }
         MediaBackupScheduler.schedule(this);
         EnforcementWatchdogJobService.schedule(this);
         EnforcementWatchdogService.start(this);
@@ -630,7 +637,9 @@ public final class MainActivity extends Activity {
     private void updateStatus() {
         AppConfig config = AppConfig.load(this);
         StringBuilder text = new StringBuilder();
-        if (!config.isConfigured()) {
+        if (DeviceKeyStore.needsKeyReentry(this)) {
+            text.append("The sealed device key could not be read. Re-enter the Home Assistant device key.");
+        } else if (!config.isConfigured()) {
             text.append("Enter the Home Assistant device details below.");
         } else if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
             text.append("The saved URL must be HTTPS, or HTTP on a local network address.");
@@ -639,7 +648,9 @@ public final class MainActivity extends Activity {
         } else {
             text.append("Configured. Accessibility enforcement is enabled.");
         }
-        if (config.isConfigured() && !DeviceKeyStore.isSealed(this)) {
+        if (config.isConfigured() && DeviceKeyStore.keystoreUnavailable(this)) {
+            text.append(" Android Keystore sealing failed on the last save.");
+        } else if (config.isConfigured() && !DeviceKeyStore.isSealed(this)) {
             text.append(" Device key is not sealed in the Android Keystore.");
         }
         String note = EnforcementNote.parentText(this);

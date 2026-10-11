@@ -50,6 +50,7 @@ class AgentStatusTests(unittest.TestCase):
                 "monitoring",
                 "fail_open",
                 block_requested=False,
+                previous_block_requested=False,
                 last_notified_at=None,
                 now=now,
             )
@@ -59,6 +60,27 @@ class AgentStatusTests(unittest.TestCase):
                 "enforcing",
                 "fail_open",
                 block_requested=True,
+                previous_block_requested=False,
+                last_notified_at=None,
+                now=now,
+            )
+        )
+        self.assertTrue(
+            STATUS.should_notify_enforcement_degraded(
+                "fail_open",
+                "fail_open",
+                block_requested=True,
+                previous_block_requested=False,
+                last_notified_at=None,
+                now=now,
+            )
+        )
+        self.assertFalse(
+            STATUS.should_notify_enforcement_degraded(
+                "fail_open",
+                "fail_open",
+                block_requested=True,
+                previous_block_requested=True,
                 last_notified_at=None,
                 now=now,
             )
@@ -71,15 +93,17 @@ class AgentStatusTests(unittest.TestCase):
                 "monitoring",
                 "accessibility_disabled",
                 block_requested=False,
+                previous_block_requested=False,
                 last_notified_at=None,
                 now=now,
             )
         )
         self.assertFalse(
             STATUS.should_notify_enforcement_degraded(
-                "monitoring",
+                "accessibility_disabled",
                 "accessibility_disabled",
                 block_requested=False,
+                previous_block_requested=False,
                 last_notified_at=now - timedelta(minutes=5),
                 now=now,
             )

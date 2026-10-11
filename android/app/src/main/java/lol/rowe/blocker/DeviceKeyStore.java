@@ -19,6 +19,7 @@ final class DeviceKeyStore {
     static final String PREFS = "rowe_blocker";
     static final String PLAINTEXT = "device_key";
     static final String SEALED = "device_key_enc";
+    static final String SEALED_UNREADABLE = "device_key_sealed_unreadable";
     private static final String ALIAS = "lol.rowe.blocker.device_key";
     private static final String KEYSTORE_UNAVAILABLE = "device_key_keystore_unavailable";
 
@@ -27,11 +28,18 @@ final class DeviceKeyStore {
 
     static String read(Context context) {
         SharedPreferences preferences = preferences(context);
+        if (preferences.getBoolean(SEALED_UNREADABLE, false)) {
+            return "";
+        }
         String sealed = preferences.getString(SEALED, "");
         if (sealed != null && !sealed.isEmpty()) {
             try {
                 return AesGcmSealer.open(keystoreKey(), sealed);
             } catch (Exception exception) {
+                preferences.edit()
+                        .putBoolean(SEALED_UNREADABLE, true)
+                        .remove(SEALED)
+                        .apply();
                 return "";
             }
         }
@@ -39,40 +47,56 @@ final class DeviceKeyStore {
         if (legacy == null || legacy.isEmpty()) {
             return "";
         }
-        write(context, legacy);
-        return legacy;
+        if (write(context, legacy)) {
+            return legacy;
+        }
+        return "";
     }
 
-    static void write(Context context, String deviceKey) {
+    static boolean write(Context context, String deviceKey) {
         SharedPreferences preferences = preferences(context);
         String value = deviceKey == null ? "" : deviceKey;
         if (value.isEmpty()) {
             preferences.edit()
                     .remove(PLAINTEXT)
                     .remove(SEALED)
+                    .putBoolean(SEALED_UNREADABLE, false)
                     .putBoolean(KEYSTORE_UNAVAILABLE, false)
                     .apply();
-            return;
+            return true;
         }
         try {
             String sealed = AesGcmSealer.seal(keystoreKey(), value);
             preferences.edit()
                     .putString(SEALED, sealed)
                     .remove(PLAINTEXT)
+                    .putBoolean(SEALED_UNREADABLE, false)
                     .putBoolean(KEYSTORE_UNAVAILABLE, false)
                     .apply();
+            return true;
         } catch (Exception exception) {
             preferences.edit()
-                    .putString(PLAINTEXT, value)
+                    .remove(PLAINTEXT)
                     .remove(SEALED)
+                    .putBoolean(SEALED_UNREADABLE, false)
                     .putBoolean(KEYSTORE_UNAVAILABLE, true)
                     .apply();
+            return false;
         }
     }
 
     static boolean isSealed(Context context) {
-        String sealed = preferences(context).getString(SEALED, "");
+        SharedPreferences preferences = preferences(context);
+        String sealed = preferences.getString(SEALED, "");
         return sealed != null && !sealed.isEmpty();
+    }
+
+    static boolean needsKeyReentry(Context context) {
+        return preferences(context).getBoolean(SEALED_UNREADABLE, false);
+    }
+
+    static boolean keystoreUnavailable(Context context) {
+        return preferences(context).getBoolean(KEYSTORE_UNAVAILABLE, false);
     }
 
     private static SharedPreferences preferences(Context context) {

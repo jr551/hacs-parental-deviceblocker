@@ -76,9 +76,13 @@ ok "$brand $model on Android $release"
 step "3/8  Installing the app"
 if [[ $do_install -eq 1 ]]; then
   if [[ -z "$apk" ]]; then
-    apk="$(ls -t "$repo_root"/artifacts/android/ParentalDeviceBlocker-*.apk 2>/dev/null | grep -v -- '-debug.apk' | head -1 || true)"
+    version_name="$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' "$repo_root/android/app/build.gradle" | head -1)"
+    if [[ -n "$version_name" ]]; then
+      apk="$repo_root/artifacts/android/ParentalDeviceBlocker-${version_name}.apk"
+      [[ -f "$apk" ]] || apk=""
+    fi
     if [[ -z "$apk" ]]; then
-      apk="$(ls -t "$repo_root"/artifacts/android/*.apk 2>/dev/null | head -1 || true)"
+      die "No APK found for version ${version_name:-unknown}. Build one with scripts/build-android-docker.sh or pass --apk PATH."
     fi
   fi
   if [[ "$apk" == *-debug.apk ]]; then
