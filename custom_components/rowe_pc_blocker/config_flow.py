@@ -59,6 +59,17 @@ from .const import (
     SCREEN_SCHEDULE_MODES,
 )
 from .s3_backup import clean_prefix, valid_bucket, valid_region, valid_s3_endpoint
+from .wake_alarm import (
+    CONF_WAKE_ALARM_DAYS,
+    CONF_WAKE_ALARM_ENABLED,
+    CONF_WAKE_ALARM_TIME,
+    CONF_WAKE_ALARM_VOLUME,
+    DEFAULT_WAKE_DAYS,
+    DEFAULT_WAKE_TIME,
+    DEFAULT_WAKE_VOLUME,
+    WAKE_DAYS,
+    normalize_wake_alarm_form,
+)
 
 
 class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -167,6 +178,11 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
                 if not data[CONF_S3_SECRET_KEY]:
                     errors[CONF_S3_SECRET_KEY] = "required_when_enabled"
 
+            normalized_alarm, alarm_errors = normalize_wake_alarm_form(data)
+            errors.update(alarm_errors)
+            if not alarm_errors:
+                data.update(normalized_alarm)
+
             if data[CONF_SCREEN_RANDOM_MIN] > data[CONF_SCREEN_RANDOM_MAX]:
                 errors[CONF_SCREEN_RANDOM_MAX] = "random_range"
             if not _valid_provider_url(data[CONF_KILO_BASE_URL]):
@@ -209,6 +225,41 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
         )
         schema = vol.Schema(
             {
+                vol.Required(
+                    CONF_WAKE_ALARM_ENABLED,
+                    default=current.get(CONF_WAKE_ALARM_ENABLED, False),
+                ): bool,
+                vol.Required(
+                    CONF_WAKE_ALARM_TIME,
+                    default=current.get(CONF_WAKE_ALARM_TIME, DEFAULT_WAKE_TIME),
+                ): selector.TimeSelector(),
+                vol.Required(
+                    CONF_WAKE_ALARM_DAYS,
+                    default=list(current.get(CONF_WAKE_ALARM_DAYS, list(DEFAULT_WAKE_DAYS))),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": day, "label": label}
+                            for day, label in zip(
+                                WAKE_DAYS,
+                                (
+                                    "Monday",
+                                    "Tuesday",
+                                    "Wednesday",
+                                    "Thursday",
+                                    "Friday",
+                                    "Saturday",
+                                    "Sunday",
+                                ),
+                            )
+                        ],
+                        multiple=True,
+                    )
+                ),
+                vol.Required(
+                    CONF_WAKE_ALARM_VOLUME,
+                    default=current.get(CONF_WAKE_ALARM_VOLUME, DEFAULT_WAKE_VOLUME),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
                 vol.Required(
                     CONF_SCREEN_MONITOR_ENABLED,
                     default=current.get(CONF_SCREEN_MONITOR_ENABLED, False),

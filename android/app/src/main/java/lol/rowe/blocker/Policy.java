@@ -18,6 +18,10 @@ final class Policy {
     final boolean extensionAvailable;
     final Instant enforceAt;
     final Instant extensionUntil;
+    final Integer pointsBalance;
+    final int pointsHourCost;
+    /** Null when this response did not include an alarm. The phone keeps its cache. */
+    final WakeSchedule.Update wakeAlarm;
 
     Policy(
             boolean blocked,
@@ -26,6 +30,40 @@ final class Policy {
             boolean extensionAvailable,
             String enforceAt,
             String extensionUntil) {
+        this(blocked, blockRequested, message, extensionAvailable, enforceAt, extensionUntil, null, 0, null);
+    }
+
+    Policy(
+            boolean blocked,
+            boolean blockRequested,
+            String message,
+            boolean extensionAvailable,
+            String enforceAt,
+            String extensionUntil,
+            Integer pointsBalance,
+            int pointsHourCost) {
+        this(
+                blocked,
+                blockRequested,
+                message,
+                extensionAvailable,
+                enforceAt,
+                extensionUntil,
+                pointsBalance,
+                pointsHourCost,
+                null);
+    }
+
+    Policy(
+            boolean blocked,
+            boolean blockRequested,
+            String message,
+            boolean extensionAvailable,
+            String enforceAt,
+            String extensionUntil,
+            Integer pointsBalance,
+            int pointsHourCost,
+            WakeSchedule.Update wakeAlarm) {
         this.blocked = blocked;
         this.blockRequested = blockRequested;
         this.message = message == null || message.trim().isEmpty()
@@ -34,6 +72,9 @@ final class Policy {
         this.extensionAvailable = extensionAvailable;
         this.enforceAt = parseInstant(enforceAt);
         this.extensionUntil = parseInstant(extensionUntil);
+        this.pointsBalance = pointsBalance;
+        this.pointsHourCost = pointsHourCost;
+        this.wakeAlarm = wakeAlarm;
     }
 
     boolean isExtensionActive() {

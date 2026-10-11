@@ -13,6 +13,7 @@ public final class MediaBackupReceiver extends BroadcastReceiver {
             return;
         }
         AppConfig config = AppConfig.load(context);
+        WakeAlarm.schedule(context);
         if (config.isConfigured()) {
             MediaBackupScheduler.schedule(context);
             EnforcementWatchdogJobService.schedule(context);

@@ -167,6 +167,17 @@ def build_portal_snapshot(
     }
 
 
+def points_hour_refusal(balance: int | None, blocked: bool, cost: int = 200) -> str | None:
+    """Return a refusal code, or None when a points hour may be purchased."""
+    if not blocked:
+        return "not_blocked"
+    if balance is None:
+        return "no_points"
+    if balance < cost:
+        return "insufficient"
+    return None
+
+
 def _is_time_offer(name: str) -> bool:
     """Screen-time rewards get a prominent buy banner on the lock screen."""
     key = name.casefold()
