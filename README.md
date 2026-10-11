@@ -68,13 +68,13 @@ To enable the one-hour parent override, open the integration entry's options and
 Build on macOS or Linux with .NET 8, or with Docker when .NET is absent:
 
 ```bash
-./scripts/build-release.sh 0.9.34
+./scripts/build-release.sh 0.9.35
 ```
 
 The script creates:
 
-- `artifacts/ParentalDeviceBlocker-0.9.34-win-x64.zip`;
-- `artifacts/parental_device_blocker-hacs-0.9.34.zip`.
+- `artifacts/ParentalDeviceBlocker-0.9.35-win-x64.zip`;
+- `artifacts/parental_device_blocker-hacs-0.9.35.zip`.
 
 Extract the Windows ZIP and run an Administrator PowerShell prompt:
 
@@ -115,7 +115,7 @@ While a PC is not blocked, the activity app reports portal status `idle` (or `di
 
 ## Android package
 
-Home Assistant **0.9.34** and Android **0.4.7** ship together. Install the integration from this release before treating an older GitHub release asset as the current phone agent. The phone package is not part of the HACS zip.
+Home Assistant **0.9.35** and Android **0.4.8** ship together. Install the integration from this release before treating an older GitHub release asset as the current phone agent. The phone package is not part of the HACS zip.
 
 The Docker build runs unit tests, lint, and a signed **non-debuggable** release APK:
 
@@ -123,9 +123,9 @@ The Docker build runs unit tests, lint, and a signed **non-debuggable** release 
 ./scripts/build-android-docker.sh
 ```
 
-The output is `artifacts/android/ParentalDeviceBlocker-0.4.7.apk` plus `ParentalDeviceBlocker-0.4.7.apk.sha256`. This is still a sideload package, not a Play Store package. `./scripts/build-android-docker.sh debug` remains available for disposable emulator tests that need a user-installed CA. Do not install the debug APK on a phone a child uses.
+The output is `artifacts/android/ParentalDeviceBlocker-0.4.8.apk` plus `ParentalDeviceBlocker-0.4.8.apk.sha256`. This is still a sideload package, not a Play Store package. `./scripts/build-android-docker.sh debug` remains available for disposable emulator tests that need a user-installed CA. Do not install the debug APK on a phone a child uses.
 
-The first release build creates a protected signing key and password file under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.7; uninstalling clears its local PIN, configuration, and backup index.
+The first release build creates a protected signing key and password file under `~/.config/parental-device-blocker/`. The key enters Docker only as a BuildKit secret and is never copied into the image or repository. Set `PARENTAL_DEVICE_BLOCKER_REUSE_LEGACY_KEY=1` only for a private migration build that must upgrade the former household-signed debug APK. Android will otherwise require that legacy build to be uninstalled before installing 0.4.8; uninstalling clears its local PIN, configuration, and backup index.
 
 On first launch, the parent must create and confirm a local configuration PIN before entering the Home Assistant URL, device ID, and device key. There is no default PIN. Two wrong attempts lock the configuration screen for 15 minutes. Losing the PIN requires clearing app data and provisioning the app again. Use HTTPS. Plain HTTP is accepted only for local names such as `http://192.168.x.x`, `http://homeassistant.local`, or a single-label LAN host.
 
@@ -142,7 +142,7 @@ After configuration:
 
 The deploy checklist is [docs/android-deploy-checklist.md](docs/android-deploy-checklist.md). Pilot one phone and soak it before a second phone.
 
-Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13), S20+ (SM-G986B), and Galaxy S22 (Android 13–14) are the documented targets, with targetSdk 35 and minSdk 29. The 0.4.7 build handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED), and treats wireless charging as external power. WhatsApp/Maps `getLaunchIntentForPackage` only resolves the current user/profile — clones in Samsung Secure Folder / Dual Messenger are isolated and will not be launched; the primary profile’s install is used. Test Secure Folder explicitly if you rely on it.
+Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13), S20+ (SM-G986B), and Galaxy S22 (Android 13–14) are the documented targets, with targetSdk 35 and minSdk 29. The 0.4.8 build handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED), and treats wireless charging as external power. WhatsApp/Maps `getLaunchIntentForPackage` only resolves the current user/profile — clones in Samsung Secure Folder / Dual Messenger are isolated and will not be launched; the primary profile’s install is used. Test Secure Folder explicitly if you rely on it.
 
 Accessibility enforcement is parental friction, not Device Owner enforcement. There is no uninstall protection in this build. A determined user may disable Accessibility, uninstall the app, enter safe mode, or reset the phone. Disabling Accessibility is reported to Home Assistant while the watchdog process is still alive; uninstalling the app makes the agent go offline. A foreground watchdog and a 15-minute backup job reduce silent Samsung kills, but they do not survive Force stop.
 
@@ -183,7 +183,7 @@ Restrict Home Assistant access and configure an appropriate Recorder retention p
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m compileall -q custom_components/rowe_pc_blocker
 ./scripts/build-android-docker.sh
-./scripts/build-release.sh 0.9.34
+./scripts/build-release.sh 0.9.35
 ```
 
 `tests/android_fake_stack.py` provides a synthetic HTTPS Home Assistant/S3
