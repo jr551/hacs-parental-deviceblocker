@@ -25,11 +25,20 @@ from .const import (
     DEVICE_TYPE_ANDROID,
     DOMAIN,
     EVENT_PARENT_OVERRIDE,
+    EVENT_POINTS_HOUR,
     PARENT_OVERRIDE_MINUTES,
+    POINTS_HOUR_COST,
+    POINTS_HOUR_MINUTES,
     PARENT_PIN_LOCKOUT_MINUTES,
     PARENT_PIN_MAX_ATTEMPTS,
 )
-from .portal import PORTAL_HTML, build_portal_snapshot, resolve_child_identity
+from .portal import (
+    PORTAL_HTML,
+    build_portal_snapshot,
+    points_hour_refusal,
+    resolve_child_identity,
+)
+from .wake_alarm import wake_alarm_payload
 from .s3_backup import (
     MAX_BACKUP_BYTES,
     PRESIGN_REQUESTS_PER_MINUTE,
@@ -217,6 +226,9 @@ class PcStateView(HomeAssistantView):
                 "extension_until": (
                     runtime.extension_until.isoformat() if runtime.extension_until else None
                 ),
+                "points_hour_cost": POINTS_HOUR_COST,
+                "points_balance": _points_balance(request.app["hass"], runtime),
+                "wake_alarm": _wake_alarm(request.app["hass"], runtime),
             }
         )
 
@@ -392,6 +404,102 @@ class PcPortalActionView(HomeAssistantView):
                 await runtime.async_release_portal_reward(item_id)
             raise
         return self.json({"ok": True})
+
+
+def _wake_alarm(hass: HomeAssistant, runtime) -> dict:
+    """Alarm for this device entry. A missing entry keeps the phone's last cache."""
+
+    entry = hass.config_entries.async_get_entry(runtime.entry_id)
+    options = entry.options if entry is not None else {}
+    return wake_alarm_payload(options)
+
+
+def _points_balance(hass: HomeAssistant, runtime) -> int | None:
+    context = _portal_context(hass, runtime)
+    if context is None:
+        return None
+    raw = context[1].get("points", {}).get("state")
+    try:
+        balance = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return balance if balance >= 0 else None
+
+
+class PcPointsHourView(HomeAssistantView):
+    """Spend Taskmate points for one hour of phone time."""
+
+    url = "/api/rowe_pc_blocker/{device_id}/points_hour"
+    name = "api:rowe_pc_blocker:points_hour"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = _runtime_for_request(hass, device_id)
+        if runtime is None or not _authorised(request, runtime):
+            raise web.HTTPUnauthorized()
+        context = _portal_context(hass, runtime)
+        balance = _points_balance(hass, runtime)
+        refusal = points_hour_refusal(balance, runtime.blocked, POINTS_HOUR_COST)
+        if refusal == "not_blocked":
+            return self.json({"error": "This phone is not blocked."}, status_code=409)
+        if refusal == "no_points":
+            return self.json(
+                {"error": "Taskmate points are not available for this phone."},
+                status_code=404,
+            )
+        if refusal == "insufficient":
+            return self.json(
+                {
+                    "error": f"Not enough points. An hour costs {POINTS_HOUR_COST}.",
+                    "points_balance": balance,
+                    "points_hour_cost": POINTS_HOUR_COST,
+                },
+                status_code=402,
+            )
+        child = context[0]
+        try:
+            await hass.services.async_call(
+                "taskmate",
+                "remove_points",
+                {
+                    "child_id": child.child_id,
+                    "points": POINTS_HOUR_COST,
+                    "reason": "Bought 1 hour of phone time",
+                },
+                blocking=True,
+            )
+        except Exception:
+            return self.json(
+                {"error": "Could not spend Taskmate points."},
+                status_code=502,
+            )
+        until = await runtime.async_grant_points_hour()
+        if until is None:
+            return self.json(
+                {"error": "Points were spent but the phone is no longer blocked."},
+                status_code=409,
+            )
+        hass.bus.async_fire(
+            EVENT_POINTS_HOUR,
+            {
+                "device_id": device_id,
+                "device_name": runtime.device_name,
+                "child_id": child.child_id,
+                "child_name": child.name,
+                "points": POINTS_HOUR_COST,
+                "minutes": POINTS_HOUR_MINUTES,
+                "until": until.isoformat(),
+            },
+        )
+        return self.json(
+            {
+                "ok": True,
+                "minutes": POINTS_HOUR_MINUTES,
+                "points": POINTS_HOUR_COST,
+                "until": until.isoformat(),
+            }
+        )
 
 
 class PcParentOverrideView(HomeAssistantView):
@@ -581,6 +689,7 @@ def async_register_api(hass: HomeAssistant) -> None:
         return
     hass.http.register_view(PcStateView)
     hass.http.register_view(PcParentOverrideView)
+    hass.http.register_view(PcPointsHourView)
     hass.http.register_view(PcActivityView)
     hass.http.register_view(PcExtensionView)
     hass.http.register_view(PcPortalView)

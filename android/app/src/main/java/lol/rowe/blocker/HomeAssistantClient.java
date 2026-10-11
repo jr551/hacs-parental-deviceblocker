@@ -66,13 +66,50 @@ final class HomeAssistantClient {
             String enforceAt = optionalInstant(body, "enforce_at");
             String extensionUntil = optionalInstant(body, "extension_until");
             validatePolicy(blocked, requested, enforceAt, extensionUntil);
+            Integer pointsBalance = body.has("points_balance") && !body.isNull("points_balance")
+                    ? body.optInt("points_balance")
+                    : null;
             return new Policy(
                     blocked,
                     requested,
                     message,
                     extensionAvailable,
                     enforceAt,
-                    extensionUntil);
+                    extensionUntil,
+                    pointsBalance,
+                    body.optInt("points_hour_cost", 200),
+                    readWakeAlarm(body));
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    String requestPointsHour() throws Exception {
+        HttpURLConnection connection = open("points_hour", "POST");
+        try {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            byte[] bytes = "{}".getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 200 && status < 300
+                    ? connection.getInputStream()
+                    : connection.getErrorStream();
+            String body = stream == null ? "" : readAll(stream);
+            if (status >= 200 && status < 300) {
+                return "Unlocked for 1 hour.";
+            }
+            if (!body.isEmpty()) {
+                JSONObject error = new JSONObject(body);
+                String message = error.optString("error", "");
+                if (!message.isEmpty()) {
+                    return message;
+                }
+            }
+            return "Could not buy an hour (" + status + ").";
         } finally {
             connection.disconnect();
         }
@@ -316,6 +353,29 @@ final class HomeAssistantClient {
             throw new IOException("Home Assistant policy field " + name + " is not a string");
         }
         return (String) value;
+    }
+
+    /**
+     * A missing or unreadable alarm leaves the phone's last Home Assistant cache
+     * in place. It must not fail the rest of the policy poll.
+     */
+    private static WakeSchedule.Update readWakeAlarm(JSONObject body) {
+        if (!body.has("wake_alarm") || body.isNull("wake_alarm")) {
+            return null;
+        }
+        JSONObject alarm = body.optJSONObject("wake_alarm");
+        if (alarm == null || !(alarm.opt("enabled") instanceof Boolean)) {
+            return null;
+        }
+        if (!alarm.has("hour") || !alarm.has("minute") || !alarm.has("days") || !alarm.has("volume")) {
+            return null;
+        }
+        return WakeSchedule.Update.of(
+                alarm.optBoolean("enabled"),
+                alarm.optInt("hour", -1),
+                alarm.optInt("minute", -1),
+                alarm.optInt("days", 0),
+                alarm.optInt("volume", -1));
     }
 
     private static String optionalInstant(JSONObject body, String name) throws IOException {

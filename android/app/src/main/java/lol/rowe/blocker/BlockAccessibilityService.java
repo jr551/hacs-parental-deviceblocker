@@ -43,7 +43,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
         }
         // onServiceConnected can run more than once for the same instance; schedule one poller.
         if (pollScheduled.compareAndSet(false, true)) {
-            policyExecutor.scheduleWithFixedDelay(this::pollPolicy, 0, 10, TimeUnit.SECONDS);
+            policyExecutor.scheduleWithFixedDelay(
+                    this::pollPolicy, 0, ReportSchedule.POLICY_POLL_SECONDS, TimeUnit.SECONDS);
         }
     }
 
@@ -58,6 +59,22 @@ public final class BlockAccessibilityService extends AccessibilityService {
         reportActivityIfNeeded(foregroundPackage, title);
 
         Policy policy = currentPolicy;
+        if (decision != null
+                && decision.isUninstallSurface(foregroundPackage, title)
+                && !ParentMaintenance.allows()) {
+            if (policy.shouldCaptureForeground() || policy.shouldWarnGrace()) {
+                showBlockScreen(policy);
+            } else {
+                showUninstallGuard();
+            }
+            return;
+        }
+        if (!policy.shouldCaptureForeground()
+                && !policy.shouldWarnGrace()
+                && !foregroundPackage.equals(getPackageName())
+                && (decision == null || !decision.isUninstallSurface(foregroundPackage, title))) {
+            MainActivity.clearUninstallGuard();
+        }
         if (decision != null && decision.shouldShowBlockScreen(policy.shouldCaptureForeground(), foregroundPackage)) {
             showBlockScreen(policy);
         }
@@ -117,6 +134,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 return;
             }
             Policy policy = new HomeAssistantClient(config).getPolicy();
+            WakeAlarm.applyServer(this, policy.wakeAlarm);
             currentPolicy = policy;
             publishStatus(
                     policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
@@ -145,34 +163,16 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     private void reportActivityIfNeeded(String packageName, String title) {
-        long now = SystemClock.elapsedRealtime();
-        boolean changed = !packageName.equals(lastReportedPackage) || !title.equals(lastReportedTitle);
-        boolean heartbeat = now - lastHeartbeat >= 60_000;
-        if (!changed && !heartbeat) {
-            return;
-        }
         lastReportedPackage = packageName;
         lastReportedTitle = title;
+        long now = SystemClock.elapsedRealtime();
+        if (!ReportSchedule.due(lastHeartbeat, now)) {
+            return;
+        }
         lastHeartbeat = now;
-        activityExecutor.execute(() -> {
-            try {
-                AppConfig config = AppConfig.load(this);
-                if (config.isConfigured()) {
-                    // Only attach a position on the 60-second heartbeat: the read is
-                    // cheap but pointless on every foreground-app change.
-                    android.location.Location location =
-                            heartbeat ? PassiveLocation.latest(this) : null;
-                    new HomeAssistantClient(config).postActivity(
-                            packageName,
-                            title,
-                            location,
-                            enforcementStatus,
-                            enforcementDetail);
-                }
-            } catch (Exception ignored) {
-                // The next foreground event or heartbeat retries.
-            }
-        });
+        String application = packageName;
+        String window = title;
+        activityExecutor.execute(() -> postReport(application, window, true));
     }
 
     private void showBlockScreen(Policy policy) {
@@ -195,6 +195,20 @@ public final class BlockAccessibilityService extends AccessibilityService {
         mainHandler.post(() -> startActivity(intent));
     }
 
+    private void showUninstallGuard() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastBlockLaunch < 750) {
+            return;
+        }
+        lastBlockLaunch = now;
+        Intent intent = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                        | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(MainActivity.EXTRA_UNINSTALL_GUARD, true);
+        mainHandler.post(() -> startActivity(intent));
+    }
+
     private void failOpen(String status, String detail) {
         currentPolicy = Policy.UNBLOCKED;
         MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
@@ -202,30 +216,43 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     private void publishStatus(String status, String detail, boolean force) {
-        boolean changed = !status.equals(enforcementStatus) || !detail.equals(enforcementDetail);
         enforcementStatus = status;
         enforcementDetail = detail;
-        long now = SystemClock.elapsedRealtime();
-        if (!changed && !force) {
-            return;
-        }
-        if (!changed && now - lastStatusPost < 60_000) {
-            return;
-        }
-        lastStatusPost = now;
         EnforcementNote.record(this, status, detail);
+        long now = SystemClock.elapsedRealtime();
+        // Local fail-open already happened. Status, activity, and location share
+        // one hourly upload. The unused force flag stays so callers can ask for
+        // a report without bypassing that batch.
+        if (!ReportSchedule.due(lastHeartbeat, now)) {
+            return;
+        }
+        lastHeartbeat = now;
+        lastStatusPost = now;
         String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
-        activityExecutor.execute(() -> {
-            try {
-                AppConfig config = AppConfig.load(this);
-                if (config.isConfigured()) {
-                    new HomeAssistantClient(config).postActivity(
-                            application, "", null, status, detail);
-                }
-            } catch (Exception ignored) {
-                // The next poll or watchdog retries.
+        activityExecutor.execute(() -> postReport(application, ""));
+    }
+
+    private void postReport(String application, String window) {
+        postReport(application, window, false);
+    }
+
+    private void postReport(String application, String window, boolean includeLocation) {
+        try {
+            AppConfig config = AppConfig.load(this);
+            if (!config.isConfigured()) {
+                return;
             }
-        });
+            android.location.Location location = includeLocation ? PassiveLocation.latest(this) : null;
+            new HomeAssistantClient(config).postActivity(
+                    application,
+                    window,
+                    location,
+                    enforcementStatus,
+                    enforcementDetail);
+        } catch (Exception ignored) {
+            // The next hourly batch retries. A failed report must not keep retrying
+            // on every foreground change.
+        }
     }
 
     private static String eventTitle(CharSequence className) {

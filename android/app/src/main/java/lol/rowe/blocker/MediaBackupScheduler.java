@@ -34,7 +34,7 @@ final class MediaBackupScheduler {
                 .setRequiresCharging(true)
                 .setPersisted(true);
         if (initialComplete) {
-            job.setPeriodic(15 * 60 * 1000L);
+            job.setPeriodic(60 * 60 * 1000L);
         } else {
             job.setMinimumLatency(1_000L)
                     .setBackoffCriteria(30_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL);

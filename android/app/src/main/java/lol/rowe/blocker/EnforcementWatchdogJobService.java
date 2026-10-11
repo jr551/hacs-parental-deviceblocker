@@ -23,7 +23,7 @@ public final class EnforcementWatchdogJobService extends JobService {
                 JOB_ID, new ComponentName(context, EnforcementWatchdogJobService.class))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setPersisted(true)
-                .setPeriodic(15 * 60 * 1000L)
+                .setPeriodic(ReportSchedule.HOURLY_REPORT_MS)
                 .build();
         scheduler.schedule(job);
     }
@@ -32,6 +32,7 @@ public final class EnforcementWatchdogJobService extends JobService {
     public boolean onStartJob(JobParameters params) {
         new Thread(() -> {
             EnforcementReporter.reportIfAccessibilityDisabled(this);
+            AppUpdater.check(this);
             jobFinished(params, false);
         }).start();
         return true;

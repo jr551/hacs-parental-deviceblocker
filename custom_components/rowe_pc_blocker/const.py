@@ -21,6 +21,9 @@ PARENT_PIN_MAX_ATTEMPTS = 2
 PARENT_PIN_LOCKOUT_MINUTES = 15
 PARENT_OVERRIDE_MINUTES = 60
 EVENT_PARENT_OVERRIDE = "rowe_pc_blocker_parent_override"
+POINTS_HOUR_COST = 200
+POINTS_HOUR_MINUTES = 60
+EVENT_POINTS_HOUR = "rowe_pc_blocker_points_hour"
 
 CONF_SCREEN_MONITOR_ENABLED = "screen_monitor_enabled"
 CONF_VNC_HOST = "vnc_host"
@@ -49,7 +52,9 @@ DEVICE_TYPE_WINDOWS = "windows"
 DEVICE_TYPE_ANDROID = "android"
 
 DEFAULT_MESSAGE = "This device has been paused by a parent."
-ONLINE_TIMEOUT_SECONDS = 90
+# Policy polls are about once a minute. Allow two missed polls before
+# Agent online turns off, so one slow request does not flap the sensor.
+ONLINE_TIMEOUT_SECONDS = 180
 INITIAL_GRACE_SECONDS = 30
 EXTENSION_SECONDS = 300
 EXTENSION_COOLDOWN_SECONDS = 3600
