@@ -1,9 +1,9 @@
 # Android deploy checklist
 
-Use this before installing Parental Device Blocker on a child's phone. Android **0.4.7** belongs with Home Assistant **0.9.34**. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
+Use this before installing Parental Device Blocker on a child's phone. Android **0.4.8** belongs with Home Assistant **0.9.35**. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
 
-- `ParentalDeviceBlocker-0.4.7.apk`
-- `ParentalDeviceBlocker-0.4.7.apk.sha256`
+- `ParentalDeviceBlocker-0.4.8.apk`
+- `ParentalDeviceBlocker-0.4.8.apk.sha256`
 
 Verify the checksum before install. Do not install `*-debug.apk` on a phone a child uses.
 
@@ -13,18 +13,18 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 
 ## Pre-flight
 
-- [ ] Confirm the live Home Assistant `rowe_pc_blocker` version is **0.9.34**.
+- [ ] Confirm the live Home Assistant `rowe_pc_blocker` version is **0.9.35**.
 - [ ] Create one integration entry per phone. Do not share device ids or API keys.
 - [ ] Device type: Android phone. Store each API key in a parent password manager.
 - [ ] Set a distinct Home Assistant parent-override PIN, or leave the override disabled on purpose. This PIN is not the phone's local configuration PIN.
 - [ ] Choose an HTTPS Home Assistant URL that the phone can reach on Wi-Fi and on mobile data. Plain HTTP is accepted only for a local address.
 - [ ] Decide whether S3 photo/video backup is in scope. It adds media permissions and power rules.
-- [ ] Download the **0.4.7** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.4.7.apk.sha256`.
+- [ ] Download the **0.4.8** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.4.8.apk.sha256`.
 
 ## Per phone
 
 - [ ] The parent Google account is the device owner. The child is not a device admin.
-- [ ] Install `ParentalDeviceBlocker-0.4.7.apk` (package `lol.rowe.blocker`, not `lol.rowe.blocker.debug`).
+- [ ] Install `ParentalDeviceBlocker-0.4.8.apk` (package `lol.rowe.blocker`, not `lol.rowe.blocker.debug`).
 - [ ] Create a local configuration PIN of at least four digits. There is no default and no recovery PIN. Two wrong attempts lock the setup screen for 15 minutes.
 - [ ] Save the Home Assistant URL, device id, and device key. The key is sealed in the Android Keystore. The setup screen says so when sealing fails.
 - [ ] Turn Accessibility on for Parental Device Blocker. Allow restricted settings if Android asks.
