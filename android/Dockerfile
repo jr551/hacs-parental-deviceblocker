@@ -24,6 +24,9 @@ RUN --mount=type=secret,id=parental_device_blocker_keystore,required=true \
       -Pandroid.injected.signing.key.alias=androiddebugkey \
       -Pandroid.injected.signing.key.password=android
 
+FROM test AS unsigned-release
+RUN gradle --no-daemon assembleRelease
+
 FROM test AS release
 ARG SIGNING_KEY_ID
 # assembleRelease (non-debug, release-signed) is performed by assemble-release.sh.

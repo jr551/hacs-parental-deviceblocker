@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hacs:
+    name: HACS integration zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+      - name: Resolve version
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build HACS zip
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          mkdir -p artifacts
+          zip -qr "artifacts/parental_device_blocker-hacs-${version}.zip" custom_components/rowe_pc_blocker \
+            -x '*/__pycache__/*' -x '*/._*'
+      - uses: actions/upload-artifact@6f51ac03b93569f346b3a9c5f79c2f6bf22d7d8d # v4.5.0
+        with:
+          name: hacs-zip
+          path: artifacts/parental_device_blocker-hacs-*.zip
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+      - name: Resolve version
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Configure Android signing
+        id: android_signing
+        env:
+          PDB_ANDROID_KEYSTORE_BASE64: ${{ secrets.PDB_ANDROID_KEYSTORE_BASE64 }}
+          PDB_ANDROID_STORE_PASSWORD: ${{ secrets.PDB_ANDROID_STORE_PASSWORD }}
+          PDB_ANDROID_KEY_ALIAS: ${{ secrets.PDB_ANDROID_KEY_ALIAS }}
+          PDB_ANDROID_KEY_PASSWORD: ${{ secrets.PDB_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PDB_ANDROID_KEYSTORE_BASE64:-}" ] || [ -z "${PDB_ANDROID_STORE_PASSWORD:-}" ] \
+            || [ -z "${PDB_ANDROID_KEY_ALIAS:-}" ] || [ -z "${PDB_ANDROID_KEY_PASSWORD:-}" ]; then
+            echo "mode=unsigned" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keystore="$RUNNER_TEMP/android-release.keystore"
+          signing="$RUNNER_TEMP/android-release.signing"
+          printf '%s' "$PDB_ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          {
+            echo "PDB_STORE_PASSWORD=$PDB_ANDROID_STORE_PASSWORD"
+            echo "PDB_KEY_PASSWORD=$PDB_ANDROID_KEY_PASSWORD"
+            echo "PDB_KEY_ALIAS=$PDB_ANDROID_KEY_ALIAS"
+          } > "$signing"
+          signing_key_id="$(sha256sum "$keystore" | awk '{print substr($1, 1, 16)}')"
+          echo "mode=signed" >> "$GITHUB_OUTPUT"
+          echo "keystore=$keystore" >> "$GITHUB_OUTPUT"
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          echo "signing_key_id=$signing_key_id" >> "$GITHUB_OUTPUT"
+      - name: Build signed release APK
+        if: steps.android_signing.outputs.mode == 'signed'
+        run: |
+          set -euo pipefail
+          docker build \
+            --file android/Dockerfile \
+            --target release \
+            --build-arg "SIGNING_KEY_ID=${{ steps.android_signing.outputs.signing_key_id }}" \
+            --secret "id=parental_device_blocker_keystore,src=${{ steps.android_signing.outputs.keystore }}" \
+            --secret "id=parental_device_blocker_signing,src=${{ steps.android_signing.outputs.signing }}" \
+            --tag pdb-android-release \
+            ./android
+      - name: Build unsigned release APK
+        if: steps.android_signing.outputs.mode != 'signed'
+        run: docker build --file android/Dockerfile --target unsigned-release --tag pdb-android-release ./android
+      - name: Extract APK
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          mkdir -p artifacts
+          cid="$(docker create pdb-android-release)"
+          apk_dir="/workspace/app/build/outputs/apk/release"
+          for name in app-release.apk app-release-unsigned.apk; do
+            if docker cp "$cid:$apk_dir/$name" "artifacts/parental-device-blocker-android-${version}.apk" 2>/dev/null; then
+              docker rm "$cid"
+              exit 0
+            fi
+          done
+          docker rm "$cid"
+          echo "No release APK found in image" >&2
+          exit 1
+      - uses: actions/upload-artifact@6f51ac03b93569f346b3a9c5f79c2f6bf22d7d8d # v4.5.0
+        with:
+          name: android-apk
+          path: artifacts/parental-device-blocker-android-*.apk
+
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v4.1.0
+        with:
+          dotnet-version: "8.0.x"
+          cache: true
+          cache-dependency-path: |
+            src/**/*.csproj
+      - name: Publish Windows payloads
+        shell: bash
+        run: bash scripts/build-release.sh "${{ steps.version.outputs.value }}"
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=$version" "deploy\windows\ParentalDeviceBlocker.iss"
+      - name: Sign installer (optional)
+        if: ${{ secrets.PDB_WINDOWS_CERT_BASE64 != '' && secrets.PDB_WINDOWS_CERT_PASSWORD != '' }}
+        shell: pwsh
+        env:
+          PDB_WINDOWS_CERT_BASE64: ${{ secrets.PDB_WINDOWS_CERT_BASE64 }}
+          PDB_WINDOWS_CERT_PASSWORD: ${{ secrets.PDB_WINDOWS_CERT_PASSWORD }}
+        run: |
+          $version = "${{ steps.version.outputs.value }}"
+          $setup = "artifacts\ParentalDeviceBlocker-$version-win-x64-setup.exe"
+          $pfx = "$env:RUNNER_TEMP\codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PDB_WINDOWS_CERT_BASE64))
+          $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe not found" }
+          & $signtool sign /f $pfx /p $env:PDB_WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 $setup
+      - uses: actions/upload-artifact@6f51ac03b93569f346b3a9c5f79c2f6bf22d7d8d # v4.5.0
+        with:
+          name: windows-installer
+          path: |
+            artifacts/ParentalDeviceBlocker-*-win-x64-setup.exe
+            artifacts/ParentalDeviceBlocker-*-win-x64.zip
+
+  release:
+    name: GitHub Release
+    needs: [hacs, android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+      - uses: actions/download-artifact@fa0a81b229b40787a22c2d9ea65c1cc4c604ef9d # v4.1.8
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish release
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -4,14 +4,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import aiohttp
 from playwright.async_api import async_playwright
 
-HA_URL = "http://127.0.0.1:8123"
-USERNAME = "demo"
-PASSWORD = "DemoPass123!"
+HA_URL = os.environ.get("PDB_HA_URL", "http://127.0.0.1:8123")
+USERNAME = os.environ.get("PDB_HA_USERNAME", "")
+PASSWORD = os.environ.get("PDB_HA_PASSWORD", "")
 OUT = Path(__file__).resolve().parents[1] / "docs" / "screenshots"
 
 

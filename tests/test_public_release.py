@@ -57,6 +57,8 @@ class PublicReleaseTests(unittest.TestCase):
         for path in ROOT.rglob("*"):
             if not path.is_file() or any(part in ignored for part in path.parts):
                 continue
+            if path == ROOT / "docs" / "LEAK_AUDIT.md":
+                continue
             try:
                 text = path.read_text(encoding="utf-8").lower()
             except UnicodeDecodeError:

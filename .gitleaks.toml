@@ -1,0 +1,7 @@
+title = "Parental Device Blocker gitleaks config"
+
+[allowlist]
+description = "Synthetic test credentials only"
+paths = [
+  '''tests/test_api_security\.py''',
+]

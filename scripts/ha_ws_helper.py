@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 import aiohttp
 
-HA = "http://127.0.0.1:8123"
+HA = os.environ.get("PDB_HA_URL", "http://127.0.0.1:8123")
+_USERNAME = os.environ.get("PDB_HA_USERNAME", "")
+_PASSWORD = os.environ.get("PDB_HA_PASSWORD", "")
 
 
 async def ws_call(messages: list[dict[str, Any]]) -> list[Any]:
@@ -46,8 +49,8 @@ async def _token(session: aiohttp.ClientSession) -> str:
         f"{HA}/auth/login_flow/{step}",
         json={
             "client_id": f"{HA}/",
-            "username": "demo",
-            "password": "DemoPass123!",
+            "username": _USERNAME,
+            "password": _PASSWORD,
         },
     ) as response:
         result = await response.json()

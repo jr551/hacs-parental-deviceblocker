@@ -27,23 +27,7 @@ Windows uses a `LocalSystem` service plus a session companion. Android uses Acce
 
 ## Screenshots
 
-Setup on Home Assistant 2024.12 with integration **0.10.0** (demo instance):
-
-| Integrations | Add integration |
-| --- | --- |
-| ![Integrations dashboard](docs/screenshots/integrations-dashboard.png) | ![Integration search](docs/screenshots/config-flow-picker.png) |
-
-| Config flow | Options |
-| --- | --- |
-| ![Add device](docs/screenshots/config-flow-add-device.png) | ![Options](docs/screenshots/options-flow.png) |
-
-| Integration devices | Device entities |
-| --- | --- |
-| ![Device list](docs/screenshots/integration-device-list.png) | ![Entities](docs/screenshots/device-entities.png) |
-
-![Overview card example](docs/screenshots/dashboard-default.png)
-
-Regenerate with a running Home Assistant demo: `python3 scripts/capture_ha_screenshots.py` (after `pip install homeassistant home-assistant-frontend playwright` and starting Core). Fallback reference renders: `python3 scripts/generate_doc_screenshots.py`.
+Screenshots coming soon — the maintainer will add real Home Assistant UI captures (config flow, options, device page, dashboard) under `docs/screenshots/`.
 
 ## Install (HACS)
 
