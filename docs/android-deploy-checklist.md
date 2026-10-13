@@ -13,7 +13,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 
 ## Pre-flight
 
-- [ ] Confirm the live Home Assistant `rowe_pc_blocker` version is **0.9.35**.
+- [ ] Confirm the live Home Assistant `rowe_pc_blocker` version is **0.10.0** or newer.
 - [ ] Create one integration entry per phone. Do not share device ids or API keys.
 - [ ] Device type: Android phone. Store each API key in a parent password manager.
 - [ ] Set a distinct Home Assistant parent-override PIN, or leave the override disabled on purpose. This PIN is not the phone's local configuration PIN.

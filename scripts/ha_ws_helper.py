@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 import aiohttp
 
-HA = "http://127.0.0.1:8123"
+HA = os.environ.get("PDB_HA_URL", "http://127.0.0.1:8123")
+_USERNAME = os.environ.get("PDB_HA_USERNAME", "")
+_PASSWORD = os.environ.get("PDB_HA_PASSWORD", "")
 
 
 async def ws_call(messages: list[dict[str, Any]]) -> list[Any]:
@@ -46,8 +49,8 @@ async def _token(session: aiohttp.ClientSession) -> str:
         f"{HA}/auth/login_flow/{step}",
         json={
             "client_id": f"{HA}/",
-            "username": "demo",
-            "password": "DemoPass123!",
+            "username": _USERNAME,
+            "password": _PASSWORD,
         },
     ) as response:
         result = await response.json()
@@ -84,10 +87,10 @@ async def ensure_integration() -> None:
                 "type": "config_entries/flow/submit",
                 "flow_id": flow_id,
                 "user_input": {
-                    "device_id": "demo-child-pc",
-                    "device_name": "Demo Child PC",
+                    "device_id": "kid1-pc",
+                    "device_name": "Child PC",
                     "device_type": "windows",
-                    "windows_username": "child",
+                    "windows_username": "kid1",
                     "api_key": "demo-api-key-replace-in-production-32chars",
                 },
             }

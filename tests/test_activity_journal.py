@@ -51,7 +51,7 @@ class ActivityJournalTests(unittest.TestCase):
             ),
         ]
         report = JOURNAL.build_activity_report(
-            records, child_name="Child One", now=now, period="week"
+            records, child_name="Kid 1", now=now, period="week"
         )
         self.assertEqual(report["checks"], 2)
         self.assertEqual(report["highest_risk_level"], "high")
@@ -71,7 +71,7 @@ class ActivityJournalTests(unittest.TestCase):
             )
         ]
         report = JOURNAL.build_activity_report(
-            records, child_name="Child Two", now=now, period="today"
+            records, child_name="Kid 2", now=now, period="today"
         )
         self.assertEqual(report["checks"], 1)
 

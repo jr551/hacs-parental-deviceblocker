@@ -272,7 +272,7 @@ PORTAL_HTML = r"""<!doctype html>
   const text = (value) => String(value ?? "");
   const node = (tag, className, value) => { const element=document.createElement(tag); if(className) element.className=className; if(value!==undefined) element.textContent=text(value); return element; };
   async function api(path, options={}) {
-    const response = await fetch(root + path, {...options, cache:"no-store", headers:{"X-Device-Blocker-Key":key,"Content-Type":"application/json",...(options.headers||{})}});
+    const response = await fetch(root + path, {...options, credentials:"same-origin", cache:"no-store", headers:{"X-Device-Blocker-Key":key,"Content-Type":"application/json",...(options.headers||{})}});
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || "Home Assistant rejected the request");
     return payload;

@@ -25,32 +25,32 @@ class PortalTests(unittest.TestCase):
         self.points = [
             {
                 "state": "0",
-                "attributes": {"child_id": "child-one-id", "child_name": "Child One"},
+                "attributes": {"child_id": "kid1-id", "child_name": "Kid 1"},
             },
             {
                 "state": "160",
-                "attributes": {"child_id": "child-two-id", "child_name": "Child Two"},
+                "attributes": {"child_id": "kid2-id", "child_name": "Kid 2"},
             },
         ]
 
     def test_child_resolution_uses_installed_windows_account(self) -> None:
         self.assertEqual(
-            resolve_child_identity("childone", "Child One PC", self.points),
-            ChildIdentity("child-one-id", "Child One"),
+            resolve_child_identity("kid1", "Kid 1 PC", self.points),
+            ChildIdentity("kid1-id", "Kid 1"),
         )
         self.assertEqual(
-            resolve_child_identity("childtwo", "Child Two PC", self.points),
-            ChildIdentity("child-two-id", "Child Two"),
+            resolve_child_identity("kid2", "Kid 2 PC", self.points),
+            ChildIdentity("kid2-id", "Kid 2"),
         )
 
     def test_unique_shortened_account_name_is_supported(self) -> None:
         self.assertEqual(
-            resolve_child_identity("childt", "Bedroom PC", self.points),
-            ChildIdentity("child-two-id", "Child Two"),
+            resolve_child_identity("kid2", "Bedroom PC", self.points),
+            ChildIdentity("kid2-id", "Kid 2"),
         )
 
     def test_snapshot_never_contains_the_other_child_activity(self) -> None:
-        child = ChildIdentity("child-two-id", "Child Two")
+        child = ChildIdentity("kid2-id", "Kid 2")
         entities = {
             "points": {
                 "state": "160",
@@ -69,7 +69,7 @@ class PortalTests(unittest.TestCase):
             "chores": {"attributes": {"todays_completions": []}},
             "availability": {
                 "attributes": {
-                    "chore_availability": {"chore-1": {"child-two-id": True}}
+                    "chore_availability": {"chore-1": {"kid2-id": True}}
                 }
             },
             "rewards": {
@@ -79,14 +79,14 @@ class PortalTests(unittest.TestCase):
                             "id": "reward-1",
                             "name": "Extra time",
                             "cost": 20,
-                            "assigned_to": ["child-two-id"],
+                            "assigned_to": ["kid2-id"],
                             "is_available": True,
                         },
                         {
-                            "id": "child-one-only",
-                            "name": "Child One item",
+                            "id": "kid1-only",
+                            "name": "Kid 1 item",
                             "cost": 1,
-                            "assigned_to": ["child-one-id"],
+                            "assigned_to": ["kid1-id"],
                             "is_available": True,
                         },
                     ]
@@ -96,13 +96,13 @@ class PortalTests(unittest.TestCase):
                 "attributes": {
                     "recent_transactions": [
                         {
-                            "child_id": "child-two-id",
+                            "child_id": "kid2-id",
                             "points": -20,
                             "reason": "Extra time",
                             "created_at": "2026-07-22T12:00:00+00:00",
                         },
                         {
-                            "child_id": "child-one-id",
+                            "child_id": "kid1-id",
                             "points": -999,
                             "reason": "Must not leak",
                             "created_at": "2026-07-22T13:00:00+00:00",
@@ -115,14 +115,14 @@ class PortalTests(unittest.TestCase):
             {
                 "state": "unknown",
                 "attributes": {
-                    "child_id": "child-two-id",
+                    "child_id": "kid2-id",
                     "chore_id": "chore-1",
                 },
             },
             {
                 "state": "unknown",
                 "attributes": {
-                    "child_id": "child-two-id",
+                    "child_id": "kid2-id",
                     "reward_id": "reward-1",
                 },
             },
@@ -137,25 +137,25 @@ class PortalTests(unittest.TestCase):
         self.assertEqual([item["reason"] for item in snapshot["activity"]], ["Extra time"])
 
     def test_time_offers_surface_screen_time_rewards(self):
-        child = ChildIdentity(child_id="kid-1", name="Child One")
+        child = ChildIdentity(child_id="kid1-id", name="Kid 1")
         entities = {
             "points": {"state": "50", "attributes": {"unit_of_measurement": "Stars"}},
             "rewards": {"attributes": {"rewards": [
                 {"id": "r-evening", "name": "PC time until 10:30pm", "cost": 20,
-                 "assigned_to": ["kid-1"], "is_available": True,
-                 "calculated_costs": {"kid-1": 20}},
+                 "assigned_to": ["kid1-id"], "is_available": True,
+                 "calculated_costs": {"kid1-id": 20}},
                 {"id": "r-morning", "name": "Early morning PC time", "cost": 100,
-                 "assigned_to": ["kid-1"], "is_available": True,
-                 "calculated_costs": {"kid-1": 100}},
+                 "assigned_to": ["kid1-id"], "is_available": True,
+                 "calculated_costs": {"kid1-id": 100}},
                 {"id": "r-voucher", "name": "£10 Roblox voucher", "cost": 10000,
                  "assigned_to": [], "is_available": True,
-                 "calculated_costs": {"kid-1": 10000}},
+                 "calculated_costs": {"kid1-id": 10000}},
             ]}},
         }
         buttons = [
-            {"state": "unknown", "attributes": {"child_id": "kid-1", "reward_id": "r-evening"}},
-            {"state": "unknown", "attributes": {"child_id": "kid-1", "reward_id": "r-morning"}},
-            {"state": "unknown", "attributes": {"child_id": "kid-1", "reward_id": "r-voucher"}},
+            {"state": "unknown", "attributes": {"child_id": "kid1-id", "reward_id": "r-evening"}},
+            {"state": "unknown", "attributes": {"child_id": "kid1-id", "reward_id": "r-morning"}},
+            {"state": "unknown", "attributes": {"child_id": "kid1-id", "reward_id": "r-voucher"}},
         ]
 
         snapshot = build_portal_snapshot(child, entities, buttons)

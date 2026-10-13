@@ -1,6 +1,6 @@
 # Agent wire protocol
 
-This document describes the HTTP API between **Parental Device Blocker** Home Assistant integration and installed agents (Windows `RowePcBlocker` / `RowePcActivity`, Android `lol.rowe.blocker`). Paths and JSON field names are compatibility contracts: clients in the field depend on them.
+This document describes the HTTP API between **Parental Device Blocker** Home Assistant integration and installed agents (Windows `RowePcBlocker` / `RowePcActivity`, Android `lol.rowe.blocker`). Paths and JSON field names are compatibility contracts: clients in the field depend on them. The `rowe_*` prefix is a **legacy technical name** kept for backward compatibility with deployed agents—not the product brand.
 
 Base URL: `{HomeAssistantUrl}` (no trailing slash required on the client; paths are rooted at `/api/rowe_pc_blocker/`).
 
@@ -12,7 +12,7 @@ All endpoints use `requires_auth = false` on the Home Assistant view and instead
 |-----------|--------|
 | Header `X-Device-Blocker-Key` | Preferred on all requests |
 | Header `X-Rowe-Key` | Legacy alias, same value |
-| Query `key=` | Only `GET …/portal` (kiosk WebView initial load) |
+| Query `key=` | Only `GET …/portal` (kiosk WebView initial load; also sets a short-lived HttpOnly session cookie) |
 
 Wrong or missing credentials → **401 Unauthorized** (empty body).
 

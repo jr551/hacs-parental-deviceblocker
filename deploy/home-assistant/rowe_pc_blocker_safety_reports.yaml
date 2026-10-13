@@ -45,34 +45,34 @@
     - service: homeassistant.update_entity
       target:
         entity_id:
-          - sensor.child_one_pc_weekly_activity_summary
-          - sensor.child_two_pc_weekly_activity_summary
+          - sensor.kid1_pc_weekly_activity_summary
+          - sensor.kid2_pc_weekly_activity_summary
     - variables:
-        child_one_message: >-
-          Child One weekly device check-in: checks
-          {{ state_attr('sensor.child_one_pc_weekly_activity_summary', 'checks') | int(0) }},
+        kid1_message: >-
+          Kid 1 weekly device check-in: checks
+          {{ state_attr('sensor.kid1_pc_weekly_activity_summary', 'checks') | int(0) }},
           highest concern
-          {{ state_attr('sensor.child_one_pc_weekly_activity_summary', 'highest_risk_score') | int(0) }}/5,
+          {{ state_attr('sensor.kid1_pc_weekly_activity_summary', 'highest_risk_score') | int(0) }}/5,
           checks needing review
-          {{ state_attr('sensor.child_one_pc_weekly_activity_summary', 'high_or_critical_checks') | int(0) }}.
+          {{ state_attr('sensor.kid1_pc_weekly_activity_summary', 'high_or_critical_checks') | int(0) }}.
           Text-only spot checks; AI flags are prompts to review, not proof.
-        child_two_message: >-
-          Child Two weekly device check-in: checks
-          {{ state_attr('sensor.child_two_pc_weekly_activity_summary', 'checks') | int(0) }},
+        kid2_message: >-
+          Kid 2 weekly device check-in: checks
+          {{ state_attr('sensor.kid2_pc_weekly_activity_summary', 'checks') | int(0) }},
           highest concern
-          {{ state_attr('sensor.child_two_pc_weekly_activity_summary', 'highest_risk_score') | int(0) }}/5,
+          {{ state_attr('sensor.kid2_pc_weekly_activity_summary', 'highest_risk_score') | int(0) }}/5,
           checks needing review
-          {{ state_attr('sensor.child_two_pc_weekly_activity_summary', 'high_or_critical_checks') | int(0) }}.
+          {{ state_attr('sensor.kid2_pc_weekly_activity_summary', 'high_or_critical_checks') | int(0) }}.
           Text-only spot checks; AI flags are prompts to review, not proof.
     - service: notify.parent_one
       data:
-        message: "{{ child_one_message }}"
+        message: "{{ kid1_message }}"
     - service: notify.parent_two
       data:
-        message: "{{ child_one_message }}"
+        message: "{{ kid1_message }}"
     - service: notify.parent_one
       data:
-        message: "{{ child_two_message }}"
+        message: "{{ kid2_message }}"
     - service: notify.parent_two
       data:
-        message: "{{ child_two_message }}"
+        message: "{{ kid2_message }}"

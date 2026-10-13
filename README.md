@@ -27,23 +27,11 @@ Windows uses a `LocalSystem` service plus a session companion. Android uses Acce
 
 ## Screenshots
 
-Setup on Home Assistant 2024.12 with integration **0.10.0** (demo instance):
+![Device page in Home Assistant](docs/screenshots/device-page.png)
 
-| Integrations | Add integration |
-| --- | --- |
-| ![Integrations dashboard](docs/screenshots/integrations-dashboard.png) | ![Integration search](docs/screenshots/config-flow-picker.png) |
+**Device page in Home Assistant** — Android Accessibility Agent controls, sensors, and activity.
 
-| Config flow | Options |
-| --- | --- |
-| ![Add device](docs/screenshots/config-flow-add-device.png) | ![Options](docs/screenshots/options-flow.png) |
-
-| Integration devices | Device entities |
-| --- | --- |
-| ![Device list](docs/screenshots/integration-device-list.png) | ![Entities](docs/screenshots/device-entities.png) |
-
-![Overview card example](docs/screenshots/dashboard-default.png)
-
-Regenerate with a running Home Assistant demo: `python3 scripts/capture_ha_screenshots.py` (after `pip install homeassistant home-assistant-frontend playwright` and starting Core). Fallback reference renders: `python3 scripts/generate_doc_screenshots.py`.
+Additional captures (config flow, options, dashboard) will be added under `docs/screenshots/` as they are ready.
 
 ## Install (HACS)
 
@@ -72,7 +60,9 @@ Wire protocol (unchanged): [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 Sideload APK from `./scripts/build-android-docker.sh`. Server-mediated S3 media backup was **removed in 0.10.0**; legacy `/backup/*` API paths still return `enabled: false` so older app builds fail gracefully. See [android deploy checklist](docs/android-deploy-checklist.md).
 
-## Compatibility identifiers
+## Compatibility identifiers (legacy names)
+
+Shipped agents depend on these **technical** identifiers. User-facing branding is *Parental Device Blocker*; do not rename these in releases without a coordinated client migration.
 
 | Token | Value |
 | --- | --- |
@@ -80,6 +70,7 @@ Sideload APK from `./scripts/build-android-docker.sh`. Server-mediated S3 media 
 | API prefix | `/api/rowe_pc_blocker/` |
 | Preferred auth header | `X-Device-Blocker-Key` |
 | Legacy auth header | `X-Rowe-Key` |
+| Windows service / binaries | `RowePcBlocker`, `RowePcActivity` |
 | Android application ID | `lol.rowe.blocker` |
 
 ## Development
