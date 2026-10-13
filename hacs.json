@@ -2,6 +2,5 @@
   "name": "Parental Device Blocker",
   "content_in_root": false,
   "render_readme": true,
-  "zip_release": true,
-  "zip_release_file": "parental_device_blocker-hacs-{version}.zip"
+  "zip_release": true
 }

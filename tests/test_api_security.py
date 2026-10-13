@@ -10,7 +10,49 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from aiohttp import web
+try:
+    from aiohttp import web
+except ImportError:  # Lightweight CI runners have no HA/aiohttp wheels.
+    import types
+
+    _aiohttp_stub = types.ModuleType("aiohttp")
+    _web_stub = types.ModuleType("aiohttp.web")
+
+    class _StubHTTPError(Exception):
+        """Minimal stand-in for an aiohttp HTTP error response."""
+
+    class _StubHTTPBadRequest(_StubHTTPError):
+        pass
+
+    class _StubHTTPUnauthorized(_StubHTTPError):
+        pass
+
+    class _StubHTTPRequestEntityTooLarge(_StubHTTPError):
+        pass
+
+    _web_stub.HTTPBadRequest = _StubHTTPBadRequest
+    _web_stub.HTTPUnauthorized = _StubHTTPUnauthorized
+    _web_stub.HTTPRequestEntityTooLarge = _StubHTTPRequestEntityTooLarge
+    _aiohttp_stub.web = _web_stub
+    sys.modules["aiohttp"] = _aiohttp_stub
+    sys.modules["aiohttp.web"] = _web_stub
+    web = _web_stub
+
+try:
+    import homeassistant.util.dt  # noqa: F401 -- probe only; api_security needs it.
+except ImportError:  # Same lightweight-CI fallback for api_security's dt_util import.
+    import datetime
+    import types
+
+    _ha_stub = types.ModuleType("homeassistant")
+    _ha_util_stub = types.ModuleType("homeassistant.util")
+    _ha_dt_stub = types.ModuleType("homeassistant.util.dt")
+    _ha_dt_stub.utcnow = lambda: datetime.datetime.now(datetime.timezone.utc)
+    _ha_stub.util = _ha_util_stub
+    _ha_util_stub.dt = _ha_dt_stub
+    sys.modules["homeassistant"] = _ha_stub
+    sys.modules["homeassistant.util"] = _ha_util_stub
+    sys.modules["homeassistant.util.dt"] = _ha_dt_stub
 
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = ROOT / "custom_components" / "rowe_pc_blocker"
