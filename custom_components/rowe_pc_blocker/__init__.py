@@ -18,6 +18,7 @@ from .const import (
     CONF_WINDOWS_USERNAME,
     DOMAIN,
     DEVICE_TYPE_WINDOWS,
+    LEGACY_S3_OPTION_KEYS,
     PLATFORMS,
 )
 from .runtime import PcRuntime
@@ -39,6 +40,15 @@ CONFIG_SCHEMA = vol.Schema(
     {DOMAIN: vol.Schema({vol.Required(CONF_DEVICES): [DEVICE_SCHEMA]})},
     extra=vol.ALLOW_EXTRA,
 )
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Remove legacy S3 backup options from config entry storage."""
+    if entry.version >= 2:
+        return True
+    options = {k: v for k, v in entry.options.items() if k not in LEGACY_S3_OPTION_KEYS}
+    hass.config_entries.async_update_entry(entry, version=2, options=options)
+    return True
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:

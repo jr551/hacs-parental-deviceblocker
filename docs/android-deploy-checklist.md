@@ -1,6 +1,6 @@
 # Android deploy checklist
 
-Use this before installing Parental Device Blocker on a child's phone. Android **0.4.8** belongs with Home Assistant **0.9.35**. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
+Use this before installing Parental Device Blocker on a child's phone. Android **0.4.8** belongs with Home Assistant **0.10.0** or newer. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
 
 - `ParentalDeviceBlocker-0.4.8.apk`
 - `ParentalDeviceBlocker-0.4.8.apk.sha256`
@@ -18,7 +18,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 - [ ] Device type: Android phone. Store each API key in a parent password manager.
 - [ ] Set a distinct Home Assistant parent-override PIN, or leave the override disabled on purpose. This PIN is not the phone's local configuration PIN.
 - [ ] Choose an HTTPS Home Assistant URL that the phone can reach on Wi-Fi and on mobile data. Plain HTTP is accepted only for a local address.
-- [ ] Decide whether S3 photo/video backup is in scope. It adds media permissions and power rules.
+- [ ] Server-mediated S3 backup was removed in integration 0.10.0; skip media-backup planning unless you use a separate tool.
 - [ ] Download the **0.4.8** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.4.8.apk.sha256`.
 
 ## Per phone
@@ -36,7 +36,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
   - Turn off **Put unused apps to sleep** for this app, or add it to Never sleeping apps
   - Re-check these after an One UI update
 - [ ] Xiaomi/MIUI only: enable Autostart and background pop-up windows. Stock Samsung does not have that menu.
-- [ ] Grant location only if a passive last-known fix is wanted. Grant photos/videos only if backup is enabled.
+- [ ] Grant location only if a passive last-known fix is wanted.
 - [ ] Turn **off** Developer options and USB debugging. A release build cannot be configured with `adb run-as`.
 - [ ] Within about a minute, Home Assistant shows Agent online and foreground app updates while unblocked. Enforcement status reads `monitoring`.
 - [ ] Supervised block: block screen appears, WhatsApp works, Google Maps works, the dialler works, and Back/Home do not dismiss a hard block.

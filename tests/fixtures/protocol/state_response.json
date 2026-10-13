@@ -1,0 +1,12 @@
+{
+  "device_id": "child-pc",
+  "blocked": false,
+  "block_requested": false,
+  "message": "This device has been paused by a parent.",
+  "windows_username": "child",
+  "device_type": "windows",
+  "enforce_at": null,
+  "extension_available": true,
+  "extension_available_at": null,
+  "extension_until": null
+}

@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "initial_sync_wifi_only": true,
+  "requires_external_power": true,
+  "max_file_bytes": 21474836480,
+  "configuration_id": ""
+}

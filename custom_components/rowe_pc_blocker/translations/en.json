@@ -4,28 +4,36 @@
     "step": {
       "user": {
         "title": "Add a device",
-        "description": "Keep the generated API key private. It will be copied into that device's agent configuration.",
+        "description": "Create one entry per child PC or phone. Copy the generated API key into that device's agent — it is the only secret the agent needs.",
         "data": {
           "device_id": "Device ID",
           "device_name": "Display name",
           "device_type": "Device type",
           "windows_username": "Windows child username or Android owner label",
           "api_key": "Device API key"
+        },
+        "data_description": {
+          "device_id": "Lowercase letters, numbers, hyphens, and underscores only. Used in API URLs and must match the agent configuration.",
+          "device_name": "Shown on the Home Assistant device and dashboards.",
+          "windows_username": "Windows: the child's local account name. Android: a label for your reference.",
+          "api_key": "Auto-generated. Regenerating requires updating the agent on the device."
         }
       }
     },
     "error": {
-      "invalid_device_id": "Use letters, numbers, hyphens, or underscores."
+      "invalid_device_id": "Use only lowercase letters, numbers, hyphens, or underscores.",
+      "api_key_required": "Enter or keep the generated API key."
     },
     "abort": {
-      "already_configured": "This device is already configured."
+      "already_configured": "This device is already configured.",
+      "invalid_device_id": "The device ID was empty after normalisation."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Device blocker options",
-        "description": "Set optional parent controls, screen assessment, and Android media backup. S3 credentials stay in Home Assistant; the phone receives only short-lived upload URLs. Leave a secret field blank to keep its saved value.",
+        "title": "Parental Device Blocker options",
+        "description": "Optional parent PIN override, screen assessment, and provider settings. Leave a password field blank to keep its saved value.",
         "data": {
           "screen_monitor_enabled": "Enable screen assessment",
           "vnc_host": "VNC host or IP address",
@@ -39,14 +47,6 @@
           "parent_pin": "Parent override PIN (optional)",
           "clear_parent_pin": "Disable parent PIN override",
           "clear_screen_credentials": "Clear saved VNC and Kilo credentials",
-          "media_backup_enabled": "Enable Android photo and video backup",
-          "s3_endpoint": "S3 HTTPS endpoint",
-          "s3_region": "S3 region",
-          "s3_bucket": "S3 bucket",
-          "s3_access_key": "S3 access key",
-          "s3_secret_key": "S3 secret key",
-          "s3_prefix": "Device/user folder prefix",
-          "clear_s3_credentials": "Disable backup and clear saved S3 credentials",
           "kilo_base_url": "OpenAI-compatible base URL",
           "kilo_model": "Model",
           "screen_prompt": "Assessment instructions"
@@ -55,20 +55,15 @@
           "screen_schedule_mode": "Manual creates only the Check screen now button. Fixed and random also run automatically.",
           "kilo_base_url": "Leave unchanged to use the documented Kilo Gateway default.",
           "kilo_model": "The official balanced automatic route is kilo-auto/balanced.",
-          "s3_prefix": "Objects are stored below this prefix. Every upload requires external power; the initial library sync also requires unmetered Wi-Fi."
+          "parent_pin": "At least four characters. Used on the locked device for a one-hour override."
         }
       }
     },
     "error": {
-      "random_range": "The maximum must be greater than or equal to the minimum.",
+      "random_range": "The maximum interval must be greater than or equal to the minimum.",
       "invalid_provider_url": "Enter a valid HTTPS base URL without credentials, a query, or a fragment.",
-      "invalid_s3_endpoint": "Enter an HTTPS S3 origin without credentials, a path, query, or fragment.",
-      "invalid_s3_bucket": "Enter a valid DNS-style S3 bucket name.",
-      "invalid_s3_region": "Enter a valid S3 region such as us-east-1.",
-      "invalid_s3_prefix": "Enter a folder prefix containing at least one safe path segment.",
-      "android_only": "Media backup can be enabled only for an Android device entry.",
       "parent_pin_too_short": "Use a parent PIN with at least four characters.",
-      "required_when_enabled": "This value is required when screen assessment is enabled."
+      "required_when_enabled": "Required when screen assessment is enabled."
     }
   }
 }

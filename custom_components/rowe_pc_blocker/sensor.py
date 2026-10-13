@@ -2,7 +2,7 @@
 
 from homeassistant.components.sensor import SensorEntity
 
-from .const import DEVICE_TYPE_ANDROID, DOMAIN
+from .const import DOMAIN
 from .entity import ParentalDeviceEntity
 
 
@@ -18,8 +18,6 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         DailyActivitySummarySensor(runtime),
         WeeklyActivitySummarySensor(runtime),
     ]
-    if runtime.device_type == DEVICE_TYPE_ANDROID:
-        entities.append(MediaBackupSensor(runtime))
     async_add_entities(entities)
 
 
@@ -109,39 +107,6 @@ class EnforcementStatusSensor(ParentalDeviceEntity, SensorEntity):
             "fail_open": self.runtime.ui_status == "fail_open",
             "accessibility_disabled": self.runtime.ui_status
             == "accessibility_disabled",
-        }
-
-
-class MediaBackupSensor(ParentalDeviceEntity, SensorEntity):
-    """Privacy-minimised Android photo/video backup progress."""
-
-    _attr_name = "Media backup"
-    _attr_icon = "mdi:cloud-upload"
-
-    def __init__(self, runtime) -> None:
-        super().__init__(runtime)
-        self._attr_unique_id = f"{runtime.device_id}_media_backup"
-
-    @property
-    def native_value(self) -> str:
-        return self.runtime.backup_status.replace("_", " ").title()
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        return {
-            "uploaded": self.runtime.backup_uploaded,
-            "skipped": self.runtime.backup_skipped,
-            "initial_complete": self.runtime.backup_initial_complete,
-            "initial_sync_wifi_only": True,
-            "requires_external_power": True,
-            "last_success": (
-                self.runtime.backup_last_success.isoformat()
-                if self.runtime.backup_last_success
-                else None
-            ),
-            "last_error": self.runtime.backup_error or None,
-            "credentials_exposed_to_device": False,
-            "source": "device_reported",
         }
 
 
