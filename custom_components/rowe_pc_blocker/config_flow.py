@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import secrets
 from urllib.parse import urlsplit
 
 import voluptuous as vol
@@ -12,6 +11,7 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
+from .api_security import api_key_meets_minimum_entropy, generate_api_key
 from .const import (
     CONF_API_KEY,
     CONF_CLEAR_PARENT_PIN,
@@ -73,12 +73,20 @@ class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
         data = dict(data)
         data[CONF_DEVICE_ID] = device_id
-        if not str(data.get(CONF_API_KEY, "")).strip():
+        api_key = str(data.get(CONF_API_KEY, "")).strip()
+        if not api_key:
             return self.async_show_form(
                 step_id="user",
                 data_schema=_user_schema(data),
                 errors={CONF_API_KEY: "api_key_required"},
             )
+        if not api_key_meets_minimum_entropy(api_key):
+            return self.async_show_form(
+                step_id="user",
+                data_schema=_user_schema(data),
+                errors={CONF_API_KEY: "api_key_too_weak"},
+            )
+        data[CONF_API_KEY] = api_key
         return self.async_create_entry(title=data[CONF_DEVICE_NAME], data=data)
 
     async def async_step_import(self, user_input: dict) -> FlowResult:
@@ -93,6 +101,8 @@ class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_DEVICE_ID] = "invalid_device_id"
             elif not str(user_input.get(CONF_API_KEY, "")).strip():
                 errors[CONF_API_KEY] = "api_key_required"
+            elif not api_key_meets_minimum_entropy(str(user_input.get(CONF_API_KEY, ""))):
+                errors[CONF_API_KEY] = "api_key_too_weak"
             else:
                 return await self._create_or_update(user_input, from_import=False)
 
@@ -100,6 +110,28 @@ class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=_user_schema(user_input or {}),
             errors=errors,
+        )
+
+    async def async_step_reconfigure(self, user_input: dict | None = None) -> FlowResult:
+        """Rotate the device API key for an existing entry."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input.get("confirm_rotate"):
+                errors["confirm_rotate"] = "required"
+            else:
+                entry = self._get_reconfigure_entry()
+                data = dict(entry.data)
+                data[CONF_API_KEY] = generate_api_key()
+                self.hass.config_entries.async_update_entry(entry, data=data)
+                return self.async_abort(reason="reconfigure_successful")
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({vol.Required("confirm_rotate", default=False): bool}),
+            errors=errors,
+            description_placeholders={
+                "device_name": self._get_reconfigure_entry().title,
+            },
         )
 
 
@@ -126,7 +158,7 @@ def _user_schema(defaults: dict) -> vol.Schema:
             ): str,
             vol.Required(
                 CONF_API_KEY,
-                default=defaults.get(CONF_API_KEY, secrets.token_urlsafe(32)),
+                default=defaults.get(CONF_API_KEY, generate_api_key()),
             ): str,
         }
     )

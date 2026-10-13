@@ -12,7 +12,7 @@ All endpoints use `requires_auth = false` on the Home Assistant view and instead
 |-----------|--------|
 | Header `X-Device-Blocker-Key` | Preferred on all requests |
 | Header `X-Rowe-Key` | Legacy alias, same value |
-| Query `key=` | Only `GET …/portal` (kiosk WebView initial load) |
+| Query `key=` | Only `GET …/portal` (kiosk WebView initial load; also sets a short-lived HttpOnly session cookie) |
 
 Wrong or missing credentials → **401 Unauthorized** (empty body).
 

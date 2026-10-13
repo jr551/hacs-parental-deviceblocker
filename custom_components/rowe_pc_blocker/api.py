@@ -12,6 +12,20 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from .api_security import (
+    browser_origin_allowed,
+    device_authorized,
+    extract_device_key,
+    integration_auth_blocked,
+    parent_pin_ip_blocked,
+    portal_response_headers,
+    portal_session_cookie,
+    read_json_object,
+    record_parent_pin_failure,
+    reject_unauthorized,
+    request_is_secure,
+    valid_device_id,
+)
 from .const import (
     CONF_PARENT_PIN,
     DOMAIN,
@@ -65,18 +79,29 @@ def _runtime_for_request(hass: HomeAssistant, device_id: str):
     )
 
 
-def _authorised(request: web.Request, runtime, *, allow_query: bool = False) -> bool:
-    # Portal initial page uses query param for kiosk simplicity (WebView2 loads
-    # a single URL). Mitigations: no-store, no-referrer, CSP frame-ancestors
-    # none, and portal JS immediately clears the query via history.replaceState
-    # so the secret does not persist in history/Referer. Data/action endpoints
-    # require header only.
-    supplied = request.headers.get("X-Device-Blocker-Key", "")
-    if not supplied:
-        supplied = request.headers.get("X-Rowe-Key", "")
-    if allow_query and not supplied:
-        supplied = request.query.get("key", "")
-    return bool(supplied) and hmac.compare_digest(supplied, runtime.api_key)
+async def _require_runtime(
+    hass: HomeAssistant,
+    request: web.Request,
+    device_id: str,
+    *,
+    allow_query: bool = False,
+    allow_cookie: bool = False,
+):
+    if not valid_device_id(device_id):
+        await reject_unauthorized(hass, request)
+    if integration_auth_blocked(hass, request):
+        raise web.HTTPUnauthorized()
+    runtime = _runtime_for_request(hass, device_id)
+    supplied = extract_device_key(request, allow_query=allow_query)
+    if not device_authorized(
+        hass,
+        runtime,
+        supplied,
+        request,
+        allow_cookie=allow_cookie,
+    ):
+        await reject_unauthorized(hass, request)
+    return runtime
 
 
 def _state_payload(state) -> dict:
@@ -134,6 +159,11 @@ def _portal_context(hass: HomeAssistant, runtime):
     return child, entities, buttons
 
 
+def _require_browser_csrf(request: web.Request) -> None:
+    if not browser_origin_allowed(request):
+        raise web.HTTPForbidden()
+
+
 class PcStateView(HomeAssistantView):
     """Return the desired state for one PC."""
 
@@ -142,9 +172,8 @@ class PcStateView(HomeAssistantView):
     requires_auth = False
 
     async def get(self, request: web.Request, device_id: str) -> web.Response:
-        runtime = _runtime_for_request(request.app["hass"], device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
         runtime.last_seen = dt_util.utcnow()
         runtime.notify()
         return self.json(
@@ -177,15 +206,12 @@ class PcActivityView(HomeAssistantView):
     requires_auth = False
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
-        runtime = _runtime_for_request(request.app["hass"], device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
         try:
-            payload = await request.json()
-        except (ValueError, web.HTTPBadRequest) as err:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest as err:
             raise web.HTTPBadRequest(text="Expected a JSON object") from err
-        if not isinstance(payload, dict):
-            raise web.HTTPBadRequest(text="Expected a JSON object")
         runtime.update_activity(payload)
         return self.json({"ok": True})
 
@@ -198,9 +224,9 @@ class PcExtensionView(HomeAssistantView):
     requires_auth = False
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
-        runtime = _runtime_for_request(request.app["hass"], device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        await read_json_object(request)
         granted = await runtime.async_request_extension()
         return self.json(
             {
@@ -226,24 +252,19 @@ class PcPortalView(HomeAssistantView):
     requires_auth = False
 
     async def get(self, request: web.Request, device_id: str) -> web.Response:
-        runtime = _runtime_for_request(request.app["hass"], device_id)
-        if runtime is None or not _authorised(request, runtime, allow_query=True):
-            raise web.HTTPUnauthorized()
+        hass = request.app["hass"]
+        runtime = await _require_runtime(
+            hass, request, device_id, allow_query=True, allow_cookie=True
+        )
+        headers = portal_response_headers()
+        headers["Set-Cookie"] = portal_session_cookie(
+            request, runtime, secure=request_is_secure(request)
+        )
         return web.Response(
             text=PORTAL_HTML,
             content_type="text/html",
             charset="utf-8",
-            headers={
-                "Cache-Control": "no-store",
-                "Content-Security-Policy": (
-                    "default-src 'none'; style-src 'unsafe-inline'; "
-                    "script-src 'unsafe-inline'; connect-src 'self'; "
-                    "img-src data:; frame-ancestors 'none'; base-uri 'none'; "
-                    "form-action 'none'"
-                ),
-                "Referrer-Policy": "no-referrer",
-                "X-Content-Type-Options": "nosniff",
-            },
+            headers=headers,
         )
 
 
@@ -256,18 +277,21 @@ class PcPortalDataView(HomeAssistantView):
 
     async def get(self, request: web.Request, device_id: str) -> web.Response:
         hass = request.app["hass"]
-        runtime = _runtime_for_request(hass, device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        runtime = await _require_runtime(hass, request, device_id, allow_cookie=True)
+        headers = portal_response_headers()
 
         context = _portal_context(hass, runtime)
         if context is None:
             return self.json(
                 {"error": "This PC is not mapped to a compatible chore-manager child."},
                 status_code=404,
+                headers=headers,
             )
         child, entities, buttons = context
-        return self.json(build_portal_snapshot(child, entities, buttons))
+        return self.json(
+            build_portal_snapshot(child, entities, buttons),
+            headers=headers,
+        )
 
 
 class PcPortalActionView(HomeAssistantView):
@@ -279,15 +303,14 @@ class PcPortalActionView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         hass = request.app["hass"]
-        runtime = _runtime_for_request(hass, device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        _require_browser_csrf(request)
+        runtime = await _require_runtime(hass, request, device_id, allow_cookie=True)
         try:
-            payload = await request.json()
-        except (ValueError, web.HTTPBadRequest):
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
             return self.json({"error": "Expected a JSON object."}, status_code=400)
-        action_type = str(payload.get("type", "")) if isinstance(payload, dict) else ""
-        item_id = str(payload.get("id", "")) if isinstance(payload, dict) else ""
+        action_type = str(payload.get("type", ""))[:64]
+        item_id = str(payload.get("id", ""))[:64]
         item_key = {
             "claim_reward": "reward_id",
             "complete_chore": "chore_id",
@@ -343,11 +366,7 @@ class PcPortalActionView(HomeAssistantView):
 
 
 class PcParentOverrideView(HomeAssistantView):
-    """Let a parent grant one extra hour at the locked device with the parent PIN.
-
-    Verification, attempt counting, and lockout all live here: a client-side
-    check would be trivially bypassed by the child holding the device.
-    """
+    """Let a parent grant one extra hour at the locked device with the parent PIN."""
 
     url = "/api/rowe_pc_blocker/{device_id}/parent_override"
     name = "api:rowe_pc_blocker:parent_override"
@@ -355,15 +374,20 @@ class PcParentOverrideView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         hass = request.app["hass"]
-        runtime = _runtime_for_request(hass, device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        _require_browser_csrf(request)
+        runtime = await _require_runtime(hass, request, device_id, allow_cookie=True)
 
         parent_pin = _parent_pin(hass, runtime)
         if not parent_pin:
             return self.json(
                 {"error": "Parent override is not configured."},
                 status_code=503,
+            )
+
+        if parent_pin_ip_blocked(hass, request):
+            return self.json(
+                {"error": "Too many wrong PINs. Try again later."},
+                status_code=429,
             )
 
         locked_for = _pin_lockout_remaining(hass, device_id)
@@ -378,12 +402,13 @@ class PcParentOverrideView(HomeAssistantView):
             )
 
         try:
-            payload = await request.json()
-        except (ValueError, web.HTTPBadRequest):
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
             return self.json({"error": "Expected a JSON object."}, status_code=400)
-        supplied = str(payload.get("pin", "")).strip() if isinstance(payload, dict) else ""
+        supplied = str(payload.get("pin", "")).strip()[:64]
 
         if not hmac.compare_digest(supplied, parent_pin):
+            record_parent_pin_failure(hass, request)
             attempts = _pin_attempts(hass)
             record = attempts.setdefault(device_id, {"failures": 0, "locked_until": None})
             record["failures"] += 1
@@ -446,9 +471,7 @@ class AndroidBackupConfigView(HomeAssistantView):
 
     async def get(self, request: web.Request, device_id: str) -> web.Response:
         hass = request.app["hass"]
-        runtime = _runtime_for_request(hass, device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        await _require_runtime(hass, request, device_id)
         return self.json(BACKUP_CONFIG_DISABLED_BODY)
 
 
@@ -461,9 +484,8 @@ class AndroidBackupPresignView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         hass = request.app["hass"]
-        runtime = _runtime_for_request(hass, device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        await _require_runtime(hass, request, device_id)
+        await read_json_object(request)
         return self.json(
             BACKUP_PRESIGN_DISABLED_BODY,
             status_code=BACKUP_PRESIGN_DISABLED_STATUS,
@@ -478,15 +500,9 @@ class AndroidBackupStatusView(HomeAssistantView):
     requires_auth = False
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
-        runtime = _runtime_for_request(request.app["hass"], device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
-        try:
-            payload = await request.json()
-        except (ValueError, web.HTTPBadRequest):
-            return self.json({"error": "Expected a JSON object."}, status_code=400)
-        if not isinstance(payload, dict):
-            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        payload = await read_json_object(request)
         runtime.update_backup_status(payload)
         return self.json({"ok": True})
 

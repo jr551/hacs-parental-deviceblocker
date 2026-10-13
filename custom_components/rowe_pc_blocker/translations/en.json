@@ -18,15 +18,24 @@
           "windows_username": "Windows: the child's local account name. Android: a label for your reference.",
           "api_key": "Auto-generated. Regenerating requires updating the agent on the device."
         }
+      },
+      "reconfigure": {
+        "title": "Rotate device API key",
+        "description": "Generate a new API key for {device_name}. Copy it into the Windows or Android agent immediately; the previous key stops working as soon as you confirm.",
+        "data": {
+          "confirm_rotate": "I understand — rotate the API key now"
+        }
       }
     },
     "error": {
       "invalid_device_id": "Use only lowercase letters, numbers, hyphens, or underscores.",
-      "api_key_required": "Enter or keep the generated API key."
+      "api_key_required": "Enter or keep the generated API key.",
+      "api_key_too_weak": "The API key must be at least 128 bits of random material (use the generated value)."
     },
     "abort": {
       "already_configured": "This device is already configured.",
-      "invalid_device_id": "The device ID was empty after normalisation."
+      "invalid_device_id": "The device ID was empty after normalisation.",
+      "reconfigure_successful": "A new device API key was generated. Update the agent on the device before the old key stops working."
     }
   },
   "options": {
