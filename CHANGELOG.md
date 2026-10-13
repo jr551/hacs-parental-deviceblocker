@@ -6,7 +6,7 @@
 
 - Harden all `/api/rowe_pc_blocker/` views: constant-time device key checks, per-IP auth throttling, integration with Home Assistant `ip_ban` on `401`, uniform unauthorized responses, JSON body size limits, portal session cookies, and browser CSRF checks on `/portal/action` and `/parent_override`.
 - Enforce ≥128-bit API keys, and add a **Reconfigure** flow to rotate a device key.
-- Leak audit (`docs/LEAK_AUDIT.md`), gitleaks in CI, and removal of generated README screenshots (replaced with maintainer-supplied device page capture).
+- Leak audit (`docs/LEAK_AUDIT.md`), gitleaks in CI, removal of generated README screenshots, and scrub of personal names from docs/examples (legacy `rowe_*` protocol identifiers unchanged).
 
 ### Added
 

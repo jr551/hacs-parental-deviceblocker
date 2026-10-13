@@ -60,7 +60,9 @@ Wire protocol (unchanged): [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 Sideload APK from `./scripts/build-android-docker.sh`. Server-mediated S3 media backup was **removed in 0.10.0**; legacy `/backup/*` API paths still return `enabled: false` so older app builds fail gracefully. See [android deploy checklist](docs/android-deploy-checklist.md).
 
-## Compatibility identifiers
+## Compatibility identifiers (legacy names)
+
+Shipped agents depend on these **technical** identifiers. User-facing branding is *Parental Device Blocker*; do not rename these in releases without a coordinated client migration.
 
 | Token | Value |
 | --- | --- |
@@ -68,6 +70,7 @@ Sideload APK from `./scripts/build-android-docker.sh`. Server-mediated S3 media 
 | API prefix | `/api/rowe_pc_blocker/` |
 | Preferred auth header | `X-Device-Blocker-Key` |
 | Legacy auth header | `X-Rowe-Key` |
+| Windows service / binaries | `RowePcBlocker`, `RowePcActivity` |
 | Android application ID | `lol.rowe.blocker` |
 
 ## Development

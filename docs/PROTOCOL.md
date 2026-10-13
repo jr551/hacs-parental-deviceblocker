@@ -1,6 +1,6 @@
 # Agent wire protocol
 
-This document describes the HTTP API between **Parental Device Blocker** Home Assistant integration and installed agents (Windows `RowePcBlocker` / `RowePcActivity`, Android `lol.rowe.blocker`). Paths and JSON field names are compatibility contracts: clients in the field depend on them.
+This document describes the HTTP API between **Parental Device Blocker** Home Assistant integration and installed agents (Windows `RowePcBlocker` / `RowePcActivity`, Android `lol.rowe.blocker`). Paths and JSON field names are compatibility contracts: clients in the field depend on them. The `rowe_*` prefix is a **legacy technical name** kept for backward compatibility with deployed agents—not the product brand.
 
 Base URL: `{HomeAssistantUrl}` (no trailing slash required on the client; paths are rooted at `/api/rowe_pc_blocker/`).
 

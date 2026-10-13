@@ -7,23 +7,23 @@
   max: 10
   trigger:
     - platform: template
-      id: child_one
+      id: kid1
       value_template: >-
-        {{ is_state('switch.child_one_pc_blocked', 'on')
-           and is_state('binary_sensor.child_one_pc_agent_online', 'off')
-           and states('sensor.child_one_pc_power') | float(0) > 10 }}
+        {{ is_state('switch.kid1_pc_blocked', 'on')
+           and is_state('binary_sensor.kid1_pc_agent_online', 'off')
+           and states('sensor.kid1_pc_power') | float(0) > 10 }}
       for: "00:02:00"
     - platform: template
-      id: child_two
+      id: kid2
       value_template: >-
-        {{ is_state('switch.child_two_pc_blocked', 'on')
-           and is_state('binary_sensor.child_two_pc_agent_online', 'off')
-           and states('sensor.child_two_pc_power') | float(0) > 10 }}
+        {{ is_state('switch.kid2_pc_blocked', 'on')
+           and is_state('binary_sensor.kid2_pc_agent_online', 'off')
+           and states('sensor.kid2_pc_power') | float(0) > 10 }}
       for: "00:02:00"
   action:
     - variables:
-        child: "{{ 'Child One' if trigger.id == 'child_one' else 'Child Two' }}"
-        device_id: "{{ 'child_one_pc' if trigger.id == 'child_one' else 'child_two_pc' }}"
+        child: "{{ 'Kid 1' if trigger.id == 'kid1' else 'Kid 2' }}"
+        device_id: "{{ 'kid1_pc' if trigger.id == 'kid1' else 'kid2_pc' }}"
         message: >-
           {{ child }}'s PC is powered on and requested blocked, but its blocker
           agent is offline. Treat the PC as unblocked until it reconnects.

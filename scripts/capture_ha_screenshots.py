@@ -82,7 +82,7 @@ async def _ensure_device(session: aiohttp.ClientSession, token: str) -> None:
         headers=headers,
         json={
             "device_id": "demo-child-pc",
-            "device_name": "Demo Child PC",
+            "device_name": "Child PC",
             "device_type": "windows",
             "windows_username": "child",
             "api_key": "demo-api-key-replace-in-production-32chars",
@@ -213,7 +213,7 @@ async def main() -> None:
                 await page.screenshot(path=str(OUT / "options-flow.png"), full_page=True)
 
         await page.goto(f"{HA_URL}/config/devices/dashboard", wait_until="networkidle")
-        device = page.get_by_text("Demo Child PC").first
+        device = page.get_by_text("Child PC").first
         if await device.count():
             await device.click()
             await page.wait_for_timeout(1500)

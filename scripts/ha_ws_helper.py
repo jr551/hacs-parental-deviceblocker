@@ -87,10 +87,10 @@ async def ensure_integration() -> None:
                 "type": "config_entries/flow/submit",
                 "flow_id": flow_id,
                 "user_input": {
-                    "device_id": "demo-child-pc",
-                    "device_name": "Demo Child PC",
+                    "device_id": "kid1-pc",
+                    "device_name": "Child PC",
                     "device_type": "windows",
-                    "windows_username": "child",
+                    "windows_username": "kid1",
                     "api_key": "demo-api-key-replace-in-production-32chars",
                 },
             }

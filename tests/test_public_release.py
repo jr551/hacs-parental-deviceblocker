@@ -52,12 +52,19 @@ class PublicReleaseTests(unittest.TestCase):
             "s3" + ".rowe.lol",
             "john" + " rowe",
             "rowe" + " device blocker",
+            "vick" + "y",
+            "matt" + "hew",
+            "alex" + "ander",
+            "john" + "son",
         )
         ignored = {".git", "artifacts", "bin", "obj", "__pycache__"}
         for path in ROOT.rglob("*"):
             if not path.is_file() or any(part in ignored for part in path.parts):
                 continue
-            if path == ROOT / "docs" / "LEAK_AUDIT.md":
+            if path in {
+                ROOT / "docs" / "LEAK_AUDIT.md",
+                ROOT / "tests" / "test_public_release.py",
+            }:
                 continue
             try:
                 text = path.read_text(encoding="utf-8").lower()
