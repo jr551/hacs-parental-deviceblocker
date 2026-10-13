@@ -37,6 +37,94 @@ final class HomeAssistantClient {
         }
     }
 
+    static final class SetupResult {
+        final boolean ok;
+        final boolean pinRequired;
+        final String deviceId;
+        final String deviceKey;
+        final String childName;
+        final String message;
+
+        SetupResult(
+                boolean ok,
+                boolean pinRequired,
+                String deviceId,
+                String deviceKey,
+                String childName,
+                String message) {
+            this.ok = ok;
+            this.pinRequired = pinRequired;
+            this.deviceId = deviceId == null ? "" : deviceId;
+            this.deviceKey = deviceKey == null ? "" : deviceKey;
+            this.childName = childName == null ? "" : childName;
+            this.message = message == null ? "" : message;
+        }
+
+        static SetupResult message(String message) {
+            return new SetupResult(false, false, "", "", "", message);
+        }
+    }
+
+    /**
+     * Ask Home Assistant to create or reuse this child's phone. The API key
+     * comes back to the phone and is not shown to the parent.
+     */
+    static SetupResult provision(String homeAssistantUrl, String childName, String pin) {
+        if (!AppConfig.acceptsHomeAssistantUrl(homeAssistantUrl)) {
+            return SetupResult.message("That Home Assistant address needs to start with https://.");
+        }
+        AppConfig address = new AppConfig(homeAssistantUrl, "setup", "setup");
+        HttpURLConnection connection = null;
+        try {
+            URI uri = URI.create(address.homeAssistantUrl + "/api/rowe_pc_blocker/provision");
+            connection = (HttpURLConnection) uri.toURL().openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(8_000);
+            connection.setReadTimeout(20_000);
+            connection.setUseCaches(false);
+            connection.setInstanceFollowRedirects(false);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            JSONObject request = new JSONObject().put("child_name", childName.trim());
+            if (pin != null && !pin.trim().isEmpty()) {
+                request.put("pin", pin.trim());
+            }
+            byte[] bytes = request.toString().getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            String text = stream == null ? "" : readAll(stream);
+            JSONObject body = text.isEmpty() ? new JSONObject() : new JSONObject(text);
+            if (status == 200 && body.optBoolean("ok")) {
+                String deviceId = body.optString("device_id", "").trim();
+                String deviceKey = body.optString("api_key", "").trim();
+                String name = body.optString("child_name", childName).trim();
+                if (deviceId.isEmpty() || deviceKey.isEmpty()) {
+                    return SetupResult.message("Home Assistant could not set up this phone.");
+                }
+                return new SetupResult(true, false, deviceId, deviceKey, name, "This phone is set up.");
+            }
+            if (body.optBoolean("pin_required") || status == 401) {
+                return new SetupResult(
+                        false, true, "", "", "", "Enter the parent PIN for this child.");
+            }
+            String error = body.optString("error", "").trim();
+            if (error.isEmpty() || error.length() > 160) {
+                return SetupResult.message("Home Assistant could not set up this phone.");
+            }
+            return SetupResult.message(error);
+        } catch (Exception exception) {
+            return SetupResult.message("Home Assistant could not be reached.");
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
     private final AppConfig config;
 
     HomeAssistantClient(AppConfig config) {

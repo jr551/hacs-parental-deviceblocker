@@ -51,7 +51,7 @@ class PortalTests(unittest.TestCase):
             },
             {
                 "state": "120",
-                "attributes": {"child_id": "child-matthew", "child_name": "Matthew"},
+                "attributes": {"child_id": "child-casey", "child_name": "Casey"},
             },
         ]
         self.assertEqual(
@@ -59,8 +59,8 @@ class PortalTests(unittest.TestCase):
             ChildIdentity("child-alex", "Alex"),
         )
         self.assertEqual(
-            resolve_child_identity("matthew", "Matthew phone", children),
-            ChildIdentity("child-matthew", "Matthew"),
+            resolve_child_identity("casey", "Casey phone", children),
+            ChildIdentity("child-casey", "Casey"),
         )
         self.assertEqual(
             resolve_child_identity("", "Alex phone", children),

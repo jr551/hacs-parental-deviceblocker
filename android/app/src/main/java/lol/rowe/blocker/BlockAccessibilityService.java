@@ -24,6 +24,11 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private volatile String enforcementStatus = EnforcementStatus.MONITORING;
     private volatile String enforcementDetail = "";
     private volatile String foregroundPackage = "";
+    /** Allow-listed package just opened from the block screen, if any. */
+    private volatile String pendingAllowedPackage;
+    private volatile long pendingAllowedAt;
+    /** Last disallowed app, so its closing window does not cover the launch. */
+    private volatile String lastDisallowedPackage = "";
     private long lastStatusPost;
     private volatile long lastBlockLaunch;
     private String lastReportedPackage = "";
@@ -48,20 +53,29 @@ public final class BlockAccessibilityService extends AccessibilityService {
         }
     }
 
+    static void noteAllowedLaunch(String packageName) {
+        BlockAccessibilityService service = activeInstance;
+        if (service == null || packageName == null || packageName.isEmpty()) {
+            return;
+        }
+        service.adoptAllowedLaunch(packageName);
+    }
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         CharSequence packageName = event.getPackageName();
-        if (packageName == null) {
+        if (packageName == null || decision == null) {
             return;
         }
-        foregroundPackage = packageName.toString();
+        String eventPackage = packageName.toString();
+        boolean windowStateChanged =
+                event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
         String title = eventTitle(event.getClassName());
-        reportActivityIfNeeded(foregroundPackage, title);
-
         Policy policy = currentPolicy;
-        if (decision != null
-                && decision.isUninstallSurface(foregroundPackage, title)
+        if (windowStateChanged
+                && decision.isUninstallSurface(eventPackage, title)
                 && !ParentMaintenance.allows()) {
+            foregroundPackage = eventPackage;
             if (policy.shouldCaptureForeground() || policy.shouldWarnGrace()) {
                 showBlockScreen(policy);
             } else {
@@ -71,11 +85,29 @@ public final class BlockAccessibilityService extends AccessibilityService {
         }
         if (!policy.shouldCaptureForeground()
                 && !policy.shouldWarnGrace()
-                && !foregroundPackage.equals(getPackageName())
-                && (decision == null || !decision.isUninstallSurface(foregroundPackage, title))) {
+                && !eventPackage.equals(getPackageName())
+                && !decision.isUninstallSurface(eventPackage, title)) {
             MainActivity.clearUninstallGuard();
         }
-        if (decision != null && decision.shouldShowBlockScreen(policy.shouldCaptureForeground(), foregroundPackage)) {
+        long sinceLaunch = pendingAllowedPackage == null
+                ? -1L
+                : SystemClock.elapsedRealtime() - pendingAllowedAt;
+        PolicyDecision.WindowUpdate update = decision.onForegroundEvent(
+                policy.shouldCaptureForeground(),
+                windowStateChanged,
+                foregroundPackage,
+                eventPackage,
+                pendingAllowedPackage,
+                lastDisallowedPackage,
+                sinceLaunch);
+        if (update.raiseBlockScreen) {
+            lastDisallowedPackage = update.foreground;
+        }
+        foregroundPackage = update.foreground;
+        if (windowStateChanged) {
+            reportActivityIfNeeded(foregroundPackage, title);
+        }
+        if (update.raiseBlockScreen) {
             showBlockScreen(policy);
         }
     }
@@ -175,7 +207,22 @@ public final class BlockAccessibilityService extends AccessibilityService {
         activityExecutor.execute(() -> postReport(application, window, true));
     }
 
+    private void adoptAllowedLaunch(String packageName) {
+        if (decision != null && !decision.isAllowed(true, foregroundPackage)) {
+            lastDisallowedPackage = foregroundPackage;
+        }
+        pendingAllowedPackage = packageName;
+        pendingAllowedAt = SystemClock.elapsedRealtime();
+        foregroundPackage = packageName;
+    }
+
     private void showBlockScreen(Policy policy) {
+        // Never resume the block activity over an app the holder is allowed to use.
+        if (policy.shouldCaptureForeground()
+                && decision != null
+                && decision.isAllowed(true, foregroundPackage)) {
+            return;
+        }
         long now = SystemClock.elapsedRealtime();
         if (now - lastBlockLaunch < 750) {
             return;
@@ -192,7 +239,14 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 .putExtra(MainActivity.EXTRA_EXTENSION_AVAILABLE, policy.extensionAvailable)
                 .putExtra(MainActivity.EXTRA_ENFORCE_AT, policy.enforceAt == null ? null : policy.enforceAt.toString())
                 .putExtra(MainActivity.EXTRA_EXTENSION_UNTIL, policy.extensionUntil == null ? null : policy.extensionUntil.toString());
-        mainHandler.post(() -> startActivity(intent));
+        mainHandler.post(() -> {
+            if (policy.shouldCaptureForeground()
+                    && decision != null
+                    && decision.isAllowed(true, foregroundPackage)) {
+                return;
+            }
+            startActivity(intent);
+        });
     }
 
     private void showUninstallGuard() {

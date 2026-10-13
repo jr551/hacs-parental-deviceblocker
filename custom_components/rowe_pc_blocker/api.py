@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hmac
 import re
+import secrets
 from datetime import timedelta
 
 from aiohttp import web
 
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
 
 from .api_security import (
@@ -27,7 +29,13 @@ from .api_security import (
     valid_device_id,
 )
 from .const import (
+    CONF_API_KEY,
+    CONF_DEVICE_ID,
+    CONF_DEVICE_NAME,
+    CONF_DEVICE_TYPE,
     CONF_PARENT_PIN,
+    CONF_WINDOWS_USERNAME,
+    DEVICE_TYPE_ANDROID,
     DOMAIN,
     EVENT_PARENT_OVERRIDE,
     EVENT_POINTS_HOUR,
@@ -39,10 +47,12 @@ from .const import (
 )
 from .portal import (
     PORTAL_HTML,
+    ChildIdentity,
     build_portal_snapshot,
     points_hour_refusal,
     resolve_child_identity,
 )
+from .provision import PhoneEntry, decide_provision
 from .wake_alarm import wake_alarm_payload
 from .protocol_surface import (
     BACKUP_CONFIG_DISABLED_BODY,
@@ -615,10 +625,172 @@ class AndroidBackupStatusView(HomeAssistantView):
         return self.json({"ok": True})
 
 
+def _provision_children(hass: HomeAssistant) -> list[ChildIdentity]:
+    children: list[ChildIdentity] = []
+    seen: set[str] = set()
+    for state in hass.states.async_all("sensor"):
+        entity_id = state.entity_id
+        if not entity_id.startswith("sensor.family_chore_manager_"):
+            continue
+        if not entity_id.endswith("_points"):
+            continue
+        child_id = str(state.attributes.get("child_id", "")).strip()
+        name = str(state.attributes.get("child_name", "")).strip()
+        if not child_id or not name or child_id in seen:
+            continue
+        seen.add(child_id)
+        children.append(ChildIdentity(child_id=child_id, name=name))
+    return children
+
+
+def _provision_entries(hass: HomeAssistant) -> list[PhoneEntry]:
+    entries: list[PhoneEntry] = []
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        data = entry.data
+        entries.append(
+            PhoneEntry(
+                device_id=str(data.get(CONF_DEVICE_ID, "")),
+                device_name=str(data.get(CONF_DEVICE_NAME, "")),
+                device_type=str(data.get(CONF_DEVICE_TYPE, "")),
+                windows_username=str(data.get(CONF_WINDOWS_USERNAME, "")),
+                api_key=str(data.get(CONF_API_KEY, "")),
+                parent_pin=str(entry.options.get(CONF_PARENT_PIN, "")).strip(),
+            )
+        )
+    return entries
+
+
+class AndroidProvisionView(HomeAssistantView):
+    """Let a phone set itself up from a child name.
+
+    The rules live in provision.py: known chore-manager children only, and the
+    existing parent-override PIN when that phone entry already has one.
+    """
+
+    url = "/api/rowe_pc_blocker/provision"
+    name = "api:rowe_pc_blocker:provision"
+    requires_auth = False
+
+    async def post(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        try:
+            payload = await request.json()
+        except (ValueError, web.HTTPBadRequest):
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        if not isinstance(payload, dict):
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+
+        child_name = str(payload.get("child_name", "")).strip()
+        supplied_pin = str(payload.get("pin", "")).strip()
+        decision = decide_provision(
+            child_name,
+            _provision_children(hass),
+            _provision_entries(hass),
+            supplied_pin,
+        )
+        if decision.pin_checked and decision.device_id:
+            locked_for = _pin_lockout_remaining(hass, f"provision:{decision.device_id}")
+            if locked_for:
+                return self.json(
+                    {
+                        "error": "Too many wrong PINs. Try again in "
+                        f"{max(1, round(locked_for / 60))} minute(s).",
+                    },
+                    status_code=429,
+                )
+        if decision.action == "bad_pin" and decision.device_id:
+            attempts = _pin_attempts(hass)
+            record = attempts.setdefault(
+                f"provision:{decision.device_id}",
+                {"failures": 0, "locked_until": None},
+            )
+            record["failures"] += 1
+            remaining = PARENT_PIN_MAX_ATTEMPTS - record["failures"]
+            if remaining <= 0:
+                record["locked_until"] = dt_util.utcnow() + timedelta(
+                    minutes=PARENT_PIN_LOCKOUT_MINUTES
+                )
+                return self.json(
+                    {
+                        "error": "Wrong PIN. Locked for "
+                        f"{PARENT_PIN_LOCKOUT_MINUTES} minutes.",
+                    },
+                    status_code=429,
+                )
+            return self.json({"error": decision.message}, status_code=403)
+        if decision.action == "pin_required":
+            return self.json(
+                {"pin_required": True, "error": decision.message},
+                status_code=401,
+            )
+        if decision.action == "unknown_child":
+            return self.json({"error": decision.message}, status_code=404)
+        if decision.action == "unavailable":
+            return self.json({"error": decision.message}, status_code=409)
+        if decision.action == "reuse":
+            if decision.pin_checked and decision.device_id:
+                _pin_attempts(hass).pop(f"provision:{decision.device_id}", None)
+            return self.json(
+                {
+                    "ok": True,
+                    "device_id": decision.device_id,
+                    "api_key": decision.api_key,
+                    "child_name": decision.child_name,
+                }
+            )
+        if decision.action != "create":
+            return self.json(
+                {"error": "Home Assistant could not set up this phone."},
+                status_code=500,
+            )
+
+        api_key = secrets.token_urlsafe(32)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "user"},
+            data={
+                CONF_DEVICE_ID: decision.device_id,
+                CONF_DEVICE_NAME: f"{decision.child_name}'s phone",
+                CONF_DEVICE_TYPE: DEVICE_TYPE_ANDROID,
+                CONF_WINDOWS_USERNAME: decision.child_name,
+                CONF_API_KEY: api_key,
+            },
+        )
+        if result.get("type") != FlowResultType.CREATE_ENTRY:
+            again = decide_provision(
+                child_name,
+                _provision_children(hass),
+                _provision_entries(hass),
+                supplied_pin,
+            )
+            if again.action == "reuse" and again.api_key:
+                return self.json(
+                    {
+                        "ok": True,
+                        "device_id": again.device_id,
+                        "api_key": again.api_key,
+                        "child_name": again.child_name,
+                    }
+                )
+            return self.json(
+                {"error": "Home Assistant could not set up this phone."},
+                status_code=409,
+            )
+        return self.json(
+            {
+                "ok": True,
+                "device_id": decision.device_id,
+                "api_key": api_key,
+                "child_name": decision.child_name,
+            }
+        )
+
+
 def async_register_api(hass: HomeAssistant) -> None:
     """Register API views once."""
     if hass.data.setdefault(DOMAIN, {}).get("_api_registered"):
         return
+    hass.http.register_view(AndroidProvisionView)
     hass.http.register_view(PcStateView)
     hass.http.register_view(PcParentOverrideView)
     hass.http.register_view(PcPointsHourView)

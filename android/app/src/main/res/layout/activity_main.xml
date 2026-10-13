@@ -28,45 +28,85 @@
                 android:id="@+id/statusText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="Not configured"
-                android:textColor="@color/muted"
-                android:textSize="16sp" />
+                android:layout_marginTop="16dp"
+                android:text="Enter this child's name and your Home Assistant address."
+                android:textColor="@color/white"
+                android:textSize="20sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="28dp"
+                android:labelFor="@+id/childName"
+                android:text="Child's name"
+                android:textColor="@color/white"
+                android:textSize="22sp" />
+
+            <EditText
+                android:id="@+id/childName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Child's name"
+                android:inputType="textCapWords"
+                android:textColor="@color/white"
+                android:textColorHint="@color/muted"
+                android:textSize="20sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:labelFor="@+id/homeAssistantUrl"
+                android:text="Home Assistant address"
+                android:textColor="@color/white"
+                android:textSize="22sp" />
 
             <EditText
                 android:id="@+id/homeAssistantUrl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:hint="Home Assistant URL"
+                android:hint="Home Assistant address"
                 android:inputType="textUri"
                 android:textColor="@color/white"
-                android:textColorHint="@color/muted" />
+                android:textColorHint="@color/muted"
+                android:textSize="20sp" />
 
             <EditText
-                android:id="@+id/deviceId"
+                android:id="@+id/parentPin"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Device ID, e.g. keithphone"
-                android:inputType="text"
+                android:layout_marginTop="12dp"
+                android:hint="Parent PIN"
+                android:inputType="numberPassword"
                 android:textColor="@color/white"
-                android:textColorHint="@color/muted" />
-
-            <EditText
-                android:id="@+id/deviceKey"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="Device API key"
-                android:inputType="textPassword"
-                android:textColor="@color/white"
-                android:textColorHint="@color/muted" />
+                android:textColorHint="@color/muted"
+                android:textSize="20sp"
+                android:visibility="gone" />
 
             <Button
                 android:id="@+id/saveButton"
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:layout_marginTop="18dp"
-                android:text="Save configuration" />
+                android:layout_height="64dp"
+                android:layout_marginTop="24dp"
+                android:text="Set up this phone" />
+
+            <Button
+                android:id="@+id/moreButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@android:color/transparent"
+                android:text="More"
+                android:textAllCaps="false"
+                android:textColor="@color/muted"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/moreSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
 
             <Button
                 android:id="@+id/accessibilityButton"
@@ -144,6 +184,7 @@
                 android:text="Enable Accessibility, then tap Allow unrestricted battery. On Samsung Galaxy S20, S20+ (SM-G986B), and S22 also set Battery to Unrestricted and remove the app from Sleeping apps, Deep sleeping apps, and Put unused apps to sleep. This is friction, not Device Owner: uninstall and Accessibility off still bypass enforcement, and a network failure fails open. Optional media backup needs photo/video permission and only uploads on external power; the initial sync also needs unmetered Wi-Fi."
                 android:textColor="@color/muted"
                 android:textSize="14sp" />
+            </LinearLayout>
         </LinearLayout>
     </ScrollView>
 

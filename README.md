@@ -60,9 +60,13 @@ Wire protocol (unchanged): [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 Sideload APK from `./scripts/build-android-docker.sh`. Server-mediated S3 media backup was **removed in 0.10.0**; legacy `/backup/*` API paths still return `enabled: false` so older app builds fail gracefully. See [android deploy checklist](docs/android-deploy-checklist.md).
 
+On first launch the parent enters the child's name and the Home Assistant address, then taps **Set up this phone**. The phone asks Home Assistant for this child's device entry and stores the address, device id, and API key itself. If Home Assistant cannot be reached, the screen says so and blocking stays off. Use HTTPS. Plain HTTP is accepted only for local names such as `http://192.168.x.x`, `http://homeassistant.local`, or a single-label LAN host. A local parent PIN, if one has already been set, is required before changing a phone that is already set up. Two wrong attempts lock that change for 15 minutes.
+
 Each phone is its own integration entry, with its own device id and API key. Set **Child name** to the chore-manager child that phone belongs to (the same match the points portal already uses: the child name, or that name inside the device name). Buying an hour spends that child's Taskmate points. Nothing in the phone app is tied to one child.
 
 The wake alarm is configured only on that device's integration options: on/off, time, weekdays (Monday–Friday until you change them), and alarm volume **0–100**. 100 is the phone's maximum alarm-stream volume, and 0 is silent. The phone reads `wake_alarm` on the existing once-a-minute state poll, caches the last schedule, and rings on the alarm stream at that volume. The person holding the phone can stop a ringing alarm. If Home Assistant cannot be reached, the block fails open and the last cached alarm stays scheduled.
+
+Samsung Galaxy S20 (SM-G980F/G981B, One UI 2.5–5.x, Android 10–13), S20+ (SM-G986B), and Galaxy S22 (Android 13–14) are the documented targets, with targetSdk 35 and minSdk 29. The 0.4.13 build handles Android 13 scoped storage (READ_MEDIA_IMAGES/VIDEO) and Android 14 partial user-selected media (READ_MEDIA_VISUAL_USER_SELECTED), and treats wireless charging as external power. WhatsApp/Maps `getLaunchIntentForPackage` only resolves the current user/profile — clones in Samsung Secure Folder / Dual Messenger are isolated and will not be launched; the primary profile’s install is used. Test Secure Folder explicitly if you rely on it.
 
 ## Compatibility identifiers (legacy names)
 
@@ -82,6 +86,7 @@ Shipped agents depend on these **technical** identifiers. User-facing branding i
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m compileall -q custom_components/rowe_pc_blocker
+
 ```
 
 ## Changelog

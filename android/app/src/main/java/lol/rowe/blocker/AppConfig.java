@@ -10,15 +10,22 @@ final class AppConfig {
     private static final String PREFS = "rowe_blocker";
     private static final String URL = "ha_url";
     private static final String DEVICE_ID = "device_id";
+    private static final String CHILD_NAME = "child_name";
 
     final String homeAssistantUrl;
     final String deviceId;
     final String deviceKey;
+    final String childName;
 
     AppConfig(String homeAssistantUrl, String deviceId, String deviceKey) {
+        this(homeAssistantUrl, deviceId, deviceKey, "");
+    }
+
+    AppConfig(String homeAssistantUrl, String deviceId, String deviceKey, String childName) {
         this.homeAssistantUrl = withoutTrailingSlashes(homeAssistantUrl == null ? "" : homeAssistantUrl.trim());
         this.deviceId = deviceId == null ? "" : deviceId.trim().toLowerCase(Locale.ROOT);
         this.deviceKey = deviceKey == null ? "" : deviceKey.trim();
+        this.childName = childName == null ? "" : childName.trim();
     }
 
     private static String withoutTrailingSlashes(String value) {
@@ -132,7 +139,8 @@ final class AppConfig {
         return new AppConfig(
                 preferences.getString(URL, ""),
                 preferences.getString(DEVICE_ID, ""),
-                DeviceKeyStore.read(context));
+                DeviceKeyStore.read(context),
+                preferences.getString(CHILD_NAME, ""));
     }
 
     static boolean save(Context context, AppConfig config) {
@@ -140,6 +148,7 @@ final class AppConfig {
                 .edit()
                 .putString(URL, config.homeAssistantUrl)
                 .putString(DEVICE_ID, config.deviceId)
+                .putString(CHILD_NAME, config.childName)
                 .apply();
         return DeviceKeyStore.write(context, config.deviceKey);
     }

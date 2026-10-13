@@ -15,6 +15,8 @@ API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal", "query_key_ok": True},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal/data"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/portal/action"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/points_hour"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/provision"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/parent_override"},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/backup/config"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/backup/presign"},

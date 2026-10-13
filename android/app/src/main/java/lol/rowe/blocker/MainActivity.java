@@ -55,11 +55,13 @@ public final class MainActivity extends Activity {
     private Button pointsHourButton;
     private GridLayout allowedApps;
     private EditText homeAssistantUrl;
-    private EditText deviceId;
-    private EditText deviceKey;
+    private EditText childName;
+    private EditText parentPin;
+    private View moreSection;
     private volatile Policy currentPolicy = Policy.UNBLOCKED;
-    /** The configuration editor stays hidden until a parent enters the PIN. */
+    /** Local PIN unlock for changing a phone that is already set up. */
     private boolean setupUnlocked;
+    private String pendingAfterPin;
     private boolean uninstallGuard;
     private boolean pinDialogShowing;
     private int pinFailures;
@@ -97,15 +99,12 @@ public final class MainActivity extends Activity {
         pointsHourButton = findViewById(R.id.pointsHourButton);
         allowedApps = findViewById(R.id.allowedApps);
         homeAssistantUrl = findViewById(R.id.homeAssistantUrl);
-        deviceId = findViewById(R.id.deviceId);
-        deviceKey = findViewById(R.id.deviceKey);
+        childName = findViewById(R.id.childName);
+        parentPin = findViewById(R.id.parentPin);
+        moreSection = findViewById(R.id.moreSection);
 
-        AppConfig config = AppConfig.load(this);
-        homeAssistantUrl.setText(config.homeAssistantUrl);
-        deviceId.setText(config.deviceId);
-        deviceKey.setText(config.deviceKey);
-
-        findViewById(R.id.saveButton).setOnClickListener(view -> saveConfiguration());
+        findViewById(R.id.saveButton).setOnClickListener(view -> setUpThisPhone());
+        findViewById(R.id.moreButton).setOnClickListener(view -> toggleMore());
         findViewById(R.id.changePinButton).setOnClickListener(
                 view -> promptForNewParentPin(false));
         findViewById(R.id.mediaBackupPermissionButton).setOnClickListener(
@@ -123,15 +122,13 @@ public final class MainActivity extends Activity {
         // Publish the activity only after every view used by applyPolicy is ready.
         activeInstance = this;
 
-        // The layout ships with the editor visible; keep it hidden until either the
-        // block screen takes over or a parent unlocks it with the PIN.
-        setupScroll.setVisibility(View.GONE);
         if (getIntent().getBooleanExtra(EXTRA_UNINSTALL_GUARD, false)) {
             showUninstallGuard();
         } else if (getIntent().getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
+            setupScroll.setVisibility(View.GONE);
             showBlocked(policyFromIntent(getIntent()));
         } else {
-            promptForParentPin();
+            showSetupForm();
         }
         refreshWakeStatus();
         executor.scheduleWithFixedDelay(this::refreshPolicyIfServiceIsDown, 0, ReportSchedule.POLICY_POLL_SECONDS, TimeUnit.SECONDS);
@@ -220,6 +217,14 @@ public final class MainActivity extends Activity {
                         pinLockoutUntil = 0L;
                         savePinFailures();
                         unlockSetup();
+                        String pending = pendingAfterPin;
+                        pendingAfterPin = null;
+                        if ("setup".equals(pending)) {
+                            setUpThisPhone();
+                        } else if ("more".equals(pending)) {
+                            moreSection.setVisibility(View.VISIBLE);
+                            updateMediaBackupStatus();
+                        }
                         return;
                     }
                     pinFailures++;
@@ -378,36 +383,85 @@ public final class MainActivity extends Activity {
         updateMediaBackupStatus();
     }
 
-    private void saveConfiguration() {
-        AppConfig config = new AppConfig(
-                homeAssistantUrl.getText().toString().trim(),
-                deviceId.getText().toString().trim().toLowerCase(Locale.ROOT),
-                deviceKey.getText().toString().trim());
-        if (!config.isConfigured()) {
-            Toast.makeText(this, "Complete all three configuration fields.", Toast.LENGTH_LONG).show();
-            return;
+    private void showSetupForm() {
+        AppConfig config = AppConfig.load(this);
+        childName.setText(ChildDevice.displayName(config.childName, config.deviceId));
+        if (homeAssistantUrl.getText().length() == 0) {
+            homeAssistantUrl.setText(config.homeAssistantUrl);
         }
-        if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
-            Toast.makeText(
-                    this,
-                    "Use HTTPS, or HTTP only for a local Home Assistant address.",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        if (!AppConfig.save(this, config)) {
-            Toast.makeText(
-                    this,
-                    "Could not seal the device key in the Android Keystore. Re-enter the key and try again.",
-                    Toast.LENGTH_LONG).show();
-            updateStatus();
-            return;
-        }
-        MediaBackupScheduler.schedule(this);
-        EnforcementWatchdogJobService.schedule(this);
-        EnforcementWatchdogService.start(this);
-        Toast.makeText(this, "Configuration saved.", Toast.LENGTH_SHORT).show();
+        findViewById(R.id.moreButton).setVisibility(config.isConfigured() ? View.VISIBLE : View.GONE);
+        moreSection.setVisibility(View.GONE);
+        setupScroll.setVisibility(View.VISIBLE);
         updateStatus();
-        executor.execute(this::refreshPolicy);
+    }
+
+    private void toggleMore() {
+        if (moreSection.getVisibility() == View.VISIBLE) {
+            moreSection.setVisibility(View.GONE);
+            return;
+        }
+        if (ParentPin.isSet(this) && !setupUnlocked) {
+            pendingAfterPin = "more";
+            promptForParentPin();
+            return;
+        }
+        moreSection.setVisibility(View.VISIBLE);
+        updateMediaBackupStatus();
+    }
+
+    private void setUpThisPhone() {
+        String name = childName.getText().toString().trim();
+        String url = homeAssistantUrl.getText().toString().trim();
+        if (name.isEmpty() || url.isEmpty()) {
+            statusText.setText("Enter this child's name and your Home Assistant address.");
+            return;
+        }
+        if (!AppConfig.acceptsHomeAssistantUrl(url)) {
+            statusText.setText("That Home Assistant address needs to start with https://.");
+            return;
+        }
+        AppConfig existing = AppConfig.load(this);
+        if (existing.isConfigured() && ParentPin.isSet(this) && !setupUnlocked) {
+            pendingAfterPin = "setup";
+            promptForParentPin();
+            return;
+        }
+        String pin = parentPin.getText().toString().trim();
+        statusText.setText("Setting up this phone…");
+        View saveButton = findViewById(R.id.saveButton);
+        saveButton.setEnabled(false);
+        executor.execute(() -> {
+            HomeAssistantClient.SetupResult result =
+                    HomeAssistantClient.provision(url, name, pin);
+            mainHandler.post(() -> {
+                if (isFinishing()) {
+                    return;
+                }
+                saveButton.setEnabled(true);
+                if (result.ok) {
+                    AppConfig.save(this, new AppConfig(
+                            url, result.deviceId, result.deviceKey, result.childName));
+                    parentPin.setText("");
+                    parentPin.setVisibility(View.GONE);
+                    childName.setText(result.childName);
+                    statusText.setText("This phone is set up.");
+                    findViewById(R.id.moreButton).setVisibility(View.VISIBLE);
+                    if (!PassiveLocation.hasPermission(this)) {
+                        requestPermissions(new String[] {
+                                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+                        }, 1);
+                    }
+                    MediaBackupScheduler.schedule(this);
+                    EnforcementWatchdogJobService.schedule(this);
+                    EnforcementWatchdogService.start(this);
+                    executor.execute(this::refreshPolicy);
+                    return;
+                }
+                parentPin.setVisibility(result.pinRequired ? View.VISIBLE : parentPin.getVisibility());
+                statusText.setText(result.message);
+            });
+        });
     }
 
     private void requestMediaBackupAccess() {
@@ -574,13 +628,11 @@ public final class MainActivity extends Activity {
             finish();
         } else {
             blockedPanel.setVisibility(View.GONE);
-            // Never reveal the editor (HA URL / device id / key) without the parent PIN.
-            if (setupUnlocked) {
-                setupScroll.setVisibility(View.VISIBLE);
-                updateStatus();
+            setupScroll.setVisibility(View.VISIBLE);
+            if (childName.getText().length() == 0) {
+                showSetupForm();
             } else {
-                setupScroll.setVisibility(View.GONE);
-                promptForParentPin();
+                updateStatus();
             }
             exitImmersiveMode();
         }
@@ -812,25 +864,12 @@ public final class MainActivity extends Activity {
     private void updateStatus() {
         AppConfig config = AppConfig.load(this);
         StringBuilder text = new StringBuilder();
-        if (DeviceKeyStore.needsKeyReentry(this)) {
-            text.append("The sealed device key could not be read. Re-enter the Home Assistant device key.");
-        } else if (!config.isConfigured()) {
-            text.append("Enter the Home Assistant device details below.");
+        if (!config.isConfigured()) {
+            text.append("Enter this child's name and your Home Assistant address.");
         } else if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
-            text.append("The saved URL must be HTTPS, or HTTP on a local network address.");
-        } else if (!isAccessibilityEnabled()) {
-            text.append("Configured, but Accessibility enforcement still needs to be enabled.");
+            text.append("That Home Assistant address needs to start with https://.");
         } else {
-            text.append("Configured. Accessibility enforcement is enabled.");
-        }
-        if (config.isConfigured() && DeviceKeyStore.keystoreUnavailable(this)) {
-            text.append(" Android Keystore sealing failed on the last save.");
-        } else if (config.isConfigured() && !DeviceKeyStore.isSealed(this)) {
-            text.append(" Device key is not sealed in the Android Keystore.");
-        }
-        String note = EnforcementNote.parentText(this);
-        if (!note.isEmpty()) {
-            text.append("\n").append(note);
+            text.append("This phone is set up.");
         }
         statusText.setText(text.toString());
     }
@@ -878,6 +917,7 @@ public final class MainActivity extends Activity {
             return;
         }
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        BlockAccessibilityService.noteAllowedLaunch(packageName);
         startActivity(launch);
     }
 

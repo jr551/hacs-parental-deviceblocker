@@ -32,6 +32,8 @@ POST_VIEWS = frozenset(
         "PcExtensionView",
         "PcPortalActionView",
         "PcParentOverrideView",
+        "PcPointsHourView",
+        "AndroidProvisionView",
         "AndroidBackupPresignView",
         "AndroidBackupStatusView",
     }
