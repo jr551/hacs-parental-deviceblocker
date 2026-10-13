@@ -15,7 +15,6 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_API_KEY,
     CONF_CLEAR_PARENT_PIN,
-    CONF_CLEAR_S3_CREDENTIALS,
     CONF_CLEAR_SCREEN_CREDENTIALS,
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
@@ -23,7 +22,6 @@ from .const import (
     CONF_KILO_API_KEY,
     CONF_KILO_BASE_URL,
     CONF_KILO_MODEL,
-    CONF_MEDIA_BACKUP_ENABLED,
     CONF_PARENT_PIN,
     CONF_SCREEN_FIXED_INTERVAL,
     CONF_SCREEN_MONITOR_ENABLED,
@@ -31,40 +29,33 @@ from .const import (
     CONF_SCREEN_RANDOM_MAX,
     CONF_SCREEN_RANDOM_MIN,
     CONF_SCREEN_SCHEDULE_MODE,
-    CONF_S3_ACCESS_KEY,
-    CONF_S3_BUCKET,
-    CONF_S3_ENDPOINT,
-    CONF_S3_PREFIX,
-    CONF_S3_REGION,
-    CONF_S3_SECRET_KEY,
     CONF_VNC_HOST,
     CONF_VNC_PASSWORD,
     CONF_VNC_PORT,
+    CONF_WINDOWS_USERNAME,
     DEFAULT_KILO_BASE_URL,
     DEFAULT_KILO_MODEL,
-    DEFAULT_S3_REGION,
     DEFAULT_SCREEN_FIXED_INTERVAL,
     DEFAULT_SCREEN_PROMPT,
     DEFAULT_SCREEN_RANDOM_MAX,
     DEFAULT_SCREEN_RANDOM_MIN,
     DEFAULT_VNC_PORT,
-    CONF_WINDOWS_USERNAME,
     DOMAIN,
     DEVICE_TYPE_ANDROID,
     DEVICE_TYPE_WINDOWS,
+    LEGACY_S3_OPTION_KEYS,
     MAX_SCREEN_INTERVAL_MINUTES,
     MIN_PARENT_PIN_LENGTH,
     MIN_SCREEN_INTERVAL_MINUTES,
     SCREEN_SCHEDULE_MANUAL,
     SCREEN_SCHEDULE_MODES,
 )
-from .s3_backup import clean_prefix, valid_bucket, valid_region, valid_s3_endpoint
 
 
 class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure one Windows PC or Android phone."""
 
-    VERSION = 1
+    VERSION = 2
 
     @staticmethod
     def async_get_options_flow(config_entry) -> config_entries.OptionsFlow:
@@ -82,6 +73,12 @@ class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
         data = dict(data)
         data[CONF_DEVICE_ID] = device_id
+        if not str(data.get(CONF_API_KEY, "")).strip():
+            return self.async_show_form(
+                step_id="user",
+                data_schema=_user_schema(data),
+                errors={CONF_API_KEY: "api_key_required"},
+            )
         return self.async_create_entry(title=data[CONF_DEVICE_NAME], data=data)
 
     async def async_step_import(self, user_input: dict) -> FlowResult:
@@ -94,37 +91,59 @@ class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             candidate = re.sub(r"[^a-z0-9_-]", "", user_input[CONF_DEVICE_ID].lower())
             if not candidate:
                 errors[CONF_DEVICE_ID] = "invalid_device_id"
+            elif not str(user_input.get(CONF_API_KEY, "")).strip():
+                errors[CONF_API_KEY] = "api_key_required"
             else:
                 return await self._create_or_update(user_input, from_import=False)
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_DEVICE_ID, default="child-pc"): str,
-                vol.Required(CONF_DEVICE_NAME, default="Child PC"): str,
-                vol.Required(CONF_DEVICE_TYPE, default=DEVICE_TYPE_WINDOWS): vol.In(
-                    {
-                        DEVICE_TYPE_WINDOWS: "Windows PC",
-                        DEVICE_TYPE_ANDROID: "Android phone",
-                    }
-                ),
-                vol.Required(CONF_WINDOWS_USERNAME, default="child"): str,
-                vol.Required(CONF_API_KEY, default=secrets.token_urlsafe(32)): str,
-            }
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_user_schema(user_input or {}),
+            errors=errors,
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+
+def _user_schema(defaults: dict) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_DEVICE_ID, default=defaults.get(CONF_DEVICE_ID, "child-pc")
+            ): str,
+            vol.Required(
+                CONF_DEVICE_NAME, default=defaults.get(CONF_DEVICE_NAME, "Child PC")
+            ): str,
+            vol.Required(
+                CONF_DEVICE_TYPE,
+                default=defaults.get(CONF_DEVICE_TYPE, DEVICE_TYPE_WINDOWS),
+            ): vol.In(
+                {
+                    DEVICE_TYPE_WINDOWS: "Windows PC",
+                    DEVICE_TYPE_ANDROID: "Android phone",
+                }
+            ),
+            vol.Required(
+                CONF_WINDOWS_USERNAME, default=defaults.get(CONF_WINDOWS_USERNAME, "child")
+            ): str,
+            vol.Required(
+                CONF_API_KEY,
+                default=defaults.get(CONF_API_KEY, secrets.token_urlsafe(32)),
+            ): str,
+        }
+    )
 
 
 class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
-    """Configure optional parent controls, assessment, and Android backup."""
+    """Configure optional parent controls and screen assessment."""
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
-        current = dict(self.config_entry.options)
+        current = {
+            k: v for k, v in self.config_entry.options.items() if k not in LEGACY_S3_OPTION_KEYS
+        }
         errors: dict[str, str] = {}
         if user_input is not None:
             data = dict(user_input)
             clear_credentials = bool(data.pop(CONF_CLEAR_SCREEN_CREDENTIALS, False))
             clear_parent_pin = bool(data.pop(CONF_CLEAR_PARENT_PIN, False))
-            clear_s3 = bool(data.pop(CONF_CLEAR_S3_CREDENTIALS, False))
             if clear_credentials:
                 data[CONF_VNC_PASSWORD] = ""
                 data[CONF_KILO_API_KEY] = ""
@@ -141,31 +160,6 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
                 errors[CONF_PARENT_PIN] = "parent_pin_too_short"
             else:
                 data[CONF_PARENT_PIN] = str(data[CONF_PARENT_PIN]).strip()
-
-            if clear_s3:
-                data[CONF_MEDIA_BACKUP_ENABLED] = False
-                data[CONF_S3_ACCESS_KEY] = ""
-                data[CONF_S3_SECRET_KEY] = ""
-            else:
-                for secret_key in (CONF_S3_ACCESS_KEY, CONF_S3_SECRET_KEY):
-                    if not data.get(secret_key):
-                        data[secret_key] = current.get(secret_key, "")
-
-            if data[CONF_MEDIA_BACKUP_ENABLED]:
-                if self.config_entry.data.get(CONF_DEVICE_TYPE) != DEVICE_TYPE_ANDROID:
-                    errors[CONF_MEDIA_BACKUP_ENABLED] = "android_only"
-                if not valid_s3_endpoint(data[CONF_S3_ENDPOINT]):
-                    errors[CONF_S3_ENDPOINT] = "invalid_s3_endpoint"
-                if not valid_bucket(data[CONF_S3_BUCKET]):
-                    errors[CONF_S3_BUCKET] = "invalid_s3_bucket"
-                if not valid_region(data[CONF_S3_REGION]):
-                    errors[CONF_S3_REGION] = "invalid_s3_region"
-                if not clean_prefix(data[CONF_S3_PREFIX]):
-                    errors[CONF_S3_PREFIX] = "invalid_s3_prefix"
-                if not data[CONF_S3_ACCESS_KEY]:
-                    errors[CONF_S3_ACCESS_KEY] = "required_when_enabled"
-                if not data[CONF_S3_SECRET_KEY]:
-                    errors[CONF_S3_SECRET_KEY] = "required_when_enabled"
 
             if data[CONF_SCREEN_RANDOM_MIN] > data[CONF_SCREEN_RANDOM_MAX]:
                 errors[CONF_SCREEN_RANDOM_MAX] = "random_range"
@@ -188,20 +182,10 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
                 data[CONF_KILO_BASE_URL] = str(data[CONF_KILO_BASE_URL]).strip()
                 data[CONF_KILO_MODEL] = str(data[CONF_KILO_MODEL]).strip()
                 data[CONF_SCREEN_PROMPT] = str(data[CONF_SCREEN_PROMPT]).strip()
-                data[CONF_S3_ENDPOINT] = str(data[CONF_S3_ENDPOINT]).strip().rstrip("/")
-                data[CONF_S3_REGION] = str(data[CONF_S3_REGION]).strip()
-                data[CONF_S3_BUCKET] = str(data[CONF_S3_BUCKET]).strip()
-                data[CONF_S3_PREFIX] = clean_prefix(data[CONF_S3_PREFIX])
                 return self.async_create_entry(title="", data=data)
 
             for key, value in data.items():
-                if key not in (
-                    CONF_VNC_PASSWORD,
-                    CONF_KILO_API_KEY,
-                    CONF_PARENT_PIN,
-                    CONF_S3_ACCESS_KEY,
-                    CONF_S3_SECRET_KEY,
-                ):
+                if key not in (CONF_VNC_PASSWORD, CONF_KILO_API_KEY, CONF_PARENT_PIN):
                     current[key] = value
 
         password = selector.TextSelector(
@@ -266,26 +250,6 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_PARENT_PIN, default=""): password,
                 vol.Required(CONF_CLEAR_PARENT_PIN, default=False): bool,
                 vol.Required(CONF_CLEAR_SCREEN_CREDENTIALS, default=False): bool,
-                vol.Required(
-                    CONF_MEDIA_BACKUP_ENABLED,
-                    default=current.get(CONF_MEDIA_BACKUP_ENABLED, False),
-                ): bool,
-                vol.Required(
-                    CONF_S3_ENDPOINT, default=current.get(CONF_S3_ENDPOINT, "")
-                ): str,
-                vol.Required(
-                    CONF_S3_REGION,
-                    default=current.get(CONF_S3_REGION, DEFAULT_S3_REGION),
-                ): str,
-                vol.Required(
-                    CONF_S3_BUCKET, default=current.get(CONF_S3_BUCKET, "")
-                ): str,
-                vol.Required(CONF_S3_ACCESS_KEY, default=""): password,
-                vol.Required(CONF_S3_SECRET_KEY, default=""): password,
-                vol.Required(
-                    CONF_S3_PREFIX, default=current.get(CONF_S3_PREFIX, "")
-                ): str,
-                vol.Required(CONF_CLEAR_S3_CREDENTIALS, default=False): bool,
                 vol.Required(
                     CONF_KILO_BASE_URL,
                     default=current.get(CONF_KILO_BASE_URL, DEFAULT_KILO_BASE_URL),

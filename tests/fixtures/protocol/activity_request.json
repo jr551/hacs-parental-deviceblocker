@@ -1,0 +1,8 @@
+{
+  "application": "chrome.exe",
+  "window_title": "Example",
+  "username": "child",
+  "agent_version": "0.9.35",
+  "ui_status": "idle",
+  "ui_error": ""
+}

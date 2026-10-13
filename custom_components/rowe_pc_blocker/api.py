@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import re
 from datetime import timedelta
@@ -14,15 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_MEDIA_BACKUP_ENABLED,
     CONF_PARENT_PIN,
-    CONF_S3_ACCESS_KEY,
-    CONF_S3_BUCKET,
-    CONF_S3_ENDPOINT,
-    CONF_S3_PREFIX,
-    CONF_S3_REGION,
-    CONF_S3_SECRET_KEY,
-    DEVICE_TYPE_ANDROID,
     DOMAIN,
     EVENT_PARENT_OVERRIDE,
     PARENT_OVERRIDE_MINUTES,
@@ -30,12 +21,10 @@ from .const import (
     PARENT_PIN_MAX_ATTEMPTS,
 )
 from .portal import PORTAL_HTML, build_portal_snapshot, resolve_child_identity
-from .s3_backup import (
-    MAX_BACKUP_BYTES,
-    PRESIGN_REQUESTS_PER_MINUTE,
-    S3BackupSettings,
-    object_key,
-    presign_put,
+from .protocol_surface import (
+    BACKUP_CONFIG_DISABLED_BODY,
+    BACKUP_PRESIGN_DISABLED_BODY,
+    BACKUP_PRESIGN_DISABLED_STATUS,
 )
 
 
@@ -47,47 +36,6 @@ def _parent_pin(hass: HomeAssistant, runtime) -> str:
         if configured:
             return configured
     return ""
-
-
-def _backup_settings(hass: HomeAssistant, runtime) -> S3BackupSettings | None:
-    """Return configured server-held credentials without exposing them to a client."""
-    entry = hass.config_entries.async_get_entry(runtime.entry_id)
-    if entry is None or runtime.device_type != DEVICE_TYPE_ANDROID:
-        return None
-    options = entry.options
-    if not options.get(CONF_MEDIA_BACKUP_ENABLED, False):
-        return None
-    settings = S3BackupSettings(
-        endpoint=str(options.get(CONF_S3_ENDPOINT, "")).strip(),
-        region=str(options.get(CONF_S3_REGION, "")).strip(),
-        bucket=str(options.get(CONF_S3_BUCKET, "")).strip(),
-        access_key=str(options.get(CONF_S3_ACCESS_KEY, "")).strip(),
-        secret_key=str(options.get(CONF_S3_SECRET_KEY, "")).strip(),
-        prefix=str(options.get(CONF_S3_PREFIX, "")).strip(),
-    )
-    return settings if settings.configured else None
-
-
-def _backup_configuration_id(settings: S3BackupSettings) -> str:
-    """Detect destination changes without returning credentials to Android."""
-    public_destination = "\n".join(
-        (settings.endpoint, settings.region, settings.bucket, settings.prefix)
-    )
-    return hashlib.sha256(public_destination.encode()).hexdigest()[:24]
-
-
-def _backup_grant_allowed(hass: HomeAssistant, device_id: str) -> bool:
-    """Bound storage grants from a compromised or malfunctioning device key."""
-    records = hass.data.setdefault(DOMAIN, {}).setdefault("_backup_grants", {})
-    now = dt_util.utcnow()
-    record = records.get(device_id)
-    if record is None or (now - record["window"]).total_seconds() >= 60:
-        records[device_id] = {"window": now, "count": 1}
-        return True
-    if record["count"] >= PRESIGN_REQUESTS_PER_MINUTE:
-        return False
-    record["count"] += 1
-    return True
 
 
 def _pin_attempts(hass: HomeAssistant) -> dict:
@@ -490,7 +438,7 @@ class PcParentOverrideView(HomeAssistantView):
 
 
 class AndroidBackupConfigView(HomeAssistantView):
-    """Tell an Android agent whether its optional media backup is configured."""
+    """Legacy Android backup probe; server-side backup was removed in 0.10.0."""
 
     url = "/api/rowe_pc_blocker/{device_id}/backup/config"
     name = "api:rowe_pc_blocker:backup_config"
@@ -501,22 +449,11 @@ class AndroidBackupConfigView(HomeAssistantView):
         runtime = _runtime_for_request(hass, device_id)
         if runtime is None or not _authorised(request, runtime):
             raise web.HTTPUnauthorized()
-        settings = _backup_settings(hass, runtime)
-        return self.json(
-            {
-                "enabled": settings is not None,
-                "initial_sync_wifi_only": True,
-                "requires_external_power": True,
-                "max_file_bytes": MAX_BACKUP_BYTES,
-                "configuration_id": (
-                    _backup_configuration_id(settings) if settings is not None else ""
-                ),
-            }
-        )
+        return self.json(BACKUP_CONFIG_DISABLED_BODY)
 
 
 class AndroidBackupPresignView(HomeAssistantView):
-    """Issue one short-lived, size-bound S3 PUT URL for an authenticated device."""
+    """Legacy presign endpoint; always disabled after 0.10.0."""
 
     url = "/api/rowe_pc_blocker/{device_id}/backup/presign"
     name = "api:rowe_pc_blocker:backup_presign"
@@ -527,31 +464,10 @@ class AndroidBackupPresignView(HomeAssistantView):
         runtime = _runtime_for_request(hass, device_id)
         if runtime is None or not _authorised(request, runtime):
             raise web.HTTPUnauthorized()
-        settings = _backup_settings(hass, runtime)
-        if settings is None:
-            return self.json({"error": "Media backup is disabled."}, status_code=503)
-        if not _backup_grant_allowed(hass, device_id):
-            return self.json(
-                {"error": "Too many upload requests. Retry shortly."},
-                status_code=429,
-            )
-        try:
-            payload = await request.json()
-        except (ValueError, web.HTTPBadRequest):
-            return self.json({"error": "Expected a JSON object."}, status_code=400)
-        if not isinstance(payload, dict):
-            return self.json({"error": "Expected a JSON object."}, status_code=400)
-        try:
-            size = int(payload.get("size", 0))
-            key = object_key(
-                settings.prefix,
-                str(payload.get("relative_path", "")),
-                str(payload.get("display_name", "")),
-            )
-            signed = presign_put(settings, key, size)
-        except (TypeError, ValueError):
-            return self.json({"error": "Invalid media metadata."}, status_code=400)
-        return self.json(signed)
+        return self.json(
+            BACKUP_PRESIGN_DISABLED_BODY,
+            status_code=BACKUP_PRESIGN_DISABLED_STATUS,
+        )
 
 
 class AndroidBackupStatusView(HomeAssistantView):

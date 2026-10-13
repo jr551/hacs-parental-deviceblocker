@@ -14,8 +14,6 @@ Use GitHub's **Report a vulnerability** / private security advisory feature for 
 
 - Use one unique device key per device.
 - Configure a unique parent PIN; no default PIN exists.
-- Use a dedicated write-only S3 key scoped to one device prefix. S3 credentials
-  stay in Home Assistant; Android receives only short-lived, size-bound PUT URLs.
 - Prefer HTTPS Home Assistant URLs.
 - Keep VNC on a trusted private network or authenticated tunnel. Classic RFB
   password authentication uses protocol-mandated DES and is not secure enough
