@@ -15,7 +15,7 @@ Automated and manual review of the **full git history** (all fetched branches/ta
 - No household hostnames (`*.rowe.lol`, `homeassistant.rowe.lol`, `s3.rowe.lol`), device keys, AWS keys, or child-specific Windows account names in tracked files.
 - `tests/test_public_release.py` encodes forbidden literals to block reintroduction.
 - `android/.../AppConfigTest.java` uses **generic** `http://192.168.1.20:8123` (RFC5737-style documentation example, not a household address).
-- `docs/screenshots/` placeholder only (generated mock screenshots removed).
+- `docs/screenshots/` contains maintainer-supplied UI captures only (generated mock screenshots removed).
 - `scripts/capture_ha_screenshots.py` and `scripts/ha_ws_helper.py` no longer embed demo Home Assistant credentials (use `PDB_HA_URL`, `PDB_HA_USERNAME`, `PDB_HA_PASSWORD` for local demos).
 
 ### gitleaks false positives (current tree)

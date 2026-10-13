@@ -27,7 +27,11 @@ Windows uses a `LocalSystem` service plus a session companion. Android uses Acce
 
 ## Screenshots
 
-Screenshots coming soon — the maintainer will add real Home Assistant UI captures (config flow, options, device page, dashboard) under `docs/screenshots/`.
+![Device page in Home Assistant](docs/screenshots/device-page.png)
+
+**Device page in Home Assistant** — Android Accessibility Agent controls, sensors, and activity.
+
+Additional captures (config flow, options, dashboard) will be added under `docs/screenshots/` as they are ready.
 
 ## Install (HACS)
 
