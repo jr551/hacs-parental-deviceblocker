@@ -10,7 +10,7 @@ Pushing a tag matching `v*` (for example `v0.10.1`) runs [`.github/workflows/rel
 | `ParentalDeviceBlocker-{version}-win-x64.zip` | Portable Windows payload zip |
 | `SHA256SUMS` | Checksums for all of the above |
 
-`hacs.json` sets `zip_release` / `zip_release_file` so HACS can install from the release zip.
+`hacs.json` sets `zip_release` / `filename` so HACS can install from the release zip.
 
 ## Optional signing secrets
 
