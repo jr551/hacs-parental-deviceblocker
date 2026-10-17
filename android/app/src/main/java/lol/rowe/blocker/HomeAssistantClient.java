@@ -1,6 +1,7 @@
 package lol.rowe.blocker;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -219,7 +220,10 @@ final class HomeAssistantClient {
                     readFamilyPeer(body, "pc"),
                     readChallenge(body),
                     readLocationRequest(body),
-                    readRequestBudget(body));
+                    readRequestBudget(body),
+                    readNotificationRequest(body),
+                    optionalBoolean(body, "unblock_request_allowed_today"),
+                    optionalString(body, "unblock_request_next_at"));
         } finally {
             connection.disconnect();
         }
@@ -543,11 +547,22 @@ final class HomeAssistantClient {
      * dump, already serialized by {@link NotificationLog#payload}.
      */
     void postNotifications(String payload) throws Exception {
+        postNotifications(payload, null);
+    }
+
+    /**
+     * The same upload, answering one of a parent's on-demand requests.
+     *
+     * @param requestId the request this upload answers, or null for the
+     *     midnight flush. Home Assistant answers 404 for an id it no longer
+     *     knows, which leaves the request pending here for the next poll.
+     */
+    void postNotifications(String payload, String requestId) throws Exception {
         HttpURLConnection connection = open("notifications", "POST");
         try {
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "application/json");
-            byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
+            byte[] bytes = withRequestId(payload, requestId).getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream output = connection.getOutputStream()) {
                 output.write(bytes);
@@ -563,6 +578,24 @@ final class HomeAssistantClient {
             }
         } finally {
             connection.disconnect();
+        }
+    }
+
+    /**
+     * The POST body with the request id on it. The buffer file keeps the
+     * payload without one, so the id belongs to the upload, not the day.
+     */
+    static String withRequestId(String payload, String requestId) {
+        String id = requestId == null ? "" : requestId.trim();
+        if (id.isEmpty()) {
+            return payload;
+        }
+        try {
+            return new JSONObject(payload).put("request_id", id).toString();
+        } catch (JSONException exception) {
+            // A body we cannot parse is sent unmodified: the dump is still the
+            // useful part, and Home Assistant treats it as the nightly flush.
+            return payload;
         }
     }
 
@@ -698,6 +731,32 @@ final class HomeAssistantClient {
             return null;
         }
         return new Policy.LocationRequest(id, optionalString(request, "requested_at"));
+    }
+
+    /**
+     * A parent's on-demand notification request, or null when there is none.
+     * A request without a usable id cannot be answered, so it is ignored
+     * rather than failing the whole policy.
+     */
+    static Policy.NotificationRequest readNotificationRequest(JSONObject body) {
+        JSONObject request = body.optJSONObject("notification_request");
+        if (request == null) {
+            return null;
+        }
+        String id = request.optString("id", "").trim();
+        if (id.isEmpty()) {
+            return null;
+        }
+        return new Policy.NotificationRequest(id, optionalString(request, "requested_at"));
+    }
+
+    /** A truthful flag: null when Home Assistant did not send a boolean. */
+    private static Boolean optionalBoolean(JSONObject body, String name) {
+        if (!body.has(name) || body.isNull(name)) {
+            return null;
+        }
+        Object value = body.opt(name);
+        return value instanceof Boolean ? (Boolean) value : null;
     }
 
     /** The active chore challenge, or null when there is none. */

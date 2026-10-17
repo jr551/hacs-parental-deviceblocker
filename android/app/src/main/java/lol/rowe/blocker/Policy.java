@@ -63,6 +63,16 @@ final class Policy {
     final LocationRequest locationRequest;
     /** How many unblock requests the child has pending, and the parent's cap. */
     final RequestBudget requestBudget;
+    /** A parent's on-demand notification request, or null when there is none. */
+    final NotificationRequest notificationRequest;
+    /**
+     * Whether Home Assistant will take another unblock request from this
+     * phone today. Null when an older Home Assistant sent no flag, which
+     * leaves the phone's own calendar check in charge.
+     */
+    final Boolean unblockRequestAllowedToday;
+    /** When another unblock request may be sent, or null when it is not known. */
+    final Instant unblockRequestNextAt;
 
     /**
      * The child's "ask a parent to allow another app" budget, as Home Assistant
@@ -94,6 +104,17 @@ final class Policy {
         final String requestedAt;
 
         LocationRequest(String id, String requestedAt) {
+            this.id = id == null ? "" : id.trim();
+            this.requestedAt = requestedAt == null ? "" : requestedAt;
+        }
+    }
+
+    /** A parent asking this phone for the notifications it has buffered. */
+    static final class NotificationRequest {
+        final String id;
+        final String requestedAt;
+
+        NotificationRequest(String id, String requestedAt) {
             this.id = id == null ? "" : id.trim();
             this.requestedAt = requestedAt == null ? "" : requestedAt;
         }
@@ -236,6 +257,46 @@ final class Policy {
             Challenge challenge,
             LocationRequest locationRequest,
             RequestBudget requestBudget) {
+        this(
+                blocked,
+                blockRequested,
+                message,
+                extensionAvailable,
+                enforceAt,
+                extensionUntil,
+                pointsBalance,
+                pointsHourCost,
+                wakeAlarm,
+                allowedApps,
+                familyPhone,
+                familyPc,
+                challenge,
+                locationRequest,
+                requestBudget,
+                null,
+                null,
+                null);
+    }
+
+    Policy(
+            boolean blocked,
+            boolean blockRequested,
+            String message,
+            boolean extensionAvailable,
+            String enforceAt,
+            String extensionUntil,
+            Integer pointsBalance,
+            int pointsHourCost,
+            WakeSchedule.Update wakeAlarm,
+            List<String> allowedApps,
+            FamilyPeer familyPhone,
+            FamilyPeer familyPc,
+            Challenge challenge,
+            LocationRequest locationRequest,
+            RequestBudget requestBudget,
+            NotificationRequest notificationRequest,
+            Boolean unblockRequestAllowedToday,
+            String unblockRequestNextAt) {
         this.blocked = blocked;
         this.blockRequested = blockRequested;
         this.message = message == null || message.trim().isEmpty()
@@ -255,6 +316,9 @@ final class Policy {
         this.challenge = challenge;
         this.locationRequest = locationRequest;
         this.requestBudget = requestBudget == null ? RequestBudget.NONE : requestBudget;
+        this.notificationRequest = notificationRequest;
+        this.unblockRequestAllowedToday = unblockRequestAllowedToday;
+        this.unblockRequestNextAt = parseInstant(unblockRequestNextAt);
     }
 
     /**
@@ -295,7 +359,10 @@ final class Policy {
                 familyPc,
                 replacement,
                 locationRequest,
-                requestBudget);
+                requestBudget,
+                notificationRequest,
+                unblockRequestAllowedToday,
+                unblockRequestNextAt == null ? null : unblockRequestNextAt.toString());
     }
 
     boolean isExtensionActive() {

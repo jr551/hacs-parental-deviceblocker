@@ -251,8 +251,9 @@ async def async_create_unblock_request(
 
     Returns the HTTP status and body the phone is answered with. A package that
     is already allowed, or one a parent is already looking at, is a conflict
-    rather than a second request, and a phone with the cap already waiting on a
-    parent is told to wait rather than adding another.
+    rather than a second request. Beyond that the child gets one ask per local
+    calendar day: a phone with the cap already waiting on a parent is told to
+    wait, and so is one that already asked today.
     """
     package = package.strip()
     if PACKAGE_PATTERN.fullmatch(package) is None:
@@ -266,6 +267,13 @@ async def async_create_unblock_request(
     unblock = unblock_store(hass)
     if unblock.pending_for(runtime.device_id, package, now) is not None:
         return 409, {"error": "A parent already has a request for that app."}
+    if not runtime.unblock_request_allowed_today:
+        return 429, {
+            "error": (
+                "Your child has already asked for an app today. "
+                "They can ask again tomorrow."
+            )
+        }
     if len(unblock.for_device(runtime.device_id, now)) >= MAX_PENDING_UNBLOCK_REQUESTS:
         return 429, {"error": "A parent is already looking at your requests."}
     request = unblock.create(
@@ -274,6 +282,7 @@ async def async_create_unblock_request(
         label.strip()[:MAX_APP_FIELD_LENGTH],
         now,
     )
+    await runtime.async_record_unblock_request()
     await _async_save_pending(hass)
     return 200, unblock_pending_body(request)
 

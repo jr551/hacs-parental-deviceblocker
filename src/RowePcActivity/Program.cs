@@ -230,6 +230,12 @@ internal sealed class BlockOverlayForm : Form
     private static readonly TimeSpan ChallengeGrace = TimeSpan.FromMinutes(5);
     /// <summary>How long a phone may stay silent before the PC freezes.</summary>
     private static readonly TimeSpan PhoneSilenceLimit = TimeSpan.FromHours(24);
+    /// <summary>
+    /// How long the notice stays up before the PC shuts itself down. The grace
+    /// is measured from the phone's last check-in, so it survives an agent
+    /// restart and cannot be reset by killing this process.
+    /// </summary>
+    private static readonly TimeSpan PhoneShutdownGrace = TimeSpan.FromMinutes(15);
 
     private readonly AgentConfiguration _configuration;
     private readonly TableLayoutPanel _fullLayout;
@@ -254,6 +260,8 @@ internal sealed class BlockOverlayForm : Form
     private AgentPolicy? _policy;
     private bool _kioskActive;
     private string _challengeId = "";
+    /// <summary>Set once the missing-phone shutdown has been requested.</summary>
+    private bool _phoneShutdownIssued;
     private DateTimeOffset _challengeFirstSeen;
     private bool _challengeDismissed;
     private bool _portalReady;
@@ -445,6 +453,12 @@ internal sealed class BlockOverlayForm : Form
         FamilyChallenge? challenge = policy.BlockRequested || extended ? null : phone?.Challenge;
         bool challengeDismissed = challenge is not null && _challengeDismissed && ChallengeGraceRemaining(now) > TimeSpan.Zero;
         TimeSpan? silence = policy.BlockRequested || extended ? null : PhoneSilence(phone);
+        if (silence is not TimeSpan ongoing || ongoing < PhoneSilenceLimit)
+        {
+            // The phone is back, or was never stale: a later outage gets its own
+            // full grace instead of inheriting a spent one.
+            _phoneShutdownIssued = false;
+        }
 
         if (silence is TimeSpan silentFor && silentFor >= PhoneSilenceLimit)
         {
@@ -564,13 +578,20 @@ internal sealed class BlockOverlayForm : Form
     }
 
     /// <summary>
-    /// Hard freeze for a phone that has stopped checking in. The child cannot
-    /// dismiss it; it clears as soon as the phone checks in again.
+    /// Full-screen tamper notice for a phone that has stopped checking in, then
+    /// a shutdown.
+    ///
+    /// A phone that has been seen at least once and then goes silent for a day
+    /// looks exactly like an installed app that was removed or disabled, so the
+    /// PC states that plainly and takes itself out of use rather than letting
+    /// the child work unmonitored. The child cannot dismiss it. The countdown is
+    /// measured from the phone's own last check-in, so restarting this agent or
+    /// the PC does not buy more time, and a phone that checks in again before it
+    /// expires clears the whole thing.
     /// </summary>
     private void ApplyPhoneStaleFreeze(AgentPolicy policy, TimeSpan silence)
     {
         string name = ChildName(policy);
-        int hours = (int)silence.TotalHours;
 
         ReportPortalTelemetry("idle");
         FormBorderStyle = FormBorderStyle.None;
@@ -578,17 +599,72 @@ internal sealed class BlockOverlayForm : Form
         _banner.Visible = false;
         _fullLayout.Visible = true;
         ShowNoticeLayout(false);
-        _title.Text = name.Length == 0
-            ? $"The phone has not checked in for {hours} hours"
-            : $"{name}'s phone has not checked in for {hours} hours";
-        _message.Text = "Parental control cannot be verified. Please see a parent.";
-        _countdown.Text = "This PC stays frozen until the phone checks in again.";
-        HardCoverMessage = $"{_title.Text}\n\nParental control cannot be verified. Please see a parent.";
+
+        TimeSpan remaining = ShutdownRemaining(silence);
+        string who = name.Length == 0 ? "The phone app" : $"{name}'s phone app";
+        string headline = "Phone app tamper detected";
+        string detail = $"{who} has not checked in for 24 hours, so this PC can no longer be supervised. Contact a parent.";
+
+        _title.Text = headline;
+        _message.Text = detail;
+        if (remaining <= TimeSpan.Zero)
+        {
+            _countdown.Text = "Shutting down…";
+            HardCoverMessage = $"{headline}\n\n{detail}";
+            _extension.Visible = false;
+            _dismiss.Visible = false;
+            _dismissRow.Height = 0;
+            ApplyPhoneStatus(null);
+            SetKioskMode(true);
+            ShutdownForMissingPhone();
+            return;
+        }
+
+        int minutes = (int)remaining.TotalMinutes;
+        int seconds = remaining.Seconds;
+        _countdown.Text = $"Shutting down in {minutes}:{seconds:00} unless the phone checks in.";
+        HardCoverMessage = $"{headline}\n\n{detail}\n\n{_countdown.Text}";
         _extension.Visible = false;
         _dismiss.Visible = false;
         _dismissRow.Height = 0;
         ApplyPhoneStatus(null);
         SetKioskMode(true);
+    }
+
+    /// <summary>
+    /// Time left before the shutdown, measured from the phone's last check-in.
+    /// A negative remainder means the grace is spent.
+    /// </summary>
+    private static TimeSpan ShutdownRemaining(TimeSpan silence)
+    {
+        TimeSpan remaining = PhoneSilenceLimit + PhoneShutdownGrace - silence;
+        // A clock that moved backwards must not extend the grace.
+        return remaining > PhoneShutdownGrace ? PhoneShutdownGrace : remaining;
+    }
+
+    /// <summary>
+    /// Shut the PC down once. The flag only stops this process asking twice;
+    /// the Windows call itself is idempotent enough that a duplicate would only
+    /// hurry an already-scheduled shutdown.
+    /// </summary>
+    private void ShutdownForMissingPhone()
+    {
+        if (_phoneShutdownIssued)
+            return;
+        _phoneShutdownIssued = true;
+        try
+        {
+            Process.Start(new ProcessStartInfo("shutdown.exe", "/s /f /t 0")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            });
+        }
+        catch
+        {
+            // The notice stays up, so a failed shutdown still costs the child
+            // the machine rather than silently unlocking it.
+        }
     }
 
     /// <summary>

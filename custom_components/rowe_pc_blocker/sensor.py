@@ -29,7 +29,7 @@ from .agent_status import DEGRADED_UI_STATUSES, is_portal_error_status
 from .const import DEVICE_TYPE_ANDROID, DOMAIN, SIGNAL_PENDING
 from .entity import AgentTelemetryEntity, ParentalDeviceEntity
 from .evidence import evidence_expires_at, evidence_file
-from .notifications import recent_items
+from .notifications import notification_summary, recent_items
 from .pending import awaiting_requests, claim_pending_entities, unblock_requests
 from .provision import MAX_PENDING_UNBLOCK_REQUESTS
 
@@ -329,41 +329,50 @@ class InstalledAppsSensor(AgentTelemetryEntity, SensorEntity):
 class UnblockRequestsSensor(ParentalDeviceEntity, SensorEntity):
     """The apps this phone has asked a parent to allow.
 
-    The phone polls its state every minute, so an approved app clears the block
-    screen by itself; this sensor is how a parent sees what is waiting. It is
-    Home Assistant state rather than agent telemetry, so it stays available
-    while the phone is offline.
+    The state names what the child asked for rather than counting it, because
+    "Roblox" tells a parent at a glance what the request is for while "1" does
+    not. ``none`` when nothing is waiting. The phone polls its state every
+    minute, so an approved app clears the block screen by itself; this sensor
+    is how a parent sees what is waiting. It is Home Assistant state rather
+    than agent telemetry, so it stays available while the phone is offline.
     """
 
     _attr_name = "Unblock requests"
     _attr_icon = "mdi:lock-open-alert"
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
         self._attr_unique_id = f"{runtime.device_id}_unblock_requests"
 
     @property
-    def native_value(self) -> int:
-        return len(unblock_requests(self.hass, self.runtime.device_id))
+    def native_value(self) -> str:
+        labels = [
+            request.label or request.package
+            for request in unblock_requests(self.hass, self.runtime.device_id)
+        ]
+        return ", ".join(labels) if labels else "none"
 
     @property
     def extra_state_attributes(self) -> dict:
         requests = unblock_requests(self.hass, self.runtime.device_id)
+        next_at = self.runtime.unblock_request_next_at
         return {
-            # The state is the count; the limit is what the phone's picker
-            # reads from the state payload to disable itself in time.
-            "unblock_requests_pending": len(requests),
-            "unblock_requests_limit": MAX_PENDING_UNBLOCK_REQUESTS,
             "requests": [
                 {
-                    "request_id": request.request_id,
                     "package": request.package,
                     "label": request.label,
                     "requested_at": request.requested_at.isoformat(),
                 }
                 for request in requests
             ],
+            # The limit is what the phone's picker reads from the state
+            # payload; the daily gate is the rule that actually stops a child
+            # asking again until tomorrow.
+            "pending": len(requests),
+            "limit": MAX_PENDING_UNBLOCK_REQUESTS,
+            "allowed_today": self.runtime.unblock_request_allowed_today,
+            "next_allowed_at": next_at.isoformat() if next_at else None,
+            "requested_today": not self.runtime.unblock_request_allowed_today,
         }
 
     async def async_added_to_hass(self) -> None:
@@ -458,25 +467,26 @@ class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
 class NotificationsSensor(ParentalDeviceEntity, SensorEntity):
     """The phone's notifications for the latest day it reported.
 
-    The phone posts one dump a day; this sensor is the parent-facing summary:
-    the day's count, which apps were noisiest, and the most recent items. The
-    dump is trimmed at ingest, so the attributes stay inside the recorder's
+    The phone posts one dump a day. The state names the noisiest apps, because
+    "WhatsApp 8, YouTube 5" tells a parent what happened while "21" sends them
+    digging through attributes for the answer. ``items`` carries the recent
+    messages themselves for a dashboard card to render.
+
+    The dump is trimmed at ingest, so the attributes stay inside the recorder's
     size limit. Home Assistant state rather than agent telemetry, so it stays
     available while the phone is offline.
     """
 
     _attr_name = "Notifications"
     _attr_icon = "mdi:bell-ring-outline"
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
         self._attr_unique_id = f"{runtime.device_id}_notifications"
 
     @property
-    def native_value(self) -> int | None:
-        dump = self.runtime.notifications
-        return dump.count if dump is not None else None
+    def native_value(self) -> str | None:
+        return notification_summary(self.runtime.notifications)
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -484,6 +494,7 @@ class NotificationsSensor(ParentalDeviceEntity, SensorEntity):
         if dump is None:
             return {
                 "date": None,
+                "count": None,
                 "truncated": None,
                 "apps": [],
                 "items": [],
@@ -491,6 +502,7 @@ class NotificationsSensor(ParentalDeviceEntity, SensorEntity):
             }
         return {
             "date": dump.date,
+            "count": dump.count,
             "truncated": dump.truncated,
             # The summary covers the whole day, so it is computed once at
             # ingest rather than from the trimmed items.

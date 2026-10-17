@@ -2,16 +2,18 @@ package lol.rowe.blocker;
 
 import android.content.Context;
 
+import java.time.Instant;
+import java.time.ZoneId;
+
 /**
  * The child's "ask a parent to allow this app" request: the label shown on the
- * block screen, the once-per-ten-minutes throttle, and the outcome of the
+ * block screen, the once-per-day limit, and the outcome of the
  * {@code unblock_request} call.
  */
 final class UnblockRequest {
-    /** One request per app per ten minutes. */
-    static final long THROTTLE_MS = 10 * 60 * 1000L;
     private static final String PREFS = "rowe_blocker";
-    private static final String PREFIX = "unblock_request_at_";
+    /** One time for the whole device: the limit is per child, not per app. */
+    private static final String LAST_REQUEST = "unblock_request_at";
     /** Home Assistant's error text is shown as-is; longer text is not a message. */
     private static final int MAX_ERROR_LENGTH = 160;
 
@@ -45,21 +47,32 @@ final class UnblockRequest {
         return name.isEmpty() ? packageName : name;
     }
 
-    /** True when a request for this app may be sent now. */
+    /**
+     * True when this phone may ask a parent again. Home Assistant is the
+     * authority and answers 429 for a second request in a day; this is the
+     * same rule kept locally, for the whole device rather than per app, so a
+     * child cannot shop for an answer by asking about app after app.
+     */
     static boolean mayRequest(long lastRequestAt, long now) {
-        return lastRequestAt <= 0L || now - lastRequestAt >= THROTTLE_MS;
+        return lastRequestAt <= 0L || !sameLocalDay(lastRequestAt, now);
     }
 
-    /** The last time this app was asked about, or 0 when it never was. */
-    static long lastRequestAt(Context context, String packageName) {
+    private static boolean sameLocalDay(long left, long right) {
+        ZoneId zone = ZoneId.systemDefault();
+        return Instant.ofEpochMilli(left).atZone(zone).toLocalDate()
+                .equals(Instant.ofEpochMilli(right).atZone(zone).toLocalDate());
+    }
+
+    /** The last time this phone asked about any app, or 0 when it never has. */
+    static long lastRequestAt(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getLong(PREFIX + packageName, 0L);
+                .getLong(LAST_REQUEST, 0L);
     }
 
-    static void remember(Context context, String packageName, long now) {
+    static void remember(Context context, long now) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
-                .putLong(PREFIX + packageName, now)
+                .putLong(LAST_REQUEST, now)
                 .apply();
     }
 
@@ -83,6 +96,14 @@ final class UnblockRequest {
             // ask again, and Home Assistant's reason is the useful message.
             return Outcome.accepted(detail.isEmpty()
                     ? "A parent has already been asked to allow " + label + "."
+                    : detail);
+        }
+        if (status == 429) {
+            // The daily limit is a rule, not a fault. Show Home Assistant's
+            // own explanation when it sends one, so the child reads why
+            // rather than a bare status code.
+            return Outcome.failed(detail.isEmpty()
+                    ? "A parent has already been asked today. You can ask again tomorrow."
                     : detail);
         }
         return Outcome.failed(detail.isEmpty()

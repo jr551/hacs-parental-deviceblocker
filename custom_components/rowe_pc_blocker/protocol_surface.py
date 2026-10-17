@@ -38,8 +38,11 @@ STATE_RESPONSE_KEYS = frozenset(
         "allowed_apps",
         "challenge",
         "location_request",
+        "notification_request",
         "unblock_requests_pending",
         "unblock_requests_limit",
+        "unblock_request_allowed_today",
+        "unblock_request_next_at",
         "family",
     }
 )
@@ -78,6 +81,12 @@ NOTIFICATION_REQUEST_KEYS = frozenset({"date", "count", "truncated", "items"})
 NOTIFICATION_ITEM_KEYS = frozenset({"package", "app", "title", "text", "posted_at"})
 
 LOCATION_REQUEST_PAYLOAD_KEYS = frozenset({"id", "requested_at"})
+
+NOTIFICATION_REQUEST_PAYLOAD_KEYS = frozenset({"id", "requested_at"})
+
+# The optional field a dump carries when it answers an on-demand request.
+# A dump without it is the nightly flush and keeps its own shape above.
+NOTIFICATION_ANSWER_KEYS = frozenset({"request_id"})
 
 LOCATION_ANSWER_KEYS = frozenset(
     {"request_id", "latitude", "longitude", "accuracy", "provider", "fix_age_seconds"}

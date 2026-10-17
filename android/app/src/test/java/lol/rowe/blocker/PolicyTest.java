@@ -2,6 +2,8 @@ package lol.rowe.blocker;
 
 import org.junit.Test;
 
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
@@ -197,6 +199,41 @@ public class PolicyTest {
 
         assertFalse(policy.challengePending());
         assertFalse(policy.isLocked());
+    }
+
+    @Test
+    public void replacingTheChallengeKeepsTheRequestsAndTheDailyRule() {
+        // The block screen rebuilds a policy whenever a challenge is cleared or
+        // held. A copy that dropped these fields would make the phone answer a
+        // request twice, or forget that it has already asked today.
+        Policy.NotificationRequest request =
+                new Policy.NotificationRequest("abc123", "2026-10-17T13:00:00+00:00");
+        Policy policy = new Policy(
+                false,
+                false,
+                "Paused",
+                false,
+                null,
+                null,
+                null,
+                0,
+                null,
+                new ArrayList<>(),
+                null,
+                null,
+                null,
+                null,
+                Policy.RequestBudget.NONE,
+                request,
+                Boolean.FALSE,
+                "2026-10-18T00:00:00+00:00");
+
+        Policy replaced = policy.withChallenge(null);
+
+        assertEquals("abc123", replaced.notificationRequest.id);
+        assertEquals("2026-10-17T13:00:00+00:00", replaced.notificationRequest.requestedAt);
+        assertEquals(Boolean.FALSE, replaced.unblockRequestAllowedToday);
+        assertEquals(Instant.parse("2026-10-18T00:00:00Z"), replaced.unblockRequestNextAt);
     }
 
     private static Policy challengePolicy(String extensionUntil) {

@@ -47,7 +47,12 @@ from .evidence import (
 )
 from .family import family_peers
 from .location import location_answer_refusal
-from .notifications import MAX_DUMP_BYTES, dump_refusal, parse_dump
+from .notifications import (
+    MAX_DUMP_BYTES,
+    dump_refusal,
+    notification_answer_refusal,
+    parse_dump,
+)
 from .pending import (
     async_create_request,
     async_create_unblock_request,
@@ -207,8 +212,10 @@ class PcStateView(HomeAssistantView):
         # and a challenge nobody decided on approves itself, so the phone
         # unlocks on this same poll.
         await runtime.async_expire_location_request()
+        await runtime.async_expire_notification_request()
         await runtime.async_auto_approve_challenge()
         runtime.notify()
+        unblock_next_at = runtime.unblock_request_next_at
         return self.json(
             {
                 "device_id": runtime.device_id,
@@ -234,12 +241,19 @@ class PcStateView(HomeAssistantView):
                 or list(DEFAULT_ALLOWED_APPS),
                 "challenge": runtime.challenge_payload,
                 "location_request": runtime.location_request_payload,
+                "notification_request": runtime.notification_request_payload,
                 # What the block screen's picker needs to disable itself
                 # before the phone hits the cap.
                 "unblock_requests_pending": len(
                     unblock_requests(hass, runtime.device_id)
                 ),
                 "unblock_requests_limit": MAX_PENDING_UNBLOCK_REQUESTS,
+                # One request per local calendar day: the phone shows when the
+                # child may ask again instead of letting them tap into a 429.
+                "unblock_request_allowed_today": runtime.unblock_request_allowed_today,
+                "unblock_request_next_at": (
+                    unblock_next_at.isoformat() if unblock_next_at else None
+                ),
                 "family": family_peers(
                     runtime,
                     _runtimes(hass),
@@ -302,12 +316,14 @@ class PcLocationView(HomeAssistantView):
 
 
 class PcNotificationsView(HomeAssistantView):
-    """Accept the phone's daily notification dump.
+    """Accept the phone's notification dump.
 
     The phone captures notifications and posts one dump a day; Home Assistant
     keeps only the latest, so the sensor is a summary rather than a growing
     log. A dump for a day older than the stored one is accepted and ignored,
-    so a late retry cannot overwrite a newer day.
+    so a late retry cannot overwrite a newer day. A parent can also ask for
+    the day's dump now: the request rides the phone's state poll and the
+    answer names its id, so one request can never be answered by another.
     """
 
     url = "/api/rowe_pc_blocker/{device_id}/notifications"
@@ -326,11 +342,19 @@ class PcNotificationsView(HomeAssistantView):
         except web.HTTPBadRequest:
             return self.json({"error": "Expected a JSON object."}, status_code=400)
         refusal = dump_refusal(payload)
+        if refusal is None:
+            refusal = notification_answer_refusal(
+                payload,
+                runtime.notification_request_id,
+                runtime.notification_requested_at,
+                dt_util.utcnow(),
+            )
         if refusal is not None:
             status_code, body = refusal
             return self.json(body, status_code=status_code)
         await runtime.async_store_notifications(
-            parse_dump(payload, dt_util.utcnow())
+            parse_dump(payload, dt_util.utcnow()),
+            answered_request_id=str(payload.get("request_id", "")).strip(),
         )
         return self.json({"ok": True})
 

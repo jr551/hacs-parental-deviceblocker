@@ -8,7 +8,7 @@ rules, the store, and the entities the dashboard shows.
 from __future__ import annotations
 
 import unittest
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 
 import ha_stub
 from ha_stub import FakeConfigEntry, FakeHass, FakeRequest, object_id
@@ -234,9 +234,18 @@ class UnblockRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.allowed_apps, full)
         self.assertEqual(len(PENDING.unblock_requests(self.hass)), 1)
 
+    def _forget_daily_limit(self) -> None:
+        """Open the daily gate so the pending cap can be exercised.
+
+        One request a day is the rule production hits first, so the cap is
+        only reachable by pretending the last ask was on an earlier day.
+        """
+        self.runtime.unblock_request_day = "2000-01-01"
+
     async def _fill(self) -> list[str]:
         request_ids = []
         for index in range(PROVISION.MAX_PENDING_UNBLOCK_REQUESTS):
+            self._forget_daily_limit()
             status_code, body = await self._request(f"com.app{index}", f"App {index}")
             self.assertEqual(status_code, 200)
             request_ids.append(body["request_id"])
@@ -245,6 +254,7 @@ class UnblockRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_fourth_request_is_refused_with_429(self) -> None:
         await self._fill()
 
+        self._forget_daily_limit()
         status_code, body = await self._request("com.app9", "App 9")
         self.assertEqual(status_code, 429)
         self.assertEqual(
@@ -269,13 +279,16 @@ class UnblockRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._request("com.app9", "App 9"))[0], 429)
 
         await PENDING.async_approve_unblock_request(self.hass, request_ids[0])
+        self._forget_daily_limit()
         self.assertEqual((await self._request("com.app9", "App 9"))[0], 200)
 
         await PENDING.async_reject_unblock_request(self.hass, request_ids[1])
+        self._forget_daily_limit()
         self.assertEqual((await self._request("com.app8", "App 8"))[0], 200)
 
     async def test_the_cap_frees_up_when_a_request_expires(self) -> None:
         request_ids = await self._fill()
+        self._forget_daily_limit()
         self.assertEqual((await self._request("com.app9", "App 9"))[0], 429)
 
         store = PENDING.unblock_store(self.hass)
@@ -284,6 +297,81 @@ class UnblockRequestTests(unittest.IsolatedAsyncioTestCase):
                 ha_stub.utcnow() - EXPIRED
             )
         self.assertEqual((await self._request("com.app9", "App 9"))[0], 200)
+
+    async def test_a_second_app_the_same_day_is_refused_with_429(self) -> None:
+        status_code, _body = await self._request()
+        self.assertEqual(status_code, 200)
+
+        status_code, body = await self._request("com.minecraft", "Minecraft")
+        self.assertEqual(status_code, 429)
+        self.assertEqual(
+            body,
+            {
+                "error": (
+                    "Your child has already asked for an app today. "
+                    "They can ask again tomorrow."
+                )
+            },
+        )
+        # The first request still stands, and the second was never recorded.
+        self.assertEqual(
+            [request.package for request in PENDING.unblock_requests(self.hass)],
+            ["com.roblox.client"],
+        )
+        self.assertEqual(self.runtime.unblock_request_day, date.today().isoformat())
+
+    async def test_a_duplicate_on_the_same_day_is_a_409_not_the_daily_429(self) -> None:
+        await self._request()
+        status_code, body = await self._request()
+        self.assertEqual(status_code, 409)
+        self.assertEqual(
+            body, {"error": "A parent already has a request for that app."}
+        )
+
+    async def test_the_day_boundary_allows_the_next_request(self) -> None:
+        await self._request()
+        self.assertFalse(self.runtime.unblock_request_allowed_today)
+
+        self.runtime.unblock_request_day = (
+            date.today() - timedelta(days=1)
+        ).isoformat()
+        self.assertTrue(self.runtime.unblock_request_allowed_today)
+
+        status_code, _body = await self._request("com.minecraft", "Minecraft")
+        self.assertEqual(status_code, 200)
+        self.assertEqual(
+            [request.package for request in PENDING.unblock_requests(self.hass)],
+            ["com.roblox.client", "com.minecraft"],
+        )
+
+    async def test_the_daily_limit_survives_a_restart(self) -> None:
+        await self.runtime.async_load()
+        await self._request()
+
+        restarted = RUNTIME.PcRuntime(
+            hass=self.hass,
+            entry_id="entry-1",
+            device_id="casey-phone",
+            device_name="Casey's phone",
+            windows_username="Casey",
+            api_key="existing-key",
+            device_type=CONST.DEVICE_TYPE_ANDROID,
+        )
+        await restarted.async_load()
+        self.assertEqual(restarted.unblock_request_day, date.today().isoformat())
+        self.assertFalse(restarted.unblock_request_allowed_today)
+
+    async def test_the_payload_carries_the_daily_gate(self) -> None:
+        response = await self._state()
+        self.assertTrue(response.data["unblock_request_allowed_today"])
+        self.assertIsNone(response.data["unblock_request_next_at"])
+
+        await self._request()
+        response = await self._state()
+        self.assertFalse(response.data["unblock_request_allowed_today"])
+        next_at = datetime.fromisoformat(response.data["unblock_request_next_at"])
+        self.assertEqual((next_at.hour, next_at.minute, next_at.second), (0, 0, 0))
+        self.assertGreater(next_at, ha_stub.utcnow())
 
     async def _state(self):
         request = FakeRequest(
@@ -340,50 +428,69 @@ class UnblockEntityTests(unittest.IsolatedAsyncioTestCase):
         sensor.hass = self.hass
         return sensor
 
-    async def test_the_sensor_counts_and_lists_the_requests(self) -> None:
+    async def test_the_sensor_state_names_the_apps_that_were_asked_for(self) -> None:
         sensor = self._sensor()
-        self.assertEqual(sensor.native_value, 0)
+        self.assertEqual(sensor.native_value, "none")
         self.assertEqual(
             sensor.extra_state_attributes,
             {
-                "unblock_requests_pending": 0,
-                "unblock_requests_limit": PROVISION.MAX_PENDING_UNBLOCK_REQUESTS,
                 "requests": [],
+                "pending": 0,
+                "limit": PROVISION.MAX_PENDING_UNBLOCK_REQUESTS,
+                "allowed_today": True,
+                "next_allowed_at": None,
+                "requested_today": False,
             },
         )
 
         _status, body = await self._request()
         request = PENDING.unblock_requests(self.hass)[0]
-        self.assertEqual(sensor.native_value, 1)
+        self.assertEqual(sensor.native_value, "Roblox")
         attributes = sensor.extra_state_attributes
-        self.assertEqual(attributes["unblock_requests_pending"], 1)
-        self.assertEqual(
-            attributes["unblock_requests_limit"],
-            PROVISION.MAX_PENDING_UNBLOCK_REQUESTS,
-        )
+        self.assertEqual(attributes["pending"], 1)
+        self.assertEqual(attributes["limit"], PROVISION.MAX_PENDING_UNBLOCK_REQUESTS)
         self.assertEqual(
             attributes["requests"],
             [
                 {
-                    "request_id": body["request_id"],
                     "package": "com.roblox.client",
                     "label": "Roblox",
                     "requested_at": request.requested_at.isoformat(),
                 }
             ],
         )
+        self.assertFalse(attributes["allowed_today"])
+        self.assertTrue(attributes["requested_today"])
+        self.assertIsNotNone(attributes["next_allowed_at"])
         self.assertEqual(sensor.unique_id, "casey-phone_unblock_requests")
         self.assertEqual(object_id(sensor), "caseys_phone_unblock_requests")
 
-        # An answered request is no longer waiting on a parent.
+        # An answered request is no longer waiting on a parent, but the daily
+        # gate stays shut until tomorrow.
         await PENDING.async_reject_unblock_request(self.hass, body["request_id"])
-        self.assertEqual(sensor.native_value, 0)
+        self.assertEqual(sensor.native_value, "none")
+        self.assertEqual(sensor.extra_state_attributes["pending"], 0)
+        self.assertFalse(sensor.extra_state_attributes["allowed_today"])
+
+    async def test_the_sensor_names_every_app_in_the_order_they_were_asked(self) -> None:
+        sensor = self._sensor()
+        await self._request()
+        # The second ask is a new day, so the daily gate is open again.
+        self.runtime.unblock_request_day = "2000-01-01"
+        await self._request("com.minecraft", "Minecraft")
+        self.assertEqual(sensor.native_value, "Roblox, Minecraft")
+        self.assertEqual(
+            [request["label"] for request in sensor.extra_state_attributes["requests"]],
+            ["Roblox", "Minecraft"],
+        )
 
     async def test_the_sensor_writes_its_state_when_a_request_arrives(self) -> None:
         sensor = self._sensor()
         await sensor.async_added_to_hass()
         await self._request()
-        self.assertEqual(sensor.state_writes, 1)
+        # Once for the runtime change (the daily gate closed) and once for the
+        # pending store, which is what adds the request.
+        self.assertEqual(sensor.state_writes, 2)
 
     async def test_the_buttons_appear_for_a_request_and_go_when_it_is_approved(self) -> None:
         added: list = []

@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 # One dump is a day of one phone's notifications. The cap keeps a runaway
 # capture from filling the config directory.
 MAX_DUMP_BYTES = 256 * 1024
+
+# A parent's request is only useful while they are still waiting for it. The
+# same ten minutes the location request uses: long enough for a phone that
+# polls once a minute, short enough that a phone which was offline cannot
+# answer an hour later and have the dump look like a fresh ask.
+NOTIFICATION_REQUEST_TTL_SECONDS = 10 * 60
 
 # What the sensor shows. The count cap is the documented one; the byte budget
 # is what actually keeps the state attributes inside the recorder's limit,
@@ -142,6 +148,41 @@ def parse_posted_at(value) -> datetime | None:
     return parsed
 
 
+def notification_request_is_live(
+    requested_at: datetime | None,
+    now: datetime,
+    ttl_seconds: int = NOTIFICATION_REQUEST_TTL_SECONDS,
+) -> bool:
+    """True while a notification request is still worth answering."""
+    if requested_at is None:
+        return False
+    return now - requested_at < timedelta(seconds=ttl_seconds)
+
+
+def notification_answer_refusal(
+    payload: dict,
+    request_id: str,
+    requested_at: datetime | None,
+    now: datetime,
+) -> tuple[int, dict] | None:
+    """Why this dump cannot answer the live request, or None when it can.
+
+    A dump that names no request is the nightly flush rather than an answer,
+    so it is accepted whatever the request state is. A dump that names one
+    must name the live request: an answer for a request a parent has replaced,
+    or one that has expired, is a 404, so a late answer can never clear a
+    request a parent is still waiting on.
+    """
+    supplied = str(payload.get("request_id", "")).strip()
+    if not supplied:
+        return None
+    if not request_id or supplied != request_id:
+        return 404, {"error": "That notification request has expired."}
+    if not notification_request_is_live(requested_at, now):
+        return 404, {"error": "That notification request has expired."}
+    return None
+
+
 def dump_refusal(payload: dict) -> tuple[int, dict] | None:
     """Why this dump cannot be stored, or None when it can."""
     if not valid_date(payload.get("date")):
@@ -196,6 +237,33 @@ def app_summary(items: Iterable[NotificationItem]) -> list[dict]:
         counts.values(), key=lambda entry: (-entry["count"], entry["package"])
     )
     return ordered[:MAX_SENSOR_APPS]
+
+
+MAX_SUMMARY_APPS = 3
+
+
+def notification_summary(dump: "NotificationDump | None") -> str | None:
+    """One line a parent can read straight off the entity.
+
+    A count alone says something happened but not what, so the state names the
+    noisiest apps and leaves the messages themselves to the ``items`` attribute
+    a dashboard card renders. ``none`` means the phone reported a quiet day.
+    """
+    if dump is None:
+        return None
+    if dump.count <= 0:
+        return "none"
+    named = [
+        f"{app['app'] or app['package']} {app['count']}"
+        for app in dump.apps[:MAX_SUMMARY_APPS]
+    ]
+    hidden = len(dump.apps) - len(named)
+    summary = ", ".join(named)
+    if hidden > 0:
+        summary += f" +{hidden} more"
+    if dump.truncated:
+        summary += " (partial)"
+    return summary
 
 
 def recent_items(

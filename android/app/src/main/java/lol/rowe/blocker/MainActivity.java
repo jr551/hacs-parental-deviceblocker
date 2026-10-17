@@ -75,7 +75,6 @@ public final class MainActivity extends Activity {
     private TextView blockRequestStatus;
     private Button extensionButton;
     private Button pointsHourButton;
-    private Button requestUnblockButton;
     private Button requestAppButton;
     private GridLayout allowedApps;
     private EditText homeAssistantUrl;
@@ -142,7 +141,6 @@ public final class MainActivity extends Activity {
         blockRequestStatus = findViewById(R.id.blockRequestStatus);
         extensionButton = findViewById(R.id.extensionButton);
         pointsHourButton = findViewById(R.id.pointsHourButton);
-        requestUnblockButton = findViewById(R.id.requestUnblockButton);
         requestAppButton = findViewById(R.id.requestAppButton);
         allowedApps = findViewById(R.id.allowedApps);
         homeAssistantUrl = findViewById(R.id.homeAssistantUrl);
@@ -162,7 +160,6 @@ public final class MainActivity extends Activity {
                 .setOnClickListener(view -> openNotificationAccess());
         extensionButton.setOnClickListener(view -> requestExtension());
         pointsHourButton.setOnClickListener(view -> requestPointsHour());
-        requestUnblockButton.setOnClickListener(view -> requestUnblock());
         requestAppButton.setOnClickListener(view -> showAppPicker());
         installUpdateButton.setOnClickListener(view -> AppUpdater.install(this));
         findViewById(R.id.parentOverrideButton)
@@ -823,8 +820,6 @@ public final class MainActivity extends Activity {
         blockCountdown.setText("Tap Install, then confirm in the system installer.");
         familyStatus.setVisibility(View.GONE);
         blockLastApp.setVisibility(View.GONE);
-        requestUnblockButton.setVisibility(View.GONE);
-        blockRequestStatus.setVisibility(View.GONE);
         extensionButton.setVisibility(View.GONE);
         pointsHourButton.setVisibility(View.GONE);
         installUpdateButton.setVisibility(View.VISIBLE);
@@ -876,8 +871,6 @@ public final class MainActivity extends Activity {
         blockCountdown.setText("Leave Settings to go back to the phone.");
         familyStatus.setVisibility(View.GONE);
         blockLastApp.setVisibility(View.GONE);
-        requestUnblockButton.setVisibility(View.GONE);
-        blockRequestStatus.setVisibility(View.GONE);
         extensionButton.setVisibility(View.GONE);
         pointsHourButton.setVisibility(View.GONE);
         refreshAllowedApps();
@@ -991,37 +984,20 @@ public final class MainActivity extends Activity {
         if (packageName.isEmpty() || !isLaunchableApp(packageName)) {
             blockedAppLabel = "";
             blockLastApp.setVisibility(View.GONE);
-            requestUnblockButton.setVisibility(View.GONE);
             blockRequestStatus.setVisibility(View.GONE);
             return;
         }
         blockedAppLabel = appLabel(packageName);
         blockLastApp.setText("Last app used: " + blockedAppLabel);
         blockLastApp.setVisibility(View.VISIBLE);
-        boolean asked = !UnblockRequest.mayRequest(
-                UnblockRequest.lastRequestAt(this, packageName), System.currentTimeMillis());
-        requestUnblockButton.setVisibility(View.VISIBLE);
-        requestUnblockButton.setEnabled(!asked);
-        blockRequestStatus.setText(asked ? "Asked a parent to allow " + blockedAppLabel + "." : "");
+        // Asking is the bottom picker's job only: a button here let the child
+        // fire a request at whatever they happened to open, and the pause screen
+        // already lists every app they can ask about. The limit is per device
+        // per day, so the status names no app: it was not necessarily this one.
+        boolean asked = !UnblockPicker.allowedToday(
+                currentPolicy, UnblockRequest.lastRequestAt(this), System.currentTimeMillis());
+        blockRequestStatus.setText(asked ? "You have already asked a parent today." : "");
         blockRequestStatus.setVisibility(asked ? View.VISIBLE : View.GONE);
-    }
-
-    /** Ask a parent to allow the app the child was blocked on. */
-    private void requestUnblock() {
-        final String packageName = blockedPackage;
-        final String label = blockedAppLabel;
-        if (packageName.isEmpty() || label.isEmpty()) {
-            return;
-        }
-        if (!UnblockRequest.mayRequest(
-                UnblockRequest.lastRequestAt(this, packageName), System.currentTimeMillis())) {
-            blockRequestStatus.setText("Asked a parent to allow " + label + ".");
-            blockRequestStatus.setVisibility(View.VISIBLE);
-            requestUnblockButton.setEnabled(false);
-            return;
-        }
-        requestUnblockButton.setEnabled(false);
-        sendUnblockRequest(packageName, label, () -> requestUnblockButton.setEnabled(true));
     }
 
     /**
@@ -1051,7 +1027,11 @@ public final class MainActivity extends Activity {
                 blockRequestStatus.setText(result.message);
                 blockRequestStatus.setVisibility(View.VISIBLE);
                 if (result.accepted) {
-                    UnblockRequest.remember(this, packageName, System.currentTimeMillis());
+                    UnblockRequest.remember(this, System.currentTimeMillis());
+                    // The picker stays shut until the next poll refreshes the
+                    // daily state, so a payload captured before this ask cannot
+                    // offer another request in the same breath.
+                    refreshRequestAppButton(false);
                     return;
                 }
                 if (onFailure != null) {
@@ -1067,7 +1047,9 @@ public final class MainActivity extends Activity {
      * per-app button sends.
      */
     private void showAppPicker() {
-        if (!UnblockPicker.canRequest(currentPolicy)) {
+        if (!canAskForAnotherApp()) {
+            blockRequestStatus.setText(requestClosedReason());
+            blockRequestStatus.setVisibility(View.VISIBLE);
             refreshRequestAppButton(true);
             return;
         }
@@ -1095,31 +1077,42 @@ public final class MainActivity extends Activity {
     /** Ask a parent to allow one app the child picked from the list. */
     private void requestApp(InstalledApps.App app) {
         String label = UnblockRequest.label(app.packageName, app.label);
-        if (!UnblockRequest.mayRequest(
-                UnblockRequest.lastRequestAt(this, app.packageName), System.currentTimeMillis())) {
-            blockRequestStatus.setText("Asked a parent to allow " + label + ".");
+        if (!canAskForAnotherApp()) {
+            blockRequestStatus.setText(requestClosedReason());
             blockRequestStatus.setVisibility(View.VISIBLE);
             return;
         }
         sendUnblockRequest(app.packageName, label, null);
     }
 
+    /** True when this phone may send another unblock request today. */
+    private boolean canAskForAnotherApp() {
+        return UnblockPicker.canRequest(
+                currentPolicy, UnblockRequest.lastRequestAt(this), System.currentTimeMillis());
+    }
+
+    /** Why the picker is closed, or "" while it is open. */
+    private String requestClosedReason() {
+        return UnblockPicker.closedReason(
+                currentPolicy, UnblockRequest.lastRequestAt(this), System.currentTimeMillis());
+    }
+
     /**
      * The "request another app" button: hidden while the screen is about
      * something else, and disabled once a parent is already looking at as many
-     * requests as they will take.
+     * requests as they will take, or once this phone has asked today. The
+     * button text always carries the reason, so a disabled control is never a
+     * dead end.
      */
     private void refreshRequestAppButton(boolean visible) {
         if (!visible) {
             requestAppButton.setVisibility(View.GONE);
             return;
         }
-        boolean exhausted = !UnblockPicker.canRequest(currentPolicy);
+        String reason = requestClosedReason();
         requestAppButton.setVisibility(View.VISIBLE);
-        requestAppButton.setEnabled(!exhausted);
-        requestAppButton.setText(exhausted
-                ? "A parent is already looking at your requests."
-                : "Request another app");
+        requestAppButton.setEnabled(reason.isEmpty());
+        requestAppButton.setText(reason.isEmpty() ? "Request another app" : reason);
     }
 
     /** Two lines per app: the label, then the package name underneath. */

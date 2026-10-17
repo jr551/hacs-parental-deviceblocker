@@ -45,7 +45,11 @@ from .location import (
     parse_provider,
     request_is_live,
 )
-from .notifications import NotificationDump, is_newer
+from .notifications import (
+    NotificationDump,
+    is_newer,
+    notification_request_is_live,
+)
 from .wake_alarm import (
     CONF_WAKE_ALARM_DAYS,
     CONF_WAKE_ALARM_ENABLED,
@@ -151,6 +155,16 @@ class PcRuntime:
     # The latest notification dump the phone posted, already trimmed to what
     # the notifications sensor shows. None until the phone reports one.
     notifications: NotificationDump | None = None
+    # On-demand notification dump. The phone still posts the nightly flush on
+    # its own; a parent can also ask for the current day now, and the request
+    # rides the next state poll. Kept next to the dump it answers so one
+    # request can never be confused with another.
+    notification_request_id: str = ""
+    notification_requested_at: datetime | None = None
+    # The local calendar day of the last app the child asked for. One request
+    # a day is what stops the block screen's picker being a way to fill the
+    # dashboard; the day is persisted, so a restart cannot reset it.
+    unblock_request_day: str = ""
     # A reward purchase is money-like: one portal submission may spend points
     # only once for the current blocked session.  Keep this durable so a Home
     # Assistant restart cannot turn a slow or failed unlock into a new charge.
@@ -221,6 +235,32 @@ class PcRuntime:
         if self.extension_used_at is None:
             return None
         return self.extension_used_at + timedelta(seconds=EXTENSION_COOLDOWN_SECONDS)
+
+    @property
+    def unblock_request_allowed_today(self) -> bool:
+        """True when the child may ask for an app again.
+
+        The limit is one request per local calendar day rather than a rolling
+        twenty-four hours, so it resets at midnight the way a parent would
+        expect instead of at the odd time the last request happened.
+        """
+        return self.unblock_request_day != _local_day()
+
+    @property
+    def unblock_request_next_at(self) -> datetime | None:
+        """The next local midnight, or None while a request is allowed now."""
+        if self.unblock_request_allowed_today:
+            return None
+        now = dt_util.now()
+        return (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+    async def async_record_unblock_request(self) -> None:
+        """Remember the local day the child asked for an app."""
+        self.unblock_request_day = _local_day()
+        await self.async_save()
+        self.notify()
 
     @property
     def challenge_state(self) -> str:
@@ -328,6 +368,11 @@ class PcRuntime:
         self.challenge_approved_at = _parse_datetime(data.get("challenge_approved_at"))
         self.challenge_attempt = _attempt(data.get("challenge_attempt"))
         self.notifications = NotificationDump.from_dict(data.get("notifications"))
+        self.notification_request_id = str(data.get("notification_request_id", ""))
+        self.notification_requested_at = _parse_datetime(
+            data.get("notification_requested_at")
+        )
+        self.unblock_request_day = str(data.get("unblock_request_day") or "")
         self.location_request_id = str(data.get("location_request_id", ""))
         self.location_requested_at = _parse_datetime(data.get("location_requested_at"))
 
@@ -354,6 +399,13 @@ class PcRuntime:
                 "notifications": (
                     self.notifications.as_dict() if self.notifications else None
                 ),
+                # The request is persisted as well as the dump, so a restart
+                # does not lose a parent's ask.
+                "notification_request_id": self.notification_request_id,
+                "notification_requested_at": _format_datetime(
+                    self.notification_requested_at
+                ),
+                "unblock_request_day": self.unblock_request_day,
                 # The fix itself is not persisted; only the request, so a
                 # restart does not lose a parent's ask.
                 "location_request_id": self.location_request_id,
@@ -552,20 +604,73 @@ class PcRuntime:
         await self.async_save()
         self.notify()
 
-    async def async_store_notifications(self, dump: NotificationDump) -> bool:
-        """Keep a dump for a day that is not older than the stored one.
+    @property
+    def notification_request_payload(self) -> dict | None:
+        """The pending notification request the phone reads on its state poll.
 
-        False when a newer day is already stored, so a late retry cannot
-        overwrite it.
+        None once the request has expired, so a phone that was offline cannot
+        answer a request a parent has stopped waiting for.
         """
-        if self.notifications is not None and not is_newer(
-            dump.date, self.notifications.date
+        if not self.notification_request_id:
+            return None
+        if not notification_request_is_live(
+            self.notification_requested_at, dt_util.utcnow()
+        ):
+            return None
+        return {
+            "id": self.notification_request_id,
+            "requested_at": (
+                self.notification_requested_at.isoformat()
+                if self.notification_requested_at
+                else None
+            ),
+        }
+
+    async def async_request_notifications(self) -> str:
+        """Ask the phone for one dump. A second press replaces the request."""
+        self.notification_request_id = new_request_id()
+        self.notification_requested_at = dt_util.utcnow()
+        await self.async_save()
+        self.notify()
+        return self.notification_request_id
+
+    async def async_expire_notification_request(self) -> bool:
+        """Drop a request nobody answered in time. True when one was dropped."""
+        if not self.notification_request_id:
+            return False
+        if notification_request_is_live(
+            self.notification_requested_at, dt_util.utcnow()
         ):
             return False
-        self.notifications = dump
+        self.notification_request_id = ""
         await self.async_save()
         self.notify()
         return True
+
+    async def async_store_notifications(
+        self, dump: NotificationDump, *, answered_request_id: str = ""
+    ) -> bool:
+        """Keep a dump for a day that is not older than the stored one.
+
+        False when a newer day is already stored, so a late retry cannot
+        overwrite it. An answer that named the live request clears it even
+        when the dump itself is older than the stored day: the phone did
+        answer, so a parent is no longer waiting on it.
+        """
+        answered = bool(answered_request_id)
+        if answered:
+            self.notification_request_id = ""
+            self.notification_requested_at = None
+        accepted = self.notifications is None or is_newer(
+            dump.date, self.notifications.date
+        )
+        if accepted:
+            self.notifications = dump
+        if not accepted and not answered:
+            return False
+        await self.async_save()
+        self.notify()
+        return accepted
 
     async def async_submit_challenge(self, challenge_id: str) -> bool:
         """Mark the current challenge sent. False when that id is not current.
@@ -773,3 +878,12 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 def _format_datetime(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _local_day() -> str:
+    """Today's date in Home Assistant's local timezone, as an ISO string.
+
+    The daily limit is a family rule, so it follows the clock on the wall a
+    parent sets in Home Assistant rather than UTC.
+    """
+    return dt_util.now().date().isoformat()

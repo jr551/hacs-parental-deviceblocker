@@ -36,7 +36,7 @@ last known state during an outage.
 - [ ] Restart `RowePcActivity` (or reboot) during the grace: the countdown continues from where it was, because the service records the first sighting under `%ProgramData%\RowePcBlocker\challenge-grace.json`.
 - [ ] After five minutes the notice becomes a hard kiosk that cannot be dismissed. Accepting the challenge on the phone, or `rowe_pc_blocker.clear_challenge`, clears it.
 - [ ] A parent override (`extension_until` in the future) suppresses the notice, exactly as it suppresses the block screen.
-- [ ] Stop the phone agent (or turn the phone off) for more than 24 hours: the PC freezes with **<child>'s phone has not checked in for N hours** and **Parental control cannot be verified. Please see a parent.** It cannot be dismissed.
+- [ ] Stop the phone agent (or turn the phone off) for more than 24 hours: the PC shows **Phone app tamper detected** with a fifteen-minute countdown, then shuts down. It cannot be dismissed, and restarting the PC does not reset the countdown because it is measured from the phone's last check-in.
 - [ ] With a second monitor attached, the freeze and the hard challenge kiosk cover every display, not just the primary one.
 - [ ] Start the phone agent again: the freeze clears on the next poll.
 - [ ] A child with no phone entry, or a phone that has never checked in (`last_seen` null), never freezes the PC.
