@@ -239,6 +239,33 @@ def app_summary(items: Iterable[NotificationItem]) -> list[dict]:
     return ordered[:MAX_SENSOR_APPS]
 
 
+MAX_SUMMARY_APPS = 3
+
+
+def notification_summary(dump: "NotificationDump | None") -> str | None:
+    """One line a parent can read straight off the entity.
+
+    A count alone says something happened but not what, so the state names the
+    noisiest apps and leaves the messages themselves to the ``items`` attribute
+    a dashboard card renders. ``none`` means the phone reported a quiet day.
+    """
+    if dump is None:
+        return None
+    if dump.count <= 0:
+        return "none"
+    named = [
+        f"{app['app'] or app['package']} {app['count']}"
+        for app in dump.apps[:MAX_SUMMARY_APPS]
+    ]
+    hidden = len(dump.apps) - len(named)
+    summary = ", ".join(named)
+    if hidden > 0:
+        summary += f" +{hidden} more"
+    if dump.truncated:
+        summary += " (partial)"
+    return summary
+
+
 def recent_items(
     items: Iterable[NotificationItem],
     limit: int = MAX_SENSOR_ITEMS,

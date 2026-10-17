@@ -258,11 +258,21 @@ class NotificationsSensorTests(NotificationTestCase):
         self.assertIsNone(sensor.native_value)
         self.assertEqual(
             sensor.extra_state_attributes,
-            {"date": None, "truncated": None, "apps": [], "items": [], "received_at": None},
+            {
+                "date": None,
+                "count": None,
+                "truncated": None,
+                "apps": [],
+                "items": [],
+                "received_at": None,
+            },
         )
 
         await self._post(_dump(count=137, truncated=True))
-        self.assertEqual(sensor.native_value, 137)
+        # The state names what arrived; a bare count sent a parent hunting
+        # through attributes for the answer.
+        self.assertEqual(sensor.native_value, "WhatsApp 1 (partial)")
+        self.assertEqual(sensor.extra_state_attributes["count"], 137)
         attributes = sensor.extra_state_attributes
         self.assertEqual(attributes["date"], "2026-10-17")
         self.assertTrue(attributes["truncated"])

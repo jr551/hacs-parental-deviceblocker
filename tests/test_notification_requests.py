@@ -266,7 +266,8 @@ class NotificationSensorTests(NotificationRequestTestCase):
 
         request_id = await self.runtime.async_request_notifications()
         await self._post(_dump(count=9, request_id=request_id))
-        self.assertEqual(sensor.native_value, 9)
+        self.assertEqual(sensor.native_value, "Roblox 1")
+        self.assertEqual(sensor.extra_state_attributes["count"], 9)
         self.assertEqual(sensor.extra_state_attributes["date"], "2026-10-17")
 
 

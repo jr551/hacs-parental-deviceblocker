@@ -11,6 +11,7 @@
 
 ### Changed
 
+- **The notifications sensor says what arrived, not how many.** `sensor.<device>_notifications` reported `21`, which told a parent nothing. Its state now names the noisiest apps — `My Singing Monsters 8, WhatsApp 6, Roblox 5 +1 more` — the day's total moved to a `count` attribute, and `items` carries the messages themselves for a dashboard card to render.
 - **Asking for an app is the bottom picker only.** The block screen no longer carries a **Request unblock** button next to the app the child was blocked on: it let the child fire a request at whatever happened to open, and the picker at the bottom of the same screen already lists every app they can ask about. The picker sends the same request.
 - **A phone that stops checking in now costs the PC.** After 24 hours of silence from a phone that had been seen at least once, the PC takes over the screen with **Phone app tamper detected** — a phone that has gone quiet for a day looks exactly like the app having been removed or disabled — names the child, and counts down. After 15 minutes it shuts the PC down. The countdown is measured from the phone's own `last_seen`, so restarting the agent or the PC buys no extra time, and a phone that checks in before the grace expires clears the notice with nothing to undo.
 - **The pause screen and the chore screen no longer look alike.** A parent's pause is a cool navy and the chore challenge is a saturated violet, so a child can tell at a glance whether they were paused or are being asked to do a job.
