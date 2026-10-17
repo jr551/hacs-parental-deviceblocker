@@ -43,13 +43,14 @@ from .const import (
     DOMAIN,
     DEVICE_TYPE_ANDROID,
     DEVICE_TYPE_WINDOWS,
-    LEGACY_S3_OPTION_KEYS,
     MAX_SCREEN_INTERVAL_MINUTES,
     MIN_PARENT_PIN_LENGTH,
     MIN_SCREEN_INTERVAL_MINUTES,
+    OPTION_KEYS,
     SCREEN_SCHEDULE_MANUAL,
     SCREEN_SCHEDULE_MODES,
 )
+from .migration import ENTRY_VERSION
 from .wake_alarm import (
     CONF_WAKE_ALARM_DAYS,
     CONF_WAKE_ALARM_ENABLED,
@@ -66,7 +67,9 @@ from .wake_alarm import (
 class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure one Windows PC or Android phone."""
 
-    VERSION = 2
+    # New entries start at the version the migration rules expect, so an entry
+    # created today is never migrated on its first load.
+    VERSION = ENTRY_VERSION
 
     @staticmethod
     def async_get_options_flow(config_entry) -> config_entries.OptionsFlow:
@@ -180,7 +183,7 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
         current = {
-            k: v for k, v in self.config_entry.options.items() if k not in LEGACY_S3_OPTION_KEYS
+            k: v for k, v in self.config_entry.options.items() if k in OPTION_KEYS
         }
         errors: dict[str, str] = {}
         if user_input is not None:

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-# Android backup/config still returns these limits when backup is disabled.
-MAX_BACKUP_BYTES = 20 * 1024 * 1024 * 1024
-
 AUTH_HEADERS = ("X-Device-Blocker-Key", "X-Rowe-Key")
 AUTH_QUERY_PARAM = "key"  # portal HTML only
 
@@ -17,10 +14,8 @@ API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/portal/action"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/points_hour"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/provision"},
+    {"method": "GET", "path": "/api/rowe_pc_blocker/provision/{request_id}"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/parent_override"},
-    {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/backup/config"},
-    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/backup/presign"},
-    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/backup/status"},
 )
 
 STATE_RESPONSE_KEYS = frozenset(
@@ -35,6 +30,20 @@ STATE_RESPONSE_KEYS = frozenset(
         "extension_available",
         "extension_available_at",
         "extension_until",
+        "allowed_apps",
+        "family",
+    }
+)
+
+FAMILY_PEER_KEYS = frozenset(
+    {
+        "device_id",
+        "device_type",
+        "blocked",
+        "message",
+        "agent_online",
+        "last_seen",
+        "active_application",
     }
 )
 
@@ -46,39 +55,21 @@ ACTIVITY_REQUEST_KEYS = frozenset(
         "agent_version",
         "ui_status",
         "ui_error",
+        "installed_apps",
     }
 )
+
+INSTALLED_APP_KEYS = frozenset({"package", "label"})
 
 EXTENSION_RESPONSE_KEYS = frozenset(
     {"granted", "extension_until", "extension_available_at"}
 )
 
-BACKUP_CONFIG_RESPONSE_KEYS = frozenset(
-    {
-        "enabled",
-        "initial_sync_wifi_only",
-        "requires_external_power",
-        "max_file_bytes",
-        "configuration_id",
-    }
-)
+PROVISION_REQUEST_KEYS = frozenset({"child_name"})
 
-BACKUP_CONFIG_DISABLED_BODY = {
-    "enabled": False,
-    "initial_sync_wifi_only": True,
-    "requires_external_power": True,
-    "max_file_bytes": MAX_BACKUP_BYTES,
-    "configuration_id": "",
-}
+PROVISION_PENDING_KEYS = frozenset({"status", "request_id", "child_name"})
 
-BACKUP_PRESIGN_DISABLED_STATUS = 503
-BACKUP_PRESIGN_DISABLED_BODY = {"error": "Media backup is disabled."}
-
-BACKUP_STATUS_REQUEST_KEYS = frozenset(
-    {"status", "uploaded", "skipped", "initial_complete", "last_success", "error"}
-)
-
-BACKUP_STATUS_OK_BODY = {"ok": True}
+PROVISION_APPROVED_KEYS = frozenset({"status", "device_id", "api_key", "child_name"})
 
 ACTIVITY_OK_BODY = {"ok": True}
 

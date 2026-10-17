@@ -1,6 +1,8 @@
 package lol.rowe.blocker;
 
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -13,20 +15,21 @@ final class PolicyDecision {
     static final String SAMSUNG_CLOCK = "com.sec.android.app.clockpackage";
     static final String SAMSUNG_CAMERA = "com.sec.android.app.camera";
 
-    private static final Set<String> ALLOWED_APPS = new HashSet<>(Arrays.asList(
-            WHATSAPP,
-            GOOGLE_MAPS,
-            CLASSROOM,
-            MAPMYWALK,
-            SAMSUNG_DIALER,
-            "com.google.android.dialer",
-            "com.android.dialer",
-            SAMSUNG_CLOCK,
-            "com.google.android.deskclock",
-            "com.android.deskclock",
-            SAMSUNG_CAMERA,
-            "com.android.camera2",
-            "com.google.android.GoogleCamera"));
+    private static final Set<String> ALLOWED_APPS = Collections.unmodifiableSet(
+            new HashSet<>(Arrays.asList(
+                    WHATSAPP,
+                    GOOGLE_MAPS,
+                    CLASSROOM,
+                    MAPMYWALK,
+                    SAMSUNG_DIALER,
+                    "com.google.android.dialer",
+                    "com.android.dialer",
+                    SAMSUNG_CLOCK,
+                    "com.google.android.deskclock",
+                    "com.android.deskclock",
+                    SAMSUNG_CAMERA,
+                    "com.android.camera2",
+                    "com.google.android.GoogleCamera")));
 
     private static final Set<String> CORE_SYSTEM_PACKAGES = new HashSet<>(Arrays.asList(
             "android",
@@ -41,9 +44,36 @@ final class PolicyDecision {
             "com.samsung.android.incallui"));
 
     private final String ownPackage;
+    /** Home Assistant's allow-list, or the built-in defaults when it sends none. */
+    private volatile Set<String> allowedApps = ALLOWED_APPS;
 
     PolicyDecision(String ownPackage) {
         this.ownPackage = ownPackage;
+    }
+
+    /** The built-in allow-list used when Home Assistant sends none. */
+    static Set<String> defaultAllowedApps() {
+        return ALLOWED_APPS;
+    }
+
+    /**
+     * Adopt Home Assistant's allow-list. An empty list means the parent has not
+     * chosen one, so the built-in defaults stay in force.
+     */
+    void setAllowedApps(Collection<String> fromServer) {
+        if (fromServer == null || fromServer.isEmpty()) {
+            allowedApps = ALLOWED_APPS;
+            return;
+        }
+        Set<String> replacement = new HashSet<>();
+        for (String packageName : fromServer) {
+            if (packageName != null && !packageName.trim().isEmpty()) {
+                replacement.add(packageName.trim());
+            }
+        }
+        allowedApps = replacement.isEmpty()
+                ? ALLOWED_APPS
+                : Collections.unmodifiableSet(replacement);
     }
 
     boolean isAllowed(boolean blocked, String packageName) {
@@ -54,7 +84,7 @@ final class PolicyDecision {
             return false;
         }
         return packageName.equals(ownPackage)
-                || ALLOWED_APPS.contains(packageName)
+                || allowedApps.contains(packageName)
                 || CORE_SYSTEM_PACKAGES.contains(packageName);
     }
 

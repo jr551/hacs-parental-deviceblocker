@@ -1,9 +1,11 @@
 """PC activity sensors."""
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import DOMAIN
+from .const import DEVICE_TYPE_ANDROID, DOMAIN, SIGNAL_PENDING
 from .entity import ParentalDeviceEntity
+from .pending import awaiting_requests, claim_pending_entities
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
@@ -18,7 +20,13 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         DailyActivitySummarySensor(runtime),
         WeeklyActivitySummarySensor(runtime),
     ]
+    if runtime.device_type == DEVICE_TYPE_ANDROID:
+        entities.append(InstalledAppsSensor(runtime))
     async_add_entities(entities)
+    # The pending-setups sensor is integration-wide, so only the entry that
+    # owns the pending entities creates it.
+    if claim_pending_entities(hass, entry.entry_id):
+        async_add_entities([PendingSetupsSensor(hass)])
 
 
 class ActiveApplicationSensor(ParentalDeviceEntity, SensorEntity):
@@ -228,3 +236,63 @@ class WeeklyActivitySummarySensor(_ActivitySummarySensor):
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
         self._attr_unique_id = f"{runtime.device_id}_weekly_activity_summary"
+
+
+class InstalledAppsSensor(ParentalDeviceEntity, SensorEntity):
+    """The launchable apps the phone last reported, for choosing an allowlist."""
+
+    _attr_name = "Installed apps"
+    _attr_icon = "mdi:apps"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_installed_apps"
+
+    @property
+    def native_value(self) -> int:
+        return len(self.runtime.installed_apps)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {"apps": [dict(app) for app in self.runtime.installed_apps]}
+
+
+class PendingSetupsSensor(SensorEntity):
+    """How many phones are waiting for a parent to approve their setup.
+
+    Integration-wide rather than per device: the name is spelled so that Home
+    Assistant derives the documented entity id
+    ``sensor.rowe_pc_blocker_pending_setups`` from it.
+    """
+
+    _attr_has_entity_name = False
+    _attr_name = "Rowe PC blocker pending setups"
+    _attr_icon = "mdi:cellphone-arrow-down"
+    _attr_unique_id = f"{DOMAIN}_pending_setups"
+
+    def __init__(self, hass) -> None:
+        self.hass = hass
+
+    @property
+    def native_value(self) -> int:
+        return len(awaiting_requests(self.hass))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "requests": [
+                {
+                    "request_id": request.request_id,
+                    "child_name": request.child_name,
+                    "requested_at": request.requested_at.isoformat(),
+                }
+                for request in awaiting_requests(self.hass)
+            ]
+        }
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_PENDING, self.async_write_ha_state
+            )
+        )

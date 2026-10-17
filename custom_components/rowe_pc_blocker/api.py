@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import hmac
 import re
-import secrets
 from datetime import timedelta
 
 from aiohttp import web
 
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.util import dt as dt_util
 
 from .api_security import (
@@ -29,22 +27,20 @@ from .api_security import (
     valid_device_id,
 )
 from .const import (
-    CONF_API_KEY,
-    CONF_DEVICE_ID,
-    CONF_DEVICE_NAME,
-    CONF_DEVICE_TYPE,
     CONF_PARENT_PIN,
-    CONF_WINDOWS_USERNAME,
-    DEVICE_TYPE_ANDROID,
     DOMAIN,
     EVENT_PARENT_OVERRIDE,
     EVENT_POINTS_HOUR,
+    ONLINE_TIMEOUT_SECONDS,
     PARENT_OVERRIDE_MINUTES,
     POINTS_HOUR_COST,
     POINTS_HOUR_MINUTES,
     PARENT_PIN_LOCKOUT_MINUTES,
     PARENT_PIN_MAX_ATTEMPTS,
 )
+from .apps import parse_allowed_apps
+from .family import family_peers
+from .pending import async_create_request, async_load_pending
 from .portal import (
     PORTAL_HTML,
     ChildIdentity,
@@ -52,13 +48,13 @@ from .portal import (
     points_hour_refusal,
     resolve_child_identity,
 )
-from .provision import PhoneEntry, decide_provision
-from .wake_alarm import wake_alarm_payload
-from .protocol_surface import (
-    BACKUP_CONFIG_DISABLED_BODY,
-    BACKUP_PRESIGN_DISABLED_BODY,
-    BACKUP_PRESIGN_DISABLED_STATUS,
+from .provision import (
+    collection_response,
+    match_child,
+    request_response,
+    unknown_child_response,
 )
+from .wake_alarm import wake_alarm_payload
 
 
 def _parent_pin(hass: HomeAssistant, runtime) -> str:
@@ -96,6 +92,15 @@ def _runtime_for_request(hass: HomeAssistant, device_id: str):
         ),
         None,
     )
+
+
+def _runtimes(hass: HomeAssistant) -> list:
+    """Every configured device runtime."""
+    return [
+        item
+        for item in hass.data.get(DOMAIN, {}).values()
+        if getattr(item, "device_id", None)
+    ]
 
 
 async def _require_runtime(
@@ -216,6 +221,13 @@ class PcStateView(HomeAssistantView):
                 "points_hour_cost": POINTS_HOUR_COST,
                 "points_balance": _points_balance(request.app["hass"], runtime),
                 "wake_alarm": _wake_alarm(request.app["hass"], runtime),
+                "allowed_apps": parse_allowed_apps(runtime.allowed_apps),
+                "family": family_peers(
+                    runtime,
+                    _runtimes(hass),
+                    dt_util.utcnow(),
+                    ONLINE_TIMEOUT_SECONDS,
+                ),
             }
         )
 
@@ -416,9 +428,8 @@ class PcPointsHourView(HomeAssistantView):
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
         hass = request.app["hass"]
-        runtime = _runtime_for_request(hass, device_id)
-        if runtime is None or not _authorised(request, runtime):
-            raise web.HTTPUnauthorized()
+        runtime = await _require_runtime(hass, request, device_id)
+        await read_json_object(request)
         context = _portal_context(hass, runtime)
         balance = _points_balance(hass, runtime)
         refusal = points_hour_refusal(balance, runtime.blocked, POINTS_HOUR_COST)
@@ -580,51 +591,6 @@ class PcParentOverrideView(HomeAssistantView):
         )
 
 
-class AndroidBackupConfigView(HomeAssistantView):
-    """Legacy Android backup probe; server-side backup was removed in 0.10.0."""
-
-    url = "/api/rowe_pc_blocker/{device_id}/backup/config"
-    name = "api:rowe_pc_blocker:backup_config"
-    requires_auth = False
-
-    async def get(self, request: web.Request, device_id: str) -> web.Response:
-        hass = request.app["hass"]
-        await _require_runtime(hass, request, device_id)
-        return self.json(BACKUP_CONFIG_DISABLED_BODY)
-
-
-class AndroidBackupPresignView(HomeAssistantView):
-    """Legacy presign endpoint; always disabled after 0.10.0."""
-
-    url = "/api/rowe_pc_blocker/{device_id}/backup/presign"
-    name = "api:rowe_pc_blocker:backup_presign"
-    requires_auth = False
-
-    async def post(self, request: web.Request, device_id: str) -> web.Response:
-        hass = request.app["hass"]
-        await _require_runtime(hass, request, device_id)
-        await read_json_object(request)
-        return self.json(
-            BACKUP_PRESIGN_DISABLED_BODY,
-            status_code=BACKUP_PRESIGN_DISABLED_STATUS,
-        )
-
-
-class AndroidBackupStatusView(HomeAssistantView):
-    """Accept bounded backup progress for the parent-facing status sensor."""
-
-    url = "/api/rowe_pc_blocker/{device_id}/backup/status"
-    name = "api:rowe_pc_blocker:backup_status"
-    requires_auth = False
-
-    async def post(self, request: web.Request, device_id: str) -> web.Response:
-        hass = request.app["hass"]
-        runtime = await _require_runtime(hass, request, device_id)
-        payload = await read_json_object(request)
-        runtime.update_backup_status(payload)
-        return self.json({"ok": True})
-
-
 def _provision_children(hass: HomeAssistant) -> list[ChildIdentity]:
     children: list[ChildIdentity] = []
     seen: set[str] = set()
@@ -643,28 +609,12 @@ def _provision_children(hass: HomeAssistant) -> list[ChildIdentity]:
     return children
 
 
-def _provision_entries(hass: HomeAssistant) -> list[PhoneEntry]:
-    entries: list[PhoneEntry] = []
-    for entry in hass.config_entries.async_entries(DOMAIN):
-        data = entry.data
-        entries.append(
-            PhoneEntry(
-                device_id=str(data.get(CONF_DEVICE_ID, "")),
-                device_name=str(data.get(CONF_DEVICE_NAME, "")),
-                device_type=str(data.get(CONF_DEVICE_TYPE, "")),
-                windows_username=str(data.get(CONF_WINDOWS_USERNAME, "")),
-                api_key=str(data.get(CONF_API_KEY, "")),
-                parent_pin=str(entry.options.get(CONF_PARENT_PIN, "")).strip(),
-            )
-        )
-    return entries
-
-
 class AndroidProvisionView(HomeAssistantView):
-    """Let a phone set itself up from a child name.
+    """Let a phone ask to be set up from a child name.
 
-    The rules live in provision.py: known chore-manager children only, and the
-    existing parent-override PIN when that phone entry already has one.
+    The request waits for a parent to approve it from the dashboard; only an
+    approved request hands the phone a device id and API key. The rules live in
+    provision.py.
     """
 
     url = "/api/rowe_pc_blocker/provision"
@@ -674,116 +624,38 @@ class AndroidProvisionView(HomeAssistantView):
     async def post(self, request: web.Request) -> web.Response:
         hass = request.app["hass"]
         try:
-            payload = await request.json()
-        except (ValueError, web.HTTPBadRequest):
-            return self.json({"error": "Expected a JSON object."}, status_code=400)
-        if not isinstance(payload, dict):
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
             return self.json({"error": "Expected a JSON object."}, status_code=400)
 
         child_name = str(payload.get("child_name", "")).strip()
-        supplied_pin = str(payload.get("pin", "")).strip()
-        decision = decide_provision(
-            child_name,
-            _provision_children(hass),
-            _provision_entries(hass),
-            supplied_pin,
-        )
-        if decision.pin_checked and decision.device_id:
-            locked_for = _pin_lockout_remaining(hass, f"provision:{decision.device_id}")
-            if locked_for:
-                return self.json(
-                    {
-                        "error": "Too many wrong PINs. Try again in "
-                        f"{max(1, round(locked_for / 60))} minute(s).",
-                    },
-                    status_code=429,
-                )
-        if decision.action == "bad_pin" and decision.device_id:
-            attempts = _pin_attempts(hass)
-            record = attempts.setdefault(
-                f"provision:{decision.device_id}",
-                {"failures": 0, "locked_until": None},
-            )
-            record["failures"] += 1
-            remaining = PARENT_PIN_MAX_ATTEMPTS - record["failures"]
-            if remaining <= 0:
-                record["locked_until"] = dt_util.utcnow() + timedelta(
-                    minutes=PARENT_PIN_LOCKOUT_MINUTES
-                )
-                return self.json(
-                    {
-                        "error": "Wrong PIN. Locked for "
-                        f"{PARENT_PIN_LOCKOUT_MINUTES} minutes.",
-                    },
-                    status_code=429,
-                )
-            return self.json({"error": decision.message}, status_code=403)
-        if decision.action == "pin_required":
-            return self.json(
-                {"pin_required": True, "error": decision.message},
-                status_code=401,
-            )
-        if decision.action == "unknown_child":
-            return self.json({"error": decision.message}, status_code=404)
-        if decision.action == "unavailable":
-            return self.json({"error": decision.message}, status_code=409)
-        if decision.action == "reuse":
-            if decision.pin_checked and decision.device_id:
-                _pin_attempts(hass).pop(f"provision:{decision.device_id}", None)
-            return self.json(
-                {
-                    "ok": True,
-                    "device_id": decision.device_id,
-                    "api_key": decision.api_key,
-                    "child_name": decision.child_name,
-                }
-            )
-        if decision.action != "create":
-            return self.json(
-                {"error": "Home Assistant could not set up this phone."},
-                status_code=500,
-            )
+        child = match_child(child_name, _provision_children(hass))
+        if child is None:
+            status_code, body = unknown_child_response()
+            return self.json(body, status_code=status_code)
+        pending = await async_create_request(hass, child.name)
+        status_code, body = request_response(pending)
+        return self.json(body, status_code=status_code)
 
-        api_key = secrets.token_urlsafe(32)
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": "user"},
-            data={
-                CONF_DEVICE_ID: decision.device_id,
-                CONF_DEVICE_NAME: f"{decision.child_name}'s phone",
-                CONF_DEVICE_TYPE: DEVICE_TYPE_ANDROID,
-                CONF_WINDOWS_USERNAME: decision.child_name,
-                CONF_API_KEY: api_key,
-            },
+
+class AndroidProvisionStatusView(HomeAssistantView):
+    """Let a phone collect the answer to its setup request.
+
+    Collection is idempotent: an approved request keeps returning the same
+    credentials until it expires.
+    """
+
+    url = "/api/rowe_pc_blocker/provision/{request_id}"
+    name = "api:rowe_pc_blocker:provision_status"
+    requires_auth = False
+
+    async def get(self, request: web.Request, request_id: str) -> web.Response:
+        hass = request.app["hass"]
+        store = await async_load_pending(hass)
+        status_code, body = collection_response(
+            store.get(request_id[:64], dt_util.utcnow())
         )
-        if result.get("type") != FlowResultType.CREATE_ENTRY:
-            again = decide_provision(
-                child_name,
-                _provision_children(hass),
-                _provision_entries(hass),
-                supplied_pin,
-            )
-            if again.action == "reuse" and again.api_key:
-                return self.json(
-                    {
-                        "ok": True,
-                        "device_id": again.device_id,
-                        "api_key": again.api_key,
-                        "child_name": again.child_name,
-                    }
-                )
-            return self.json(
-                {"error": "Home Assistant could not set up this phone."},
-                status_code=409,
-            )
-        return self.json(
-            {
-                "ok": True,
-                "device_id": decision.device_id,
-                "api_key": api_key,
-                "child_name": decision.child_name,
-            }
-        )
+        return self.json(body, status_code=status_code)
 
 
 def async_register_api(hass: HomeAssistant) -> None:
@@ -791,6 +663,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     if hass.data.setdefault(DOMAIN, {}).get("_api_registered"):
         return
     hass.http.register_view(AndroidProvisionView)
+    hass.http.register_view(AndroidProvisionStatusView)
     hass.http.register_view(PcStateView)
     hass.http.register_view(PcParentOverrideView)
     hass.http.register_view(PcPointsHourView)
@@ -799,7 +672,4 @@ def async_register_api(hass: HomeAssistant) -> None:
     hass.http.register_view(PcPortalView)
     hass.http.register_view(PcPortalDataView)
     hass.http.register_view(PcPortalActionView)
-    hass.http.register_view(AndroidBackupConfigView)
-    hass.http.register_view(AndroidBackupPresignView)
-    hass.http.register_view(AndroidBackupStatusView)
     hass.data[DOMAIN]["_api_registered"] = True

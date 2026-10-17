@@ -1,0 +1,53 @@
+# Parental Device Blocker - agent stale alert.
+#
+# Fires on the integration's own events, so it needs no per-device trigger list:
+#   rowe_pc_blocker_agent_stale     -> a device stopped checking in
+#   rowe_pc_blocker_agent_recovered -> that device came back
+#
+# Deploy to /config/automations/rowe_pc_blocker_agent_stale.yaml and reload
+# automations. Uses the live ha-notify Hermes route (rest_command.notify_john).
+- id: parental_device_blocker_agent_stale_alert
+  alias: Parental Device Blocker - Agent Stale Alert
+  description: >-
+    Alerts a parent when a blocker agent stops checking in, and again when it
+    recovers. Enforcement cannot be trusted while an agent is offline.
+  mode: queued
+  max: 10
+  trigger:
+    - platform: event
+      event_type: rowe_pc_blocker_agent_stale
+      id: stale
+    - platform: event
+      event_type: rowe_pc_blocker_agent_recovered
+      id: recovered
+  action:
+    - variables:
+        device_id: "{{ trigger.event.data.device_id | default('unknown') }}"
+        minutes: "{{ trigger.event.data.minutes_offline | default(0) | int }}"
+        friendly: >-
+          {{ state_attr('binary_sensor.' ~ device_id | replace('-', '_') ~ '_agent_online',
+                        'friendly_name') or device_id }}
+        stale_message: >-
+          {{ friendly }} has not checked in for {{ minutes }} minutes.
+          Blocks may not be enforced on it.
+        recovered_message: "{{ friendly }} is checking in again."
+        message: >-
+          {{ stale_message if trigger.id == 'stale' else recovered_message }}
+    - service: persistent_notification.create
+      data:
+        title: >-
+          {{ 'Agent offline - ' ~ friendly if trigger.id == 'stale'
+             else 'Agent back - ' ~ friendly }}
+        message: "{{ message }}"
+        notification_id: "parental_device_agent_{{ device_id }}"
+    - if:
+        - condition: template
+          value_template: "{{ trigger.id == 'stale' }}"
+      then:
+        - service: rest_command.notify_john
+          data:
+            message: "{{ message }}"
+      else:
+        - service: persistent_notification.dismiss
+          data:
+            notification_id: "parental_device_agent_{{ device_id }}"

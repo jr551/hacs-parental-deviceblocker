@@ -7,6 +7,8 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.accessibility.AccessibilityEvent;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -42,14 +44,31 @@ public final class BlockAccessibilityService extends AccessibilityService {
         activeInstance = this;
         decision = new PolicyDecision(getPackageName());
         if (AppConfig.load(this).isConfigured()) {
-            MediaBackupScheduler.schedule(this);
             EnforcementWatchdogJobService.schedule(this);
             EnforcementWatchdogService.start(this);
         }
         // onServiceConnected can run more than once for the same instance; schedule one poller.
         if (pollScheduled.compareAndSet(false, true)) {
             policyExecutor.scheduleWithFixedDelay(
-                    this::pollPolicy, 0, ReportSchedule.POLICY_POLL_SECONDS, TimeUnit.SECONDS);
+                    this::pollPolicySafely,
+                    0,
+                    ReportSchedule.POLICY_POLL_SECONDS,
+                    TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * A scheduled task that throws is cancelled permanently, so the poll body
+     * must swallow every Throwable — including Errors — or one bad poll would
+     * silently stop every check-in while the service still looks bound and
+     * enabled. {@link #pollPolicy} already handles ordinary failures; this is
+     * the backstop that keeps the schedule alive.
+     */
+    private void pollPolicySafely() {
+        try {
+            pollPolicy();
+        } catch (Throwable ignored) {
+            // The next scheduled poll retries.
         }
     }
 
@@ -152,6 +171,9 @@ public final class BlockAccessibilityService extends AccessibilityService {
         BlockAccessibilityService service = activeInstance;
         if (service != null) {
             service.currentPolicy = policy;
+            if (service.decision != null) {
+                service.decision.setAllowedApps(policy.allowedApps);
+            }
         }
     }
 
@@ -168,6 +190,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
             Policy policy = new HomeAssistantClient(config).getPolicy();
             WakeAlarm.applyServer(this, policy.wakeAlarm);
             currentPolicy = policy;
+            decision.setAllowedApps(policy.allowedApps);
             publishStatus(
                     policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
                     "",
@@ -238,7 +261,9 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 .putExtra(MainActivity.EXTRA_BLOCK_MESSAGE, policy.message)
                 .putExtra(MainActivity.EXTRA_EXTENSION_AVAILABLE, policy.extensionAvailable)
                 .putExtra(MainActivity.EXTRA_ENFORCE_AT, policy.enforceAt == null ? null : policy.enforceAt.toString())
-                .putExtra(MainActivity.EXTRA_EXTENSION_UNTIL, policy.extensionUntil == null ? null : policy.extensionUntil.toString());
+                .putExtra(MainActivity.EXTRA_EXTENSION_UNTIL, policy.extensionUntil == null ? null : policy.extensionUntil.toString())
+                .putStringArrayListExtra(
+                        MainActivity.EXTRA_ALLOWED_APPS, new ArrayList<>(policy.allowedApps));
         mainHandler.post(() -> {
             if (policy.shouldCaptureForeground()
                     && decision != null
@@ -297,12 +322,21 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 return;
             }
             android.location.Location location = includeLocation ? PassiveLocation.latest(this) : null;
+            List<InstalledApps.App> apps = InstalledApps.launchable(getPackageManager());
+            String fingerprint = InstalledApps.fingerprint(apps);
+            boolean changed = InstalledApps.shouldSend(
+                    InstalledApps.lastFingerprint(this), fingerprint);
             new HomeAssistantClient(config).postActivity(
                     application,
                     window,
                     location,
                     enforcementStatus,
-                    enforcementDetail);
+                    enforcementDetail,
+                    changed ? apps : null);
+            if (changed) {
+                // Only after a successful report, so a failed upload is retried.
+                InstalledApps.rememberFingerprint(this, fingerprint);
+            }
         } catch (Exception ignored) {
             // The next hourly batch retries. A failed report must not keep retrying
             // on every foreground change.

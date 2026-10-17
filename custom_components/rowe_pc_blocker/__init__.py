@@ -18,9 +18,10 @@ from .const import (
     CONF_WINDOWS_USERNAME,
     DOMAIN,
     DEVICE_TYPE_WINDOWS,
-    LEGACY_S3_OPTION_KEYS,
     PLATFORMS,
 )
+from .migration import ENTRY_VERSION, migrate_options
+from .pending import async_load_pending, release_pending_entities
 from .runtime import PcRuntime
 from .screen_monitor import ScreenMonitor
 
@@ -43,11 +44,14 @@ CONFIG_SCHEMA = vol.Schema(
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Remove legacy S3 backup options from config entry storage."""
-    if entry.version >= 2:
+    """Drop options from removed features and bump the entry version."""
+    if entry.version >= ENTRY_VERSION:
         return True
-    options = {k: v for k, v in entry.options.items() if k not in LEGACY_S3_OPTION_KEYS}
-    hass.config_entries.async_update_entry(entry, version=2, options=options)
+    hass.config_entries.async_update_entry(
+        entry,
+        version=ENTRY_VERSION,
+        options=migrate_options(entry.options),
+    )
     return True
 
 
@@ -68,6 +72,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up one PC."""
     async_register_api(hass)
+    await async_load_pending(hass)
     runtime = PcRuntime(
         hass=hass,
         entry_id=entry.entry_id,
@@ -114,9 +119,29 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        if release_pending_entities(hass, entry.entry_id):
+            _async_rehome_pending_entities(hass)
     elif runtime.screen_monitor is not None:
         await runtime.screen_monitor.async_start()
     return unloaded
+
+
+def _async_rehome_pending_entities(hass: HomeAssistant) -> None:
+    """Hand the integration-wide pending entities to a surviving entry.
+
+    They are created by whichever entry loads first, so deleting that entry
+    would otherwise take the pending-setups card with it. Reloading one of the
+    remaining entries gives the claim to that entry instead.
+    """
+    if hass.is_stopping:
+        return
+    remaining = [
+        entry.entry_id
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.entry_id in hass.data.get(DOMAIN, {})
+    ]
+    if remaining:
+        hass.config_entries.async_schedule_reload(remaining[0])
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

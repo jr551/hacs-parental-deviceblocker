@@ -24,14 +24,14 @@ public sealed class BlockerWorker(
                     // account was previously disabled with enforcement on.
                     if (_lastAppliedBlocked == true)
                     {
-                        var ensureUnblocked = new BlockState(false, state.Message, state.WindowsUsername);
+                        var ensureUnblocked = new BlockState(false, state.Message, state.WindowsUsername, state.Family);
                         await accounts.ApplyAsync(ensureUnblocked, stoppingToken);
                     }
                     else if (_lastAppliedBlocked is null)
                     {
                         // First poll in monitor-only: ensure account is enabled
                         // so a prior manual disable does not persist.
-                        var ensureUnblocked = new BlockState(false, state.Message, state.WindowsUsername);
+                        var ensureUnblocked = new BlockState(false, state.Message, state.WindowsUsername, state.Family);
                         await accounts.ApplyAsync(ensureUnblocked, stoppingToken);
                     }
                     if (_lastAppliedBlocked != state.IsBlocked)

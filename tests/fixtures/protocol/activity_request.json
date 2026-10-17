@@ -4,5 +4,11 @@
   "username": "child",
   "agent_version": "0.9.35",
   "ui_status": "idle",
-  "ui_error": ""
+  "ui_error": "",
+  "installed_apps": [
+    {
+      "package": "com.whatsapp",
+      "label": "WhatsApp"
+    }
+  ]
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -40,6 +41,11 @@ internal sealed class AgentApplicationContext : ApplicationContext
     private string _activityFailureError = "";
     private bool _uiTelemetryDirty = true;
     private bool _busy;
+    // The policy is read by hand so the family block can be parsed from the same
+    // document. HttpClientJsonExtensions.GetFromJsonAsync used web defaults, so
+    // keep them: a property added later without an explicit JsonPropertyName
+    // must not silently stop deserializing.
+    private static readonly JsonSerializerOptions PolicyJsonOptions = new(JsonSerializerDefaults.Web);
 
     public AgentApplicationContext(AgentConfiguration configuration)
     {
@@ -187,8 +193,15 @@ internal sealed class AgentApplicationContext : ApplicationContext
 
     private async Task<AgentPolicy?> GetPolicyAsync()
     {
-        return await _http.GetFromJsonAsync<AgentPolicy>(
+        using HttpResponseMessage response = await _http.GetAsync(
             $"api/rowe_pc_blocker/{Uri.EscapeDataString(_configuration.DeviceId)}/state");
+        response.EnsureSuccessStatusCode();
+        await using Stream body = await response.Content.ReadAsStreamAsync();
+        using JsonDocument document = await JsonDocument.ParseAsync(body);
+        AgentPolicy? policy = document.RootElement.Deserialize<AgentPolicy>(PolicyJsonOptions);
+        // The family block is read separately so a malformed peer payload can
+        // never fail the safety-critical policy read that drives the kiosk.
+        return policy is null ? null : policy with { Family = FamilyState.Parse(document.RootElement) };
     }
 
     private async Task RequestExtensionAsync()
@@ -211,11 +224,15 @@ internal sealed class AgentApplicationContext : ApplicationContext
 
 internal sealed class BlockOverlayForm : Form
 {
+    private const int PhoneRowHeight = 46;
+
     private readonly AgentConfiguration _configuration;
     private readonly TableLayoutPanel _fullLayout;
     private readonly Label _title;
     private readonly Label _message;
     private readonly Label _countdown;
+    private readonly Label _phone;
+    private readonly RowStyle _phoneRow;
     private readonly Button _extension;
     private readonly Panel _banner;
     private readonly Label _bannerTitle;
@@ -257,6 +274,8 @@ internal sealed class BlockOverlayForm : Form
         _title = CreateLabel(28, FontStyle.Bold);
         _message = CreateLabel(16, FontStyle.Regular);
         _countdown = CreateLabel(19, FontStyle.Bold);
+        _phone = CreateLabel(15, FontStyle.Regular);
+        _phone.Visible = false;
         _extension = new Button
         {
             Anchor = AnchorStyles.None,
@@ -277,17 +296,22 @@ internal sealed class BlockOverlayForm : Form
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(20, 24, 31),
             Padding = new Padding(34),
-            RowCount = 4,
+            RowCount = 5,
             ColumnCount = 1
         };
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 26));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 24));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
+        // The phone status row collapses to nothing when Home Assistant
+        // reports no phone peer for this child.
+        _phoneRow = new RowStyle(SizeType.Absolute, 0);
+        left.RowStyles.Add(_phoneRow);
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
         left.Controls.Add(_title, 0, 0);
         left.Controls.Add(_message, 0, 1);
         left.Controls.Add(_countdown, 0, 2);
-        left.Controls.Add(_extension, 0, 3);
+        left.Controls.Add(_phone, 0, 3);
+        left.Controls.Add(_extension, 0, 4);
 
         _portalHost = new Panel
         {
@@ -438,8 +462,59 @@ internal sealed class BlockOverlayForm : Form
         _extension.Visible = !policy.Blocked && policy.ExtensionAvailable;
         if (!_extension.Visible && !policy.Blocked && policy.ExtensionAvailableAt is not null)
             _countdown.Text += $"\nAnother 5-minute extension is available at {policy.ExtensionAvailableAt:HH:mm}.";
+        ApplyPhoneStatus(policy.Family?.Phone);
         SetKioskMode(true);
     }
+
+    /// <summary>
+    /// Shows the child's phone status from the <c>family.phone</c> peer block.
+    /// The line and its layout row are hidden when Home Assistant reports no
+    /// phone peer for this child.
+    /// </summary>
+    private void ApplyPhoneStatus(FamilyPeerState? phone)
+    {
+        if (phone is null)
+        {
+            _phone.Text = string.Empty;
+            _phone.Visible = false;
+            _phoneRow.Height = 0;
+            return;
+        }
+
+        _phone.Text = DescribePhone(phone);
+        _phone.Visible = true;
+        _phoneRow.Height = PhoneRowHeight;
+    }
+
+    private static string DescribePhone(FamilyPeerState phone)
+    {
+        // A phone that has stopped checking in cannot be trusted to still be
+        // enforcing, so that outranks the last reported block state.
+        if (!phone.AgentOnline)
+            return "Phone: not checking in" + DescribeOfflineFor(phone.LastSeen);
+        if (phone.Blocked)
+            return "Phone: paused";
+        string application = phone.ActiveApplication.Trim();
+        return application.Length == 0 || IsIdleApplication(application)
+            ? "Phone: open"
+            : $"Phone: open — {application}";
+    }
+
+    private static string DescribeOfflineFor(DateTimeOffset? lastSeen)
+    {
+        if (lastSeen is null)
+            return string.Empty;
+        TimeSpan offline = DateTimeOffset.UtcNow - lastSeen.Value;
+        if (offline.TotalHours >= 1)
+            return $" ({(int)offline.TotalHours} h)";
+        if (offline.TotalMinutes >= 1)
+            return $" ({(int)offline.TotalMinutes} min)";
+        return string.Empty;
+    }
+
+    private static bool IsIdleApplication(string application) =>
+        application.Equals("idle", StringComparison.OrdinalIgnoreCase)
+        || application.Equals("unknown", StringComparison.OrdinalIgnoreCase);
 
     private void ApplyCountdownBanner(TimeSpan remaining)
     {
@@ -807,7 +882,75 @@ internal sealed record AgentPolicy(
     [property: System.Text.Json.Serialization.JsonPropertyName("enforce_at")] DateTimeOffset? EnforceAt,
     [property: System.Text.Json.Serialization.JsonPropertyName("extension_available")] bool ExtensionAvailable,
     [property: System.Text.Json.Serialization.JsonPropertyName("extension_available_at")] DateTimeOffset? ExtensionAvailableAt,
-    [property: System.Text.Json.Serialization.JsonPropertyName("extension_until")] DateTimeOffset? ExtensionUntil);
+    [property: System.Text.Json.Serialization.JsonPropertyName("extension_until")] DateTimeOffset? ExtensionUntil)
+{
+    /// <summary>
+    /// The child's other devices, filled in by <see cref="AgentApplicationContext.GetPolicyAsync"/>
+    /// rather than by the serializer so a malformed peer block cannot fail the
+    /// policy read that drives blocking.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public FamilyState? Family { get; init; }
+}
+
+/// <summary>Status of the child's other devices, as reported by Home Assistant.</summary>
+internal sealed record FamilyState(FamilyPeerState? Phone, FamilyPeerState? Pc)
+{
+    /// <summary>
+    /// Reads the optional <c>family</c> block. Every field is optional: an
+    /// older Home Assistant build, or a peer that has never checked in, must
+    /// never fail the state poll that drives the kiosk.
+    /// </summary>
+    public static FamilyState? Parse(JsonElement root)
+    {
+        if (!root.TryGetProperty("family", out JsonElement family) || family.ValueKind != JsonValueKind.Object)
+            return null;
+        return new FamilyState(ParsePeer(family, "phone"), ParsePeer(family, "pc"));
+    }
+
+    private static FamilyPeerState? ParsePeer(JsonElement family, string name)
+    {
+        if (!family.TryGetProperty(name, out JsonElement peer) || peer.ValueKind != JsonValueKind.Object)
+            return null;
+        return new FamilyPeerState(
+            ReadString(peer, "device_id"),
+            ReadString(peer, "device_type"),
+            ReadBoolean(peer, "blocked"),
+            ReadString(peer, "message"),
+            ReadBoolean(peer, "agent_online"),
+            ReadTimestamp(peer, "last_seen"),
+            ReadString(peer, "active_application"));
+    }
+
+    private static string ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? string.Empty
+            : string.Empty;
+
+    private static bool ReadBoolean(JsonElement element, string name) =>
+        element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.True;
+
+    private static DateTimeOffset? ReadTimestamp(JsonElement element, string name) =>
+        element.TryGetProperty(name, out JsonElement value)
+        && value.ValueKind == JsonValueKind.String
+        && DateTimeOffset.TryParse(
+            value.GetString(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out DateTimeOffset parsed)
+            ? parsed
+            : null;
+}
+
+/// <summary>One peer device of the same child, for example the child's phone.</summary>
+internal sealed record FamilyPeerState(
+    string DeviceId,
+    string DeviceType,
+    bool Blocked,
+    string Message,
+    bool AgentOnline,
+    DateTimeOffset? LastSeen,
+    string ActiveApplication);
 
 internal sealed record AgentConfiguration(
     string HomeAssistantUrl,

@@ -1,5 +1,6 @@
 package lol.rowe.blocker;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -13,65 +14,19 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 final class HomeAssistantClient {
-    static final class MediaBackupConfig {
-        final boolean enabled;
-        final long maxFileBytes;
-        final String configurationId;
-
-        MediaBackupConfig(boolean enabled, long maxFileBytes, String configurationId) {
-            this.enabled = enabled;
-            this.maxFileBytes = maxFileBytes;
-            this.configurationId = configurationId;
-        }
-    }
-
-    static final class PresignedUpload {
-        final String url;
-        final long contentLength;
-
-        PresignedUpload(String url, long contentLength) {
-            this.url = url;
-            this.contentLength = contentLength;
-        }
-    }
-
-    static final class SetupResult {
-        final boolean ok;
-        final boolean pinRequired;
-        final String deviceId;
-        final String deviceKey;
-        final String childName;
-        final String message;
-
-        SetupResult(
-                boolean ok,
-                boolean pinRequired,
-                String deviceId,
-                String deviceKey,
-                String childName,
-                String message) {
-            this.ok = ok;
-            this.pinRequired = pinRequired;
-            this.deviceId = deviceId == null ? "" : deviceId;
-            this.deviceKey = deviceKey == null ? "" : deviceKey;
-            this.childName = childName == null ? "" : childName;
-            this.message = message == null ? "" : message;
-        }
-
-        static SetupResult message(String message) {
-            return new SetupResult(false, false, "", "", "", message);
-        }
-    }
-
     /**
-     * Ask Home Assistant to create or reuse this child's phone. The API key
-     * comes back to the phone and is not shown to the parent.
+     * POST /api/rowe_pc_blocker/provision. A parent approves the request in Home
+     * Assistant; the API key only comes back after that.
      */
-    static SetupResult provision(String homeAssistantUrl, String childName, String pin) {
+    static ProvisionFlow.Outcome startProvision(String homeAssistantUrl, String childName) {
         if (!AppConfig.acceptsHomeAssistantUrl(homeAssistantUrl)) {
-            return SetupResult.message("That Home Assistant address needs to start with https://.");
+            return ProvisionFlow.Outcome.error(
+                    "That Home Assistant address needs to start with https://.");
         }
         AppConfig address = new AppConfig(homeAssistantUrl, "setup", "setup");
         HttpURLConnection connection = null;
@@ -85,43 +40,123 @@ final class HomeAssistantClient {
             connection.setInstanceFollowRedirects(false);
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "application/json");
-            JSONObject request = new JSONObject().put("child_name", childName.trim());
-            if (pin != null && !pin.trim().isEmpty()) {
-                request.put("pin", pin.trim());
-            }
-            byte[] bytes = request.toString().getBytes(StandardCharsets.UTF_8);
+            byte[] bytes = new JSONObject()
+                    .put("child_name", childName.trim())
+                    .toString()
+                    .getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(bytes.length);
             try (OutputStream output = connection.getOutputStream()) {
                 output.write(bytes);
             }
             int status = connection.getResponseCode();
-            InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            InputStream stream = status >= 400
+                    ? connection.getErrorStream()
+                    : connection.getInputStream();
             String text = stream == null ? "" : readAll(stream);
             JSONObject body = text.isEmpty() ? new JSONObject() : new JSONObject(text);
-            if (status == 200 && body.optBoolean("ok")) {
-                String deviceId = body.optString("device_id", "").trim();
-                String deviceKey = body.optString("api_key", "").trim();
-                String name = body.optString("child_name", childName).trim();
-                if (deviceId.isEmpty() || deviceKey.isEmpty()) {
-                    return SetupResult.message("Home Assistant could not set up this phone.");
-                }
-                return new SetupResult(true, false, deviceId, deviceKey, name, "This phone is set up.");
-            }
-            if (body.optBoolean("pin_required") || status == 401) {
-                return new SetupResult(
-                        false, true, "", "", "", "Enter the parent PIN for this child.");
-            }
-            String error = body.optString("error", "").trim();
-            if (error.isEmpty() || error.length() > 160) {
-                return SetupResult.message("Home Assistant could not set up this phone.");
-            }
-            return SetupResult.message(error);
+            return readProvision(body, status, false);
         } catch (Exception exception) {
-            return SetupResult.message("Home Assistant could not be reached.");
+            return ProvisionFlow.Outcome.error("Home Assistant could not be reached.");
         } finally {
             if (connection != null) {
                 connection.disconnect();
             }
+        }
+    }
+
+    /** GET /api/rowe_pc_blocker/provision/{request_id}. */
+    static ProvisionFlow.Outcome pollProvision(String homeAssistantUrl, String requestId) {
+        if (!AppConfig.acceptsHomeAssistantUrl(homeAssistantUrl)) {
+            return ProvisionFlow.Outcome.error(
+                    "That Home Assistant address needs to start with https://.");
+        }
+        AppConfig address = new AppConfig(homeAssistantUrl, "setup", "setup");
+        HttpURLConnection connection = null;
+        try {
+            URI uri = URI.create(address.homeAssistantUrl
+                    + "/api/rowe_pc_blocker/provision/"
+                    + URLEncoder.encode(requestId, StandardCharsets.UTF_8.name()));
+            connection = (HttpURLConnection) uri.toURL().openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(8_000);
+            connection.setReadTimeout(20_000);
+            connection.setUseCaches(false);
+            connection.setInstanceFollowRedirects(false);
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 400
+                    ? connection.getErrorStream()
+                    : connection.getInputStream();
+            String text = stream == null ? "" : readAll(stream);
+            JSONObject body = text.isEmpty() ? new JSONObject() : new JSONObject(text);
+            return readProvision(body, status, true);
+        } catch (Exception exception) {
+            return ProvisionFlow.Outcome.error("Home Assistant could not be reached.");
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private static ProvisionFlow.Outcome readProvision(
+            JSONObject body, int status, boolean polling) {
+        String state = body.optString("status", "").trim();
+        if ("approved".equals(state)) {
+            String deviceId = body.optString("device_id", "").trim();
+            String deviceKey = body.optString("api_key", "").trim();
+            if (deviceId.isEmpty() || deviceKey.isEmpty()) {
+                return ProvisionFlow.Outcome.error("Home Assistant could not set up this phone.");
+            }
+            return ProvisionFlow.Outcome.approved(
+                    deviceId, deviceKey, body.optString("child_name", "").trim());
+        }
+        if ("pending".equals(state)) {
+            String requestId = body.optString("request_id", "").trim();
+            if (requestId.isEmpty()) {
+                return ProvisionFlow.Outcome.error("Home Assistant could not set up this phone.");
+            }
+            return ProvisionFlow.Outcome.pending(
+                    requestId, body.optString("child_name", "").trim());
+        }
+        if ("rejected".equals(state) || status == 403) {
+            return ProvisionFlow.Outcome.rejected(
+                    provisionError(body, "A parent declined this setup."));
+        }
+        if (status == 404) {
+            return polling
+                    ? ProvisionFlow.Outcome.expired(
+                            provisionError(body, "That setup request has expired."))
+                    : ProvisionFlow.Outcome.error(
+                            provisionError(body, "That name is not a child in Home Assistant."));
+        }
+        return ProvisionFlow.Outcome.error(
+                provisionError(body, "Home Assistant could not set up this phone."));
+    }
+
+    private static String provisionError(JSONObject body, String fallback) {
+        String error = body.optString("error", "").trim();
+        if (error.isEmpty() || error.length() > 160) {
+            return fallback;
+        }
+        return error;
+    }
+
+    /** The two calls the setup flow makes, bound to one Home Assistant address. */
+    static final class ProvisionTransport implements ProvisionFlow.Transport {
+        private final String homeAssistantUrl;
+
+        ProvisionTransport(String homeAssistantUrl) {
+            this.homeAssistantUrl = homeAssistantUrl;
+        }
+
+        @Override
+        public ProvisionFlow.Outcome start(String childName) {
+            return startProvision(homeAssistantUrl, childName);
+        }
+
+        @Override
+        public ProvisionFlow.Outcome poll(String requestId) {
+            return pollProvision(homeAssistantUrl, requestId);
         }
     }
 
@@ -166,7 +201,31 @@ final class HomeAssistantClient {
                     extensionUntil,
                     pointsBalance,
                     body.optInt("points_hour_cost", 200),
-                    readWakeAlarm(body));
+                    readWakeAlarm(body),
+                    readStringList(body, "allowed_apps"),
+                    readFamilyPeer(body, "phone"),
+                    readFamilyPeer(body, "pc"));
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /**
+     * A cheap liveness check-in for the watchdog. The state read refreshes the
+     * server's {@code last_seen} and changes nothing else, so a phone whose
+     * policy poller has died silently still looks alive to a parent.
+     */
+    void postHeartbeat() throws Exception {
+        HttpURLConnection connection = open("state", "GET");
+        try {
+            int status = connection.getResponseCode();
+            if (status != 200) {
+                throw new IOException("Home Assistant returned " + status);
+            }
+            InputStream stream = connection.getInputStream();
+            if (stream != null) {
+                readAll(stream);
+            }
         } finally {
             connection.disconnect();
         }
@@ -214,91 +273,6 @@ final class HomeAssistantClient {
                 output.write(bytes);
             }
             return connection.getResponseCode() == 200;
-        } finally {
-            connection.disconnect();
-        }
-    }
-
-    MediaBackupConfig getMediaBackupConfig() throws Exception {
-        HttpURLConnection connection = open("backup/config", "GET");
-        try {
-            int status = connection.getResponseCode();
-            if (status != 200) {
-                throw new IOException("Home Assistant returned " + status);
-            }
-            JSONObject body = new JSONObject(readAll(connection.getInputStream()));
-            return new MediaBackupConfig(
-                    requiredBoolean(body, "enabled"),
-                    body.optLong("max_file_bytes", 0),
-                    body.optString("configuration_id", ""));
-        } finally {
-            connection.disconnect();
-        }
-    }
-
-    PresignedUpload requestMediaUpload(
-            String relativePath, String displayName, long size) throws Exception {
-        HttpURLConnection connection = open("backup/presign", "POST");
-        try {
-            connection.setDoOutput(true);
-            connection.setRequestProperty("Content-Type", "application/json");
-            byte[] bytes = new JSONObject()
-                    .put("relative_path", truncate(relativePath, 1024))
-                    .put("display_name", truncate(displayName, 255))
-                    .put("size", size)
-                    .toString()
-                    .getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(bytes.length);
-            try (OutputStream output = connection.getOutputStream()) {
-                output.write(bytes);
-            }
-            int status = connection.getResponseCode();
-            if (status != 200) {
-                throw new IOException("Home Assistant returned " + status);
-            }
-            JSONObject body = new JSONObject(readAll(connection.getInputStream()));
-            String url = requiredString(body, "url");
-            JSONObject headers = body.optJSONObject("headers");
-            long signedLength = headers == null
-                    ? 0
-                    : Long.parseLong(headers.optString("Content-Length", "0"));
-            if (!url.startsWith("https://") || signedLength != size) {
-                throw new IOException("Home Assistant returned an invalid upload grant");
-            }
-            return new PresignedUpload(url, signedLength);
-        } finally {
-            connection.disconnect();
-        }
-    }
-
-    void postMediaBackupStatus(
-            String status,
-            long uploaded,
-            long skipped,
-            boolean initialComplete,
-            String lastSuccess,
-            String error) throws Exception {
-        HttpURLConnection connection = open("backup/status", "POST");
-        try {
-            connection.setDoOutput(true);
-            connection.setRequestProperty("Content-Type", "application/json");
-            byte[] bytes = new JSONObject()
-                    .put("status", truncate(status, 32))
-                    .put("uploaded", uploaded)
-                    .put("skipped", skipped)
-                    .put("initial_complete", initialComplete)
-                    .put("last_success", truncate(lastSuccess, 64))
-                    .put("error", truncate(error, 255))
-                    .toString()
-                    .getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(bytes.length);
-            try (OutputStream output = connection.getOutputStream()) {
-                output.write(bytes);
-            }
-            int response = connection.getResponseCode();
-            if (response < 200 || response >= 300) {
-                throw new IOException("Home Assistant returned " + response);
-            }
         } finally {
             connection.disconnect();
         }
@@ -364,6 +338,20 @@ final class HomeAssistantClient {
             android.location.Location location,
             String uiStatus,
             String uiError) throws Exception {
+        postActivity(application, windowTitle, location, uiStatus, uiError, null);
+    }
+
+    /**
+     * @param installedApps the launchable apps to report, or null when the set
+     *     has not changed since the last successful report.
+     */
+    void postActivity(
+            String application,
+            String windowTitle,
+            android.location.Location location,
+            String uiStatus,
+            String uiError,
+            List<InstalledApps.App> installedApps) throws Exception {
         HttpURLConnection connection = open("activity", "POST");
         try {
             connection.setDoOutput(true);
@@ -384,6 +372,15 @@ final class HomeAssistantClient {
                         .put("location_age_seconds",
                                 Math.max(0, (System.currentTimeMillis() - location.getTime()) / 1000))
                         .put("location_provider", location.getProvider());
+            }
+            if (installedApps != null) {
+                JSONArray apps = new JSONArray();
+                for (InstalledApps.App app : installedApps) {
+                    apps.put(new JSONObject()
+                            .put("package", app.packageName)
+                            .put("label", app.label));
+                }
+                body.put("installed_apps", apps);
             }
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(bytes.length);
@@ -441,6 +438,46 @@ final class HomeAssistantClient {
             throw new IOException("Home Assistant policy field " + name + " is not a string");
         }
         return (String) value;
+    }
+
+    /** Home Assistant's allow-list; a missing or malformed field means "none". */
+    private static List<String> readStringList(JSONObject body, String name) {
+        JSONArray array = body.optJSONArray(name);
+        if (array == null) {
+            return Collections.emptyList();
+        }
+        List<String> values = new ArrayList<>();
+        for (int index = 0; index < array.length(); index++) {
+            String value = array.optString(index, "").trim();
+            if (!value.isEmpty()) {
+                values.add(value);
+            }
+        }
+        return values;
+    }
+
+    /** The child's other device; null when Home Assistant did not send one. */
+    private static Policy.FamilyPeer readFamilyPeer(JSONObject body, String name) {
+        JSONObject family = body.optJSONObject("family");
+        if (family == null) {
+            return null;
+        }
+        JSONObject peer = family.optJSONObject(name);
+        if (peer == null) {
+            return null;
+        }
+        String deviceId = peer.optString("device_id", "").trim();
+        if (deviceId.isEmpty()) {
+            return null;
+        }
+        return new Policy.FamilyPeer(
+                deviceId,
+                peer.optString("device_type", "").trim(),
+                peer.optBoolean("blocked", false),
+                peer.optString("message", "").trim(),
+                peer.optBoolean("agent_online", false),
+                optionalString(peer, "last_seen"),
+                peer.optString("active_application", "").trim());
     }
 
     /**

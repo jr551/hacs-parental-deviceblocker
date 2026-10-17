@@ -4,7 +4,12 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 
-public final class MediaBackupReceiver extends BroadcastReceiver {
+/**
+ * Restores the wake alarm and the enforcement watchdog after a reboot or an app
+ * update. Nothing else has to run at boot: the accessibility service is started
+ * by the system when it is enabled.
+ */
+public final class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
@@ -12,10 +17,8 @@ public final class MediaBackupReceiver extends BroadcastReceiver {
                 && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
             return;
         }
-        AppConfig config = AppConfig.load(context);
         WakeAlarm.schedule(context);
-        if (config.isConfigured()) {
-            MediaBackupScheduler.schedule(context);
+        if (AppConfig.load(context).isConfigured()) {
             EnforcementWatchdogJobService.schedule(context);
             EnforcementWatchdogService.start(context);
         }

@@ -3,10 +3,10 @@
 from datetime import timedelta
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
-from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
+from .agent_status import agent_is_online
 from .const import DOMAIN, ONLINE_TIMEOUT_SECONDS
 from .entity import ParentalDeviceEntity
 
@@ -25,9 +25,17 @@ class PcOnlineSensor(ParentalDeviceEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self.runtime.last_seen is not None and (
-            dt_util.utcnow() - self.runtime.last_seen
-        ).total_seconds() < ONLINE_TIMEOUT_SECONDS
+        return agent_is_online(
+            self.runtime.last_seen, dt_util.utcnow(), ONLINE_TIMEOUT_SECONDS
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "last_seen": (
+                self.runtime.last_seen.isoformat() if self.runtime.last_seen else None
+            ),
+        }
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -39,6 +47,8 @@ class PcOnlineSensor(ParentalDeviceEntity, BinarySensorEntity):
             )
         )
 
-    @callback
-    def _handle_interval(self, _now) -> None:
+    async def _handle_interval(self, _now) -> None:
+        # The tick is the only thing that runs while an agent is silent, so it
+        # is also what notices the agent going stale and coming back.
+        await self.runtime.check_agent_stale()
         self.async_write_ha_state()

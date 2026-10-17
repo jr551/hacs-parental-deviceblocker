@@ -23,6 +23,12 @@ import java.util.concurrent.TimeUnit;
 public final class EnforcementWatchdogService extends Service {
     private static final int NOTIFICATION_ID = 7042;
     private static final String CHANNEL_ID = "enforcement_watchdog";
+    /**
+     * A freshly started watchdog proves liveness within a minute instead of
+     * staying silent for a full hour. The hourly cadence is unchanged, so this
+     * adds no wakeup source of its own.
+     */
+    private static final long INITIAL_CHECK_IN_DELAY_MS = 60_000L;
     private ScheduledExecutorService executor;
 
     static void start(Context context) {
@@ -53,10 +59,23 @@ public final class EnforcementWatchdogService extends Service {
         }
         executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleWithFixedDelay(
-                () -> EnforcementReporter.reportIfAccessibilityDisabled(this),
-                ReportSchedule.HOURLY_REPORT_MS,
+                this::checkInSafely,
+                INITIAL_CHECK_IN_DELAY_MS,
                 ReportSchedule.HOURLY_REPORT_MS,
                 TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * A scheduled task that throws is cancelled permanently, so the check-in
+     * body must swallow every Throwable — including Errors — or one bad pass
+     * would silently stop the heartbeat for the life of the process.
+     */
+    private void checkInSafely() {
+        try {
+            EnforcementReporter.checkIn(this);
+        } catch (Throwable ignored) {
+            // The next scheduled pass retries.
+        }
     }
 
     @Override

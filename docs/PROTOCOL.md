@@ -36,6 +36,15 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
 | `extension_available` | boolean | Save-work extension allowed now |
 | `extension_available_at` | string \| null | ISO-8601 |
 | `extension_until` | string \| null | ISO-8601 end of active extension |
+| `points_hour_cost` | integer | Points one bought hour costs |
+| `points_balance` | integer \| null | Child's Taskmate balance, or null |
+| `wake_alarm` | object \| null | Alarm schedule; null leaves the agent's cache alone |
+| `allowed_apps` | string[] | Android allow-list; empty means "use the agent's built-in defaults" |
+| `family` | object | This child's other devices: `{"phone": peer\|null, "pc": peer\|null}` |
+
+A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application"}`, where `last_seen` is ISO-8601 or null. Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer.
+
+Reading this endpoint refreshes the device's `last_seen`, so an agent may use it as a plain liveness check-in.
 
 ### `POST /api/rowe_pc_blocker/{device_id}/activity`
 
@@ -51,6 +60,16 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
   "ui_error": ""
 }
 ```
+
+The Android agent adds optional fields to the same body:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `latitude`, `longitude` | number | Cached position, when one is available |
+| `gps_accuracy` | integer | Metres |
+| `location_age_seconds` | integer | Age of the cached fix |
+| `location_provider` | string | `network` or `gps` |
+| `installed_apps` | array | `[{"package", "label"}]`; sent only when the set changed |
 
 **Response 200:** `{"ok": true}`
 
@@ -94,33 +113,59 @@ Returns HTML kiosk page. Query `key` allowed for auth.
 
 **503** if PIN not configured; **403** / **429** on wrong PIN or lockout; **409** if not blocked.
 
-## Android media backup (legacy endpoints)
+## Android setup (provisioning)
 
-Server-side S3 backup configuration was removed in integration **0.10.0**. Endpoints remain so older Android builds fail gracefully:
+A phone asks to be set up from a child name and then waits for a parent to approve the request in Home Assistant. Only an approved request hands the phone a device id and API key, so the parent never types a key. Pending requests live in `.storage/rowe_pc_blocker.pending` and expire after **30 minutes**. Collection is idempotent: an approved request keeps returning the same credentials until it expires.
 
-### `GET /api/rowe_pc_blocker/{device_id}/backup/config`
+These two paths take no device credentials — the phone has none yet.
 
-**Response 200** (backup always disabled):
+### `POST /api/rowe_pc_blocker/provision`
+
+**Request:** `{"child_name": "Casey"}`
+
+**Response 202** — a parent has not decided yet:
 
 ```json
 {
-  "enabled": false,
-  "initial_sync_wifi_only": true,
-  "requires_external_power": true,
-  "max_file_bytes": 21474836480,
-  "configuration_id": ""
+  "status": "pending",
+  "request_id": "0123456789abcdef0123456789abcdef",
+  "child_name": "Casey"
 }
 ```
 
-### `POST /api/rowe_pc_blocker/{device_id}/backup/presign`
+`request_id` is 32 lowercase hex characters.
 
-**Response 503:** `{"error": "Media backup is disabled."}`
+**Response 200** — this child's phone was already approved (the credentials were never collected):
 
-### `POST /api/rowe_pc_blocker/{device_id}/backup/status`
+```json
+{
+  "status": "approved",
+  "device_id": "casey-phone",
+  "api_key": "…",
+  "child_name": "Casey"
+}
+```
 
-**Request** progress object (`status`, `uploaded`, `skipped`, `initial_complete`, `last_success`, `error`).
+**Response 404:** `{"error": "That name is not a child in Home Assistant."}`
 
-**Response 200:** `{"ok": true}` (accepted but not surfaced in HA after 0.10.0).
+### `GET /api/rowe_pc_blocker/provision/{request_id}`
+
+**Response 200** — still waiting: `{"status": "pending"}`
+
+**Response 200** — approved:
+
+```json
+{
+  "status": "approved",
+  "device_id": "casey-phone",
+  "api_key": "…",
+  "child_name": "Casey"
+}
+```
+
+**Response 403:** `{"status": "rejected", "error": "A parent declined this setup."}`
+
+**Response 404:** `{"error": "That setup request has expired."}`
 
 ## Contract tests
 

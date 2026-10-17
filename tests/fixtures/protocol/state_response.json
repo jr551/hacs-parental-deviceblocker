@@ -8,5 +8,10 @@
   "enforce_at": null,
   "extension_available": true,
   "extension_available_at": null,
-  "extension_until": null
+  "extension_until": null,
+  "allowed_apps": [],
+  "family": {
+    "phone": null,
+    "pc": null
+  }
 }

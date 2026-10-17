@@ -2,6 +2,9 @@ package lol.rowe.blocker;
 
 import org.junit.Test;
 
+import java.util.Arrays;
+import java.util.Collections;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -191,5 +194,48 @@ public class PolicyDecisionTest {
         } finally {
             UpdateGate.installInProgress = false;
         }
+    }
+
+    @Test
+    public void homeAssistantAllowListReplacesTheBuiltInDefaults() {
+        decision.setAllowedApps(Arrays.asList("com.roblox.client", "com.whatsapp"));
+
+        assertTrue(decision.isAllowed(true, "com.roblox.client"));
+        assertTrue(decision.isAllowed(true, "com.whatsapp"));
+        // The built-in defaults are gone: Maps is no longer allowed.
+        assertFalse(decision.isAllowed(true, PolicyDecision.GOOGLE_MAPS));
+        assertFalse(decision.isAllowed(true, PolicyDecision.CLASSROOM));
+        // The phone's own components and the core system packages always stay.
+        assertTrue(decision.isAllowed(true, "lol.rowe.blocker.debug"));
+        assertTrue(decision.isAllowed(true, "com.android.systemui"));
+        assertTrue(decision.isAllowed(true, "com.samsung.android.incallui"));
+    }
+
+    @Test
+    public void anEmptyAllowListKeepsTheBuiltInDefaults() {
+        decision.setAllowedApps(Arrays.asList("com.roblox.client"));
+        decision.setAllowedApps(Collections.emptyList());
+
+        assertTrue(decision.isAllowed(true, PolicyDecision.WHATSAPP));
+        assertTrue(decision.isAllowed(true, PolicyDecision.GOOGLE_MAPS));
+        assertFalse(decision.isAllowed(true, "com.roblox.client"));
+    }
+
+    @Test
+    public void aMissingOrBlankAllowListKeepsTheBuiltInDefaults() {
+        decision.setAllowedApps(null);
+        assertTrue(decision.isAllowed(true, PolicyDecision.WHATSAPP));
+
+        decision.setAllowedApps(Arrays.asList("", "   "));
+        assertTrue(decision.isAllowed(true, PolicyDecision.WHATSAPP));
+        assertFalse(decision.isAllowed(true, "com.roblox.client"));
+    }
+
+    @Test
+    public void theAllowListAlsoDrivesTheBlockScreenDecision() {
+        decision.setAllowedApps(Arrays.asList("com.roblox.client"));
+
+        assertFalse(decision.shouldShowBlockScreen(true, "com.roblox.client"));
+        assertTrue(decision.shouldShowBlockScreen(true, PolicyDecision.WHATSAPP));
     }
 }

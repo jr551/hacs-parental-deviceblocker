@@ -1,9 +1,11 @@
 package lol.rowe.blocker;
 
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.drawable.Drawable;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /** Apps a blocked phone may still open, in block-screen order. */
@@ -33,7 +35,38 @@ final class AllowedApps {
     private AllowedApps() {
     }
 
-    static List<Shortcut> installed(PackageManager packages) {
+    /**
+     * The shortcuts to show on the block screen. Home Assistant's allow-list
+     * wins when it is non-empty; an empty list keeps the built-in defaults.
+     */
+    static List<Shortcut> installed(
+            PackageManager packages, Collection<String> allowedFromServer) {
+        if (allowedFromServer == null || allowedFromServer.isEmpty()) {
+            return installedDefaults(packages);
+        }
+        List<Shortcut> shortcuts = new ArrayList<>();
+        for (String candidate : allowedFromServer) {
+            if (candidate == null || candidate.trim().isEmpty()) {
+                continue;
+            }
+            String packageName = candidate.trim();
+            try {
+                if (packages.getLaunchIntentForPackage(packageName) == null) {
+                    continue;
+                }
+                ApplicationInfo info = packages.getApplicationInfo(packageName, 0);
+                shortcuts.add(new Shortcut(
+                        packages.getApplicationLabel(info).toString(),
+                        packageName,
+                        packages.getApplicationIcon(info)));
+            } catch (PackageManager.NameNotFoundException ignored) {
+                // The parent listed an app this phone does not have.
+            }
+        }
+        return shortcuts;
+    }
+
+    private static List<Shortcut> installedDefaults(PackageManager packages) {
         List<Shortcut> shortcuts = new ArrayList<>();
         for (String[] candidate : CANDIDATES) {
             String label = candidate[0];
