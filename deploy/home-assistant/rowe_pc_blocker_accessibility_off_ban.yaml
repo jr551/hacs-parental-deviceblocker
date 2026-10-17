@@ -1,0 +1,75 @@
+# Parental Device Blocker - take the PC when a phone's accessibility stays off.
+#
+# Turning accessibility off is how a child escapes enforcement without
+# uninstalling anything. The alert in rowe_pc_blocker_accessibility_off.yaml
+# tells a parent; this is the consequence, for a parent who wants one.
+#
+# Off by default: it acts only while `input_boolean.parental_ban_on_phone_tamper`
+# is on, so switching that helper on is the decision to enforce. It blocks the
+# child's PC rather than the phone, because a phone with accessibility off cannot
+# enforce anything and blocking it would achieve nothing.
+#
+# Deploy to /config/automations/rowe_pc_blocker_accessibility_off_ban.yaml and
+# reload automations.
+- id: parental_device_blocker_accessibility_off_ban
+  alias: Parental Device Blocker - Ban while accessibility stays off
+  description: >-
+    Blocks a child's PC when their phone reports accessibility off for half an
+    hour, while the ban helper is on.
+  mode: single
+  max_exceeded: silent
+  trigger:
+    - platform: time_pattern
+      minutes: "/10"
+  condition:
+    - condition: state
+      entity_id: input_boolean.parental_ban_on_phone_tamper
+      state: "on"
+  action:
+    - variables:
+        ban_after_minutes: 30
+    - repeat:
+        for_each: >-
+          {{ states.sensor
+             | selectattr('entity_id', 'match', '.*_phone_enforcement_status')
+             | map(attribute='entity_id')
+             | reject('in', ['sensor.nas_android_test_phone_enforcement_status'])
+             | list }}
+        sequence:
+          - variables:
+              sensor: "{{ repeat.item }}"
+              prefix: >-
+                {{ repeat.item | replace('sensor.', '')
+                   | replace('_enforcement_status', '') }}
+              status: "{{ states(sensor) }}"
+              online: "{{ states('binary_sensor.' ~ prefix ~ '_agent_online') }}"
+              held_minutes: >-
+                {{ ((now() - states[repeat.item].last_changed).total_seconds() / 60) | int }}
+              pc_switch: >-
+                switch.{{ prefix | replace('_phone', '_pc') }}_blocked
+              friendly: >-
+                {{ state_attr('binary_sensor.' ~ prefix ~ '_agent_online',
+                              'friendly_name') | replace(' agent online', '')
+                   or prefix }}
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ status == 'accessibility_disabled'
+                         and online == 'on'
+                         and held_minutes >= ban_after_minutes
+                         and states(pc_switch) not in ['unknown', 'unavailable'] }}
+                sequence:
+                  - service: switch.turn_on
+                    target:
+                      entity_id: "{{ pc_switch }}"
+                  - service: persistent_notification.create
+                    data:
+                      title: "PC taken - {{ friendly }}"
+                      message: >-
+                        {{ friendly }} has had accessibility off for
+                        {{ held_minutes }} minutes, so its PC has been blocked.
+                        Turn the accessibility service back on and unblock the
+                        PC from its switch when you are ready.
+                      notification_id: "parental_device_ban_{{ prefix }}"
+            default: []
