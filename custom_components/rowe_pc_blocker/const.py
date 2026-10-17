@@ -6,9 +6,12 @@ PLATFORMS = [
     "button",
     "device_tracker",
     "image",
+    "number",
+    "select",
     "sensor",
     "switch",
     "text",
+    "time",
 ]
 
 CONF_DEVICE_ID = "device_id"

@@ -427,6 +427,24 @@ class TrackerEntity(Entity):
     pass
 
 
+class TimeEntity(Entity):
+    pass
+
+
+class NumberEntity(Entity):
+    pass
+
+
+class SelectEntity(Entity):
+    pass
+
+
+class NumberMode:
+    AUTO = "auto"
+    BOX = "box"
+    SLIDER = "slider"
+
+
 class SourceType:
     GPS = "gps"
 
@@ -769,6 +787,13 @@ def install() -> None:
         SensorStateClass=SensorStateClass,
     )
     _module("homeassistant.components.text", TextEntity=TextEntity)
+    _module("homeassistant.components.time", TimeEntity=TimeEntity)
+    _module(
+        "homeassistant.components.number",
+        NumberEntity=NumberEntity,
+        NumberMode=NumberMode,
+    )
+    _module("homeassistant.components.select", SelectEntity=SelectEntity)
     _module("homeassistant.components.button", ButtonEntity=ButtonEntity)
     _module("homeassistant.components.image", ImageEntity=ImageEntity)
     _module(

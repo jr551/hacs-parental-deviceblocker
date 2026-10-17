@@ -66,7 +66,29 @@ class LocationTracker(ParentalDeviceEntity, TrackerEntity):
                 if self.runtime.location_requested_at
                 else None
             ),
+            "request_pending": self._request_pending(),
+            "request_age_seconds": self._request_age_seconds(),
         }
+
+    def _request_pending(self) -> bool:
+        """True while a parent's request is still waiting on the phone.
+
+        A phone whose screen is off can leave the request unanswered, and the
+        tracker used to stay ``unknown`` with nothing to explain it. Saying the
+        request is still pending tells a parent to try again with the phone in
+        hand rather than assuming the button is broken.
+        """
+        requested_at = self.runtime.location_requested_at
+        if not self.runtime.location_request_id or requested_at is None:
+            return False
+        answered_at = self.runtime.location_reported_at
+        return answered_at is None or answered_at < requested_at
+
+    def _request_age_seconds(self) -> int | None:
+        if not self._request_pending():
+            return None
+        requested_at = self.runtime.location_requested_at
+        return max(0, int((dt_util.utcnow() - requested_at).total_seconds()))
 
     def _age_seconds(self) -> int | None:
         """How old the stored position is, not how old the answer is.

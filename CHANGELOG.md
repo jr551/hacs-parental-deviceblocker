@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.12.1
+## 0.13.0
+
+### Added
+
+- **A parent answers a submitted challenge from the device page.** Accept and Send back buttons sit next to the evidence photo instead of leaving `approve_challenge` / `reject_challenge` as service calls only. `button.<device>_approve_challenge` and `button.<device>_reject_challenge` are available exactly while a submission is waiting, and the same rule drives a conditional card on the dashboard.
+- **The wake alarm is a set of controls, not an options form.** `switch.<device>_wake_alarm`, `time.<device>_wake_alarm_time`, `select.<device>_wake_alarm_days` (Every day / Weekdays / Weekends / Custom, with the real list in a `days` attribute) and `number.<device>_wake_alarm_volume` set the alarm from the device page or a dashboard. They write runtime state, so moving a slider never reloads the integration, and the change reaches the phone on its next state poll. An alarm configured through the options flow still seeds the controls, and a value set by an entity wins afterwards.
+- **A location request that is still waiting says so.** `device_tracker.<device>_location` carries `request_pending` and `request_age_seconds`, so a request the phone has not answered reads as outstanding rather than as a button that did nothing.
 
 ### Fixed
 
