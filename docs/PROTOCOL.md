@@ -41,6 +41,7 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
 | `wake_alarm` | object \| null | Alarm schedule; null leaves the agent's cache alone |
 | `allowed_apps` | string[] | Android allow-list; empty means "use the agent's built-in defaults" |
 | `challenge` | object \| null | Active chore challenge: `{"id", "phrase", "sent_at"}`, or null when there is none |
+| `location_request` | object \| null | Pending on-demand fix: `{"id", "requested_at"}`, or null when nothing is pending |
 | `family` | object | This child's other devices: `{"phone": peer\|null, "pc": peer\|null}` |
 
 A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application", "challenge"}`, where `last_seen` is ISO-8601 or null and `challenge` is the same `{"id", "phrase", "sent_at"}` object the peer's own state poll carries (null when it has none). Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer. Challenges are phone-only, so a PC peer always reports `"challenge": null`; the key is present on both peers so the shape is uniform.
@@ -62,17 +63,48 @@ Reading this endpoint refreshes the device's `last_seen`, so an agent may use it
 }
 ```
 
-The Android agent adds optional fields to the same body:
+The Android agent adds one optional field to the same body:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `latitude`, `longitude` | number | Cached position, when one is available |
-| `gps_accuracy` | integer | Metres |
-| `location_age_seconds` | integer | Age of the cached fix |
-| `location_provider` | string | `network` or `gps` |
 | `installed_apps` | array | `[{"package", "label"}]`; sent only when the set changed |
 
+Position is **not** reported here: it is on demand (see below), so a heartbeat never carries one.
+
 **Response 200:** `{"ok": true}`
+
+### `POST /api/rowe_pc_blocker/{device_id}/location`
+
+Android only. A parent presses **Request location** in Home Assistant, the request rides the phone's next state poll in `location_request`, and the phone posts one fix back. The request expires after **10 minutes**, so a phone that was offline cannot answer later and have the answer look current.
+
+**Request** JSON object:
+
+```json
+{
+  "request_id": "0123456789abcdef0123456789abcdef",
+  "latitude": 51.37,
+  "longitude": -0.28,
+  "accuracy": 12.5,
+  "provider": "fused",
+  "fix_age_seconds": 3
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `request_id` | string | The `id` from `location_request` |
+| `latitude`, `longitude` | number | Required; latitude −90…90, longitude −180…180 |
+| `accuracy` | number | Metres, optional |
+| `provider` | string | `fused`, `gps`, `network`, … optional |
+| `fix_age_seconds` | integer | How old the fix already was when the phone sent it, optional |
+
+**Response 200:** `{"ok": true}`
+
+**Response 400:** `{"error": "…"}` — the body is not a JSON object, or the coordinates are missing or out of range. The request stays pending, so the phone may try again.
+
+**Response 404:** `{"error": "That location request has expired."}` — the id is not the current one, or the request has expired. A late answer cannot overwrite a newer request.
+
+A successful answer clears the pending request and stores the fix. `device_tracker.<device>_location` shows it: the state is unknown until the first fix arrives, and `location_age_seconds` (the phone's `fix_age_seconds` plus the time since the answer arrived) is what tells a parent how old the position is. `requested_at` is when the parent last asked, `reported_at` when the answer arrived, and `location_provider` what the phone named.
 
 ### `POST /api/rowe_pc_blocker/{device_id}/notifications`
 

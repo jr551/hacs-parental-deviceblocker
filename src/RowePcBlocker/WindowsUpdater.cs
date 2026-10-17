@@ -19,7 +19,10 @@ namespace ParentalDeviceBlocker;
 /// delay enforcement. Every failure is logged and retried on the next hourly
 /// check.
 /// </summary>
-public sealed class WindowsUpdater(HttpClient httpClient, ILogger<WindowsUpdater> logger)
+public sealed class WindowsUpdater(
+    HttpClient httpClient,
+    HomeAssistantClient homeAssistant,
+    ILogger<WindowsUpdater> logger)
 {
     private const string ReleasesUrl = "https://api.github.com/repos/jr551/hacs-parental-deviceblocker/releases/latest";
     private const string ChecksumsAsset = "SHA256SUMS";
@@ -84,8 +87,13 @@ public sealed class WindowsUpdater(HttpClient httpClient, ILogger<WindowsUpdater
             // A child's kiosk must never be pulled off screen mid-block.
             return;
         }
-        if (!CheckDue() || Interlocked.CompareExchange(ref _running, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
             return;
+        if (!CheckDue())
+        {
+            Interlocked.Exchange(ref _running, 0);
+            return;
+        }
         _ = RunCheckAsync(cancellationToken);
     }
 
@@ -131,7 +139,22 @@ public sealed class WindowsUpdater(HttpClient httpClient, ILogger<WindowsUpdater
         {
             if (candidate is null)
                 continue;
-            if (await TryInstallAsync(candidate, release.ChecksumsUrl, cancellationToken))
+            string? file = await DownloadAsync(candidate, release.ChecksumsUrl, cancellationToken);
+            if (file is null)
+                continue;
+            // Re-read the state immediately before the swap, exactly as
+            // Deploy-ActivityOnly.ps1 does: the download can take minutes, and
+            // the install helper stops the kiosk and the service.
+            BlockState latest = await homeAssistant.GetStateAsync(cancellationToken);
+            if (latest.IsBlocked || latest.BlockRequested)
+            {
+                logger.LogInformation("Not installing {Version}: the PC is blocked.", candidate.Version);
+                return;
+            }
+            bool installed = candidate.IsInstaller
+                ? await RunInstallerAsync(candidate, file, cancellationToken)
+                : RunZipUpgrade(candidate, file);
+            if (installed)
                 return;
         }
     }
@@ -183,16 +206,6 @@ public sealed class WindowsUpdater(HttpClient httpClient, ILogger<WindowsUpdater
                 zip = Newest(zip, candidate);
         }
         return new ReleaseInfo(installer, zip, checksums);
-    }
-
-    private async Task<bool> TryInstallAsync(ReleaseAsset asset, string checksumsUrl, CancellationToken cancellationToken)
-    {
-        string? file = await DownloadAsync(asset, checksumsUrl, cancellationToken);
-        if (file is null)
-            return false;
-        return asset.IsInstaller
-            ? await RunInstallerAsync(asset, file, cancellationToken)
-            : RunZipUpgrade(asset, file);
     }
 
     /// <summary>

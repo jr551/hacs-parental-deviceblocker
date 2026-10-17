@@ -182,14 +182,7 @@ public final class MainActivity extends Activity {
         super.onResume();
         updateStatus();
         refreshNotificationAccess();
-        challengePanel.onResume();
         executor.execute(this::refreshPolicy);
-    }
-
-    @Override
-    protected void onPause() {
-        challengePanel.onPause();
-        super.onPause();
     }
 
     @Override
@@ -577,7 +570,8 @@ public final class MainActivity extends Activity {
                         "Home Assistant is not configured. Blocking is disabled."));
                 return;
             }
-            Policy policy = Policy.enforced(
+            Policy policy = Challenge.enforced(
+                    this,
                     new HomeAssistantClient(config).getPolicy(),
                     false,
                     LocalOverride.isActive(this));
@@ -610,7 +604,7 @@ public final class MainActivity extends Activity {
 
     private void failOpen(String status, String message) {
         EnforcementNote.record(this, status, message);
-        applyPolicy(Policy.UNBLOCKED);
+        applyPolicy(Challenge.enforced(this, null, true, false));
         if (!isFinishing() && setupUnlocked) {
             statusText.setText(EnforcementStatus.parentText(status, message));
         }

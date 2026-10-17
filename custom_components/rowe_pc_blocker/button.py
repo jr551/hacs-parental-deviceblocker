@@ -10,7 +10,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import DOMAIN, SIGNAL_PENDING
+from .const import DEVICE_TYPE_ANDROID, DOMAIN, SIGNAL_PENDING
 from .entity import ParentalDeviceEntity
 from .pending import (
     async_approve_request,
@@ -28,11 +28,34 @@ REJECT = "reject"
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     runtime = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([CheckScreenButton(runtime)])
+    entities: list[ButtonEntity] = [CheckScreenButton(runtime)]
+    # Only a phone has a position to ask for.
+    if runtime.device_type == DEVICE_TYPE_ANDROID:
+        entities.append(RequestLocationButton(runtime))
+    async_add_entities(entities)
     # The approve/reject buttons are integration-wide, so only the entry that
     # owns the pending entities creates them.
     if claim_pending_entities(hass, entry.entry_id):
         entry.async_on_unload(PendingRequestButtons(hass, async_add_entities).async_stop)
+
+
+class RequestLocationButton(ParentalDeviceEntity, ButtonEntity):
+    """Ask the phone for one position fix.
+
+    The request rides the phone's next state poll and expires after ten
+    minutes, so pressing again while one is pending simply replaces it with a
+    fresh id. The answer shows up on the Location tracker.
+    """
+
+    _attr_name = "Request location"
+    _attr_icon = "mdi:crosshairs-gps"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_request_location"
+
+    async def async_press(self) -> None:
+        await self.runtime.async_request_location()
 
 
 class CheckScreenButton(ParentalDeviceEntity, ButtonEntity):

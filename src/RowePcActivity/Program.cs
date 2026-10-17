@@ -94,7 +94,7 @@ internal sealed class AgentApplicationContext : ApplicationContext
                 {
                     _overlay.Apply(policy);
                     foreach (SecondaryBlockOverlayForm overlay in _secondaryOverlays)
-                        overlay.Apply(policy);
+                        overlay.Apply(_overlay.HardCoverMessage);
                 }
                 else
                 {
@@ -264,6 +264,13 @@ internal sealed class BlockOverlayForm : Form
 
     public event EventHandler? ExtensionRequested;
     public event EventHandler<PortalTelemetry>? PortalTelemetryChanged;
+
+    /// <summary>
+    /// What the other displays must show while this overlay is a hard kiosk,
+    /// or null when they may stay clear. The primary overlay owns the challenge
+    /// grace, so it decides once and the secondary overlays mirror it.
+    /// </summary>
+    public string? HardCoverMessage { get; private set; }
 
     public BlockOverlayForm(AgentConfiguration configuration)
     {
@@ -542,6 +549,7 @@ internal sealed class BlockOverlayForm : Form
         _countdown.Text = hard
             ? "Finish it on your phone to carry on."
             : $"PC waits {FormatRemaining(grace)}\nFinish it on your phone to carry on.";
+        HardCoverMessage = hard ? $"{_title.Text}\n\nFinish it on your phone to carry on." : null;
         _extension.Visible = false;
         _dismiss.Visible = !hard;
         _dismissRow.Height = hard ? 0 : DismissRowHeight;
@@ -575,6 +583,7 @@ internal sealed class BlockOverlayForm : Form
             : $"{name}'s phone has not checked in for {hours} hours";
         _message.Text = "Parental control cannot be verified. Please see a parent.";
         _countdown.Text = "This PC stays frozen until the phone checks in again.";
+        HardCoverMessage = $"{_title.Text}\n\nParental control cannot be verified. Please see a parent.";
         _extension.Visible = false;
         _dismiss.Visible = false;
         _dismissRow.Height = 0;
@@ -614,6 +623,7 @@ internal sealed class BlockOverlayForm : Form
 
     public void HideOverlay()
     {
+        HardCoverMessage = null;
         SetKioskMode(false);
         if (Visible)
             Hide();
@@ -646,6 +656,9 @@ internal sealed class BlockOverlayForm : Form
         _extension.Visible = !policy.Blocked && policy.ExtensionAvailable;
         _dismiss.Visible = false;
         _dismissRow.Height = 0;
+        HardCoverMessage = policy.Blocked
+            ? "PC time is paused\n\nPlease use the points screen on your main display."
+            : "PC time is ending\n\nPlease save your work on your main display.";
         if (!_extension.Visible && !policy.Blocked && policy.ExtensionAvailableAt is not null)
             _countdown.Text += $"\nAnother 5-minute extension is available at {policy.ExtensionAvailableAt:HH:mm}.";
         ApplyPhoneStatus(policy.Family?.Phone);
@@ -704,6 +717,7 @@ internal sealed class BlockOverlayForm : Form
 
     private void ApplyCountdownBanner(TimeSpan remaining)
     {
+        HardCoverMessage = null;
         SetKioskMode(false);
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         Rectangle working = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
@@ -1018,8 +1032,7 @@ internal sealed class SecondaryBlockOverlayForm : Form
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI", 22, FontStyle.Bold),
             ForeColor = Color.White,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Text = "PC time is paused\n\nPlease use the points screen on your main display."
+            TextAlign = ContentAlignment.MiddleCenter
         };
         Controls.Add(_message);
     }
@@ -1034,21 +1047,20 @@ internal sealed class SecondaryBlockOverlayForm : Form
         base.OnFormClosing(e);
     }
 
-    public void Apply(AgentPolicy policy)
+    /// <summary>
+    /// Covers this screen while the primary overlay is a hard kiosk. The
+    /// primary decides — it owns the challenge grace — and this form only
+    /// mirrors the message, so every display is covered by the same state.
+    /// </summary>
+    public void Apply(string? coverMessage)
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        DateTimeOffset enforceAt = policy.EnforceAt ?? now;
-        TimeSpan remaining = enforceAt - now;
-        bool extended = policy.ExtensionUntil is not null && policy.ExtensionUntil > now && remaining.TotalSeconds > 30;
-        if (!policy.BlockRequested || extended)
+        if (coverMessage is null)
         {
             HideOverlay();
             return;
         }
         Bounds = _screen.Bounds;
-        _message.Text = policy.Blocked
-            ? "PC time is paused\n\nPlease use the points screen on your main display."
-            : "PC time is ending\n\nPlease save your work on your main display.";
+        _message.Text = coverMessage;
         if (!Visible)
             Show();
         BringToFront();

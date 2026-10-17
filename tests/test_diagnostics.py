@@ -118,6 +118,34 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime["block_requested_at"])
         self.assertTrue(runtime["enforce_at"])
 
+    async def test_the_location_state_is_covered(self) -> None:
+        location = (await self._diagnostics())["runtime"]["location"]
+        self.assertIsNone(location["latitude"])
+        self.assertIsNone(location["request"])
+
+        request_id = await self.runtime.async_request_location()
+        location = (await self._diagnostics())["runtime"]["location"]
+        self.assertEqual(location["request"]["id"], request_id)
+
+        await self.runtime.async_store_location(
+            {
+                "request_id": request_id,
+                "latitude": 51.37,
+                "longitude": -0.28,
+                "accuracy": 12.5,
+                "provider": "fused",
+                "fix_age_seconds": 3,
+            }
+        )
+        location = (await self._diagnostics())["runtime"]["location"]
+        self.assertEqual(location["latitude"], 51.37)
+        self.assertEqual(location["longitude"], -0.28)
+        self.assertEqual(location["accuracy_metres"], 12.5)
+        self.assertEqual(location["fix_age_seconds"], 3)
+        self.assertEqual(location["provider"], "fused")
+        self.assertTrue(location["reported_at"])
+        self.assertIsNone(location["request"])
+
     async def test_the_notification_text_never_reaches_the_payload(self) -> None:
         self.assertIsNone((await self._diagnostics())["runtime"]["notifications"])
 

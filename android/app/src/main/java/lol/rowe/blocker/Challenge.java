@@ -1,18 +1,17 @@
 package lol.rowe.blocker;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 
 /**
  * A chore challenge from Home Assistant: the phone stays locked until the child
  * types the phrase back and sends a photo as evidence.
  */
 final class Challenge {
-    /** The longest edge of the photo uploaded as evidence. */
-    static final int MAX_UPLOAD_EDGE = 1600;
-    /** JPEG quality for the uploaded photo. */
-    static final int UPLOAD_QUALITY = 80;
     private static final String PREFS = "rowe_blocker";
     private static final String ACCEPTED_ID = "challenge_accepted_id";
+    private static final String HELD_ID = "challenge_held_id";
+    private static final String HELD_PHRASE = "challenge_held_phrase";
 
     final String id;
     final String phrase;
@@ -98,5 +97,48 @@ final class Challenge {
                 .edit()
                 .putString(ACCEPTED_ID, challengeId == null ? "" : challengeId)
                 .apply();
+    }
+
+    /**
+     * The challenge this phone is holding, or null. A challenge is held from the
+     * moment Home Assistant sends it until the child answers it or a parent
+     * clears it, so a poll that fails while the child is taking the photo cannot
+     * hand the phone back mid-chore.
+     */
+    static Challenge held(Context context) {
+        SharedPreferences preferences =
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String id = preferences.getString(HELD_ID, "");
+        String phrase = preferences.getString(HELD_PHRASE, "");
+        if (id == null || id.trim().isEmpty() || phrase == null || phrase.trim().isEmpty()) {
+            return null;
+        }
+        return new Challenge(id, phrase, null);
+    }
+
+    /** Hold {@code challenge}, or clear the held one when it is null. */
+    static void hold(Context context, Challenge challenge) {
+        SharedPreferences.Editor editor =
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
+        if (challenge == null) {
+            editor.remove(HELD_ID).remove(HELD_PHRASE);
+        } else {
+            editor.putString(HELD_ID, challenge.id).putString(HELD_PHRASE, challenge.phrase);
+        }
+        editor.apply();
+    }
+
+    /**
+     * The policy the phone enforces. A successful poll is authoritative: a
+     * challenge it does not carry has been cleared by a parent, so the held one
+     * is dropped. A failed poll keeps the held challenge — the block still fails
+     * open, but a chore the child has not answered stays on screen.
+     */
+    static Policy enforced(
+            Context context, Policy fromServer, boolean pollFailed, boolean localOverrideActive) {
+        if (!pollFailed && fromServer != null) {
+            hold(context, fromServer.challenge);
+        }
+        return Policy.enforced(fromServer, pollFailed, localOverrideActive, held(context));
     }
 }

@@ -43,7 +43,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
   - Turn off **Put unused apps to sleep** for this app, or add it to Never sleeping apps
   - Re-check these after an One UI update
 - [ ] Xiaomi/MIUI only: enable Autostart and background pop-up windows. Stock Samsung does not have that menu.
-- [ ] Grant location only if a position is wanted. The phone reads cached fixes and, when the newest one is over 15 minutes old, asks for one fresh fix at most once every 15 minutes.
+- [ ] Grant location only if a position is wanted. The phone sends no position on its own: a parent presses **Request location** in Home Assistant, the request rides the next state poll, and the phone answers once. The request expires after ten minutes.
 - [ ] Set the allow-list in Home Assistant (`text.<device>_allowed_apps`, comma-separated package names) or leave it empty for the built-in Calls/WhatsApp/Maps/MapMyWalk/Classroom/Clock/Camera set. The block screen shows whichever list applies.
 - [ ] Turn **off** Developer options and USB debugging. A release build cannot be configured with `adb run-as`.
 - [ ] Within about a minute, Home Assistant shows Agent online and foreground app updates while unblocked. Enforcement status reads `monitoring`.

@@ -1,20 +1,18 @@
-"""Map position for Android devices, from passively cached fixes only.
+"""Where the phone was when a parent last asked.
 
-The agent never asks the GPS chip for a fix; it forwards positions other apps
-already caused the system to calculate. So this entity is deliberately
-best-effort: it stays unknown until something on the phone produces a fix, and
-its `location_age_seconds` attribute says how stale the position is. Treat it as
-"roughly where the phone was", never as live tracking.
-
-It is agent telemetry, so it goes unavailable while the phone is not checking
-in: the age attribute is only meaningful for a fix the agent is still
-refreshing, and a position from an offline phone must not read as live.
+The agent no longer reports position on every heartbeat: a parent presses
+Request location, the request rides the phone's next state poll, and the phone
+posts one fix back. So this entity is a stored answer rather than a live feed.
+It stays unknown until the first fix arrives, and its `location_age_seconds`
+attribute says how old the position is — the age is what a parent should read,
+never the position on its own.
 """
 
 from homeassistant.components.device_tracker import SourceType, TrackerEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DEVICE_TYPE_ANDROID, DOMAIN
-from .entity import AgentTelemetryEntity
+from .entity import ParentalDeviceEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
@@ -22,16 +20,18 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     # Windows PCs have no location source, so no entity is created for them.
     if getattr(runtime, "device_type", "") != DEVICE_TYPE_ANDROID:
         return
-    async_add_entities([PassiveDeviceTracker(runtime)])
+    async_add_entities([LocationTracker(runtime)])
 
 
-class PassiveDeviceTracker(AgentTelemetryEntity, TrackerEntity):
-    _attr_name = "Passive location"
+class LocationTracker(ParentalDeviceEntity, TrackerEntity):
+    """The last fix the phone answered with, and how old it is."""
+
+    _attr_name = "Location"
     _attr_icon = "mdi:map-marker-outline"
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
-        self._attr_unique_id = f"{runtime.device_id}_passive_location"
+        self._attr_unique_id = f"{runtime.device_id}_location"
 
     @property
     def source_type(self) -> SourceType:
@@ -48,17 +48,35 @@ class PassiveDeviceTracker(AgentTelemetryEntity, TrackerEntity):
     @property
     def location_accuracy(self) -> int:
         # Home Assistant treats 0 as "unknown accuracy".
-        return self.runtime.gps_accuracy or 0
+        accuracy = self.runtime.location_accuracy
+        return int(accuracy) if accuracy else 0
 
     @property
     def extra_state_attributes(self) -> dict:
         return {
-            "location_age_seconds": self.runtime.location_age_seconds,
+            "location_age_seconds": self._age_seconds(),
             "location_provider": self.runtime.location_provider or None,
             "reported_at": (
                 self.runtime.location_reported_at.isoformat()
                 if self.runtime.location_reported_at
                 else None
             ),
-            "passive_only": True,
+            "requested_at": (
+                self.runtime.location_requested_at.isoformat()
+                if self.runtime.location_requested_at
+                else None
+            ),
         }
+
+    def _age_seconds(self) -> int | None:
+        """How old the stored position is, not how old the answer is.
+
+        The phone reports how stale its fix already was; the time since the
+        answer arrived is added, so the number keeps growing while nothing new
+        is asked for.
+        """
+        reported_at = self.runtime.location_reported_at
+        if reported_at is None:
+            return None
+        fix_age = self.runtime.location_fix_age_seconds or 0
+        return fix_age + int((dt_util.utcnow() - reported_at).total_seconds())

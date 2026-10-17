@@ -36,6 +36,7 @@ POST_VIEWS = frozenset(
     {
         "PcActivityView",
         "PcNotificationsView",
+        "PcLocationView",
         "PcExtensionView",
         "PcUnblockRequestView",
         "PcChallengeAcceptView",
@@ -130,6 +131,11 @@ class ProtocolSurfaceTests(unittest.TestCase):
         self.assertEqual(set(body), PROTOCOL.UNBLOCK_PENDING_KEYS)
         self.assertEqual(body["request_id"], "b" * 32)
         self.assertEqual(body["status"], PROVISION.STATUS_PENDING)
+
+    def test_the_location_answer_fixture_matches_the_documented_keys(self) -> None:
+        self.assertEqual(
+            set(_fixture("location_answer.json")), PROTOCOL.LOCATION_ANSWER_KEYS
+        )
 
     def test_the_notification_dump_fixture_matches_the_documented_keys(self) -> None:
         dump = _fixture("notifications_request.json")

@@ -154,12 +154,38 @@ final class Policy {
      * The policy the phone enforces. A poll that failed and a parent's local
      * override both mean "unblocked": the phone must never stay blocked on a
      * policy it could not verify, and a parent's decision wins over the server.
+     * A challenge the phone is holding survives a failed poll, so a chore the
+     * child has not answered cannot be escaped by taking the phone offline.
      */
-    static Policy enforced(Policy fromServer, boolean pollFailed, boolean localOverrideActive) {
-        if (pollFailed || localOverrideActive || fromServer == null) {
+    static Policy enforced(
+            Policy fromServer, boolean pollFailed, boolean localOverrideActive, Challenge held) {
+        if (localOverrideActive) {
             return UNBLOCKED;
         }
+        if (pollFailed || fromServer == null) {
+            return held == null ? UNBLOCKED : UNBLOCKED.withChallenge(held);
+        }
+        // A successful poll is authoritative: a challenge it does not carry has
+        // been cleared by a parent, and the held one was dropped to match.
         return fromServer;
+    }
+
+    /** The same policy with a different challenge. */
+    Policy withChallenge(Challenge replacement) {
+        return new Policy(
+                blocked,
+                blockRequested,
+                message,
+                extensionAvailable,
+                enforceAt == null ? null : enforceAt.toString(),
+                extensionUntil == null ? null : extensionUntil.toString(),
+                pointsBalance,
+                pointsHourCost,
+                wakeAlarm,
+                allowedApps,
+                familyPhone,
+                familyPc,
+                replacement);
     }
 
     boolean isExtensionActive() {

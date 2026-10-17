@@ -5,6 +5,8 @@ import org.junit.Test;
 import java.util.Collections;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class PolicyTest {
@@ -80,10 +82,10 @@ public class PolicyTest {
                 true, true, "Paused", false,
                 "2000-01-01T00:00:00Z", null);
 
-        Policy failed = Policy.enforced(blocked, true, false);
+        Policy failed = Policy.enforced(blocked, true, false, null);
         assertFalse(failed.blocked);
         assertFalse(failed.shouldCaptureForeground());
-        assertFalse(Policy.enforced(null, false, false).blocked);
+        assertFalse(Policy.enforced(null, false, false, null).blocked);
     }
 
     @Test
@@ -92,8 +94,45 @@ public class PolicyTest {
                 true, true, "Paused", false,
                 "2000-01-01T00:00:00Z", null);
 
-        assertFalse(Policy.enforced(blocked, false, true).blocked);
-        assertTrue(Policy.enforced(blocked, false, false).blocked);
+        assertFalse(Policy.enforced(blocked, false, true, null).blocked);
+        assertTrue(Policy.enforced(blocked, false, false, null).blocked);
+    }
+
+    @Test
+    public void aHeldChallengeSurvivesAFailedPoll() {
+        Challenge held = new Challenge("abc123", "I have brushed my teeth", null);
+
+        Policy failed = Policy.enforced(null, true, false, held);
+        assertFalse(failed.blocked);
+        assertTrue(failed.challengePending(""));
+        assertTrue(failed.isLocked(""));
+
+        // A parent override still releases it.
+        assertFalse(Policy.enforced(null, true, true, held).isLocked(""));
+    }
+
+    @Test
+    public void aSuccessfulPollWithoutAChallengeDropsTheHeldOne() {
+        Challenge held = new Challenge("abc123", "I have brushed my teeth", null);
+        Policy fromServer = new Policy(false, false, "Available", false, null, null);
+
+        Policy enforced = Policy.enforced(fromServer, false, false, held);
+
+        assertNull(enforced.challenge);
+        assertFalse(enforced.isLocked(""));
+    }
+
+    @Test
+    public void aSuccessfulPollKeepsTheChallengeItCarries() {
+        Challenge fromServer = new Challenge("abc123", "I have brushed my teeth", null);
+        Policy policy = new Policy(
+                false, false, "Available", false, null, null,
+                null, 0, null, Collections.emptyList(), null, null, fromServer);
+
+        Policy enforced = Policy.enforced(policy, false, false, null);
+
+        assertSame(fromServer, enforced.challenge);
+        assertTrue(enforced.isLocked(""));
     }
 
     @Test

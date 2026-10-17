@@ -18,7 +18,7 @@ Each configured device exposes Home Assistant entities for:
 - requested and effective blocked state;
 - an editable block message;
 - agent connectivity and foreground application/window telemetry;
-- optional passive Android location (cached fix only);
+- optional on-demand Android location (a parent asks, the phone answers once);
 - optional read-only VNC screen assessment and bounded text-only reports;
 - optional one-hour parent PIN override at the locked device;
 - Windows points/chores portal when Family Chore Manager is installed.

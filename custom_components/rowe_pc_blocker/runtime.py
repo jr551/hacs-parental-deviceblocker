@@ -38,6 +38,13 @@ from .const import (
     POINTS_HOUR_MINUTES,
     SIGNAL_UPDATE,
 )
+from .location import (
+    parse_accuracy,
+    parse_coordinates,
+    parse_fix_age,
+    parse_provider,
+    request_is_live,
+)
 from .notifications import NotificationDump, is_newer
 
 if TYPE_CHECKING:
@@ -78,14 +85,23 @@ class PcRuntime:
     # True between the stale event and the agent's next check-in, so one
     # offline episode fires exactly one event.
     agent_stale: bool = False
-    # Passive (cached-only) position reported by the Android agent. May be stale
-    # or absent by design — the agent never asks the GPS chip for a fix.
+    # On-demand position. The phone no longer reports one on every heartbeat:
+    # a parent asks, the request rides the next state poll, and the phone posts
+    # one fix back. The fix is deliberately not persisted — a child's position
+    # does not belong in the runtime store — so the tracker is unknown again
+    # after a restart until the next answer.
     latitude: float | None = None
     longitude: float | None = None
-    gps_accuracy: int | None = None
-    location_age_seconds: int | None = None
+    location_accuracy: float | None = None
+    # How old the phone said the fix already was when it answered. The tracker
+    # adds the time since it arrived, so the age a parent sees is the age of
+    # the position, not of the answer.
+    location_fix_age_seconds: int | None = None
     location_provider: str = ""
     location_reported_at: datetime | None = None
+    # The pending request: an empty id means there is nothing to answer.
+    location_request_id: str = ""
+    location_requested_at: datetime | None = None
     # The parent's comma-separated allowlist for this phone, and the apps the
     # phone last reported. Both are empty for a PC.
     allowed_apps: str = ""
@@ -215,6 +231,8 @@ class PcRuntime:
         self.challenge_sent_at = _parse_datetime(data.get("challenge_sent_at"))
         self.challenge_accepted_at = _parse_datetime(data.get("challenge_accepted_at"))
         self.notifications = NotificationDump.from_dict(data.get("notifications"))
+        self.location_request_id = str(data.get("location_request_id", ""))
+        self.location_requested_at = _parse_datetime(data.get("location_requested_at"))
 
     async def async_save(self) -> None:
         if self._store is None:
@@ -233,6 +251,10 @@ class PcRuntime:
                 "notifications": (
                     self.notifications.as_dict() if self.notifications else None
                 ),
+                # The fix itself is not persisted; only the request, so a
+                # restart does not lose a parent's ask.
+                "location_request_id": self.location_request_id,
+                "location_requested_at": _format_datetime(self.location_requested_at),
             }
         )
 
@@ -305,7 +327,7 @@ class PcRuntime:
 
     async def async_send_challenge(self, phrase: str) -> None:
         """Start a new challenge. The phone shows it on its next state poll."""
-        self.challenge_id = new_challenge_id()
+        self.challenge_id = new_request_id()
         self.challenge_phrase = phrase
         self.challenge_sent_at = dt_util.utcnow()
         self.challenge_accepted_at = None
@@ -318,6 +340,59 @@ class PcRuntime:
         self.challenge_phrase = ""
         self.challenge_sent_at = None
         self.challenge_accepted_at = None
+        await self.async_save()
+        self.notify()
+
+    @property
+    def location_request_payload(self) -> dict | None:
+        """The pending location request the phone reads on its state poll.
+
+        None once the request has expired, so a phone that was offline cannot
+        answer a request a parent has stopped waiting for.
+        """
+        if not self.location_request_id:
+            return None
+        if not request_is_live(self.location_requested_at, dt_util.utcnow()):
+            return None
+        return {
+            "id": self.location_request_id,
+            "requested_at": (
+                self.location_requested_at.isoformat()
+                if self.location_requested_at
+                else None
+            ),
+        }
+
+    async def async_request_location(self) -> str:
+        """Ask the phone for one fix. A second press replaces the request."""
+        self.location_request_id = new_request_id()
+        self.location_requested_at = dt_util.utcnow()
+        await self.async_save()
+        self.notify()
+        return self.location_request_id
+
+    async def async_expire_location_request(self) -> bool:
+        """Drop a request nobody answered in time. True when one was dropped."""
+        if not self.location_request_id:
+            return False
+        if request_is_live(self.location_requested_at, dt_util.utcnow()):
+            return False
+        self.location_request_id = ""
+        await self.async_save()
+        self.notify()
+        return True
+
+    async def async_store_location(self, payload: dict) -> None:
+        """Store one answered fix and clear the request it answers."""
+        coordinates = parse_coordinates(payload)
+        if coordinates is None:
+            return
+        self.latitude, self.longitude = coordinates
+        self.location_accuracy = parse_accuracy(payload)
+        self.location_fix_age_seconds = parse_fix_age(payload)
+        self.location_provider = parse_provider(payload)
+        self.location_reported_at = dt_util.utcnow()
+        self.location_request_id = ""
         await self.async_save()
         self.notify()
 
@@ -386,30 +461,6 @@ class PcRuntime:
         self.ui_status = resolve_ui_status(previous_ui_status, payload)
         self.ui_error = resolve_ui_error(previous_ui_error, payload)
         self.ui_reported_at = self.last_seen
-        if payload.get("latitude") is not None and payload.get("longitude") is not None:
-            try:
-                latitude = float(payload["latitude"])
-                longitude = float(payload["longitude"])
-            except (TypeError, ValueError):
-                latitude = longitude = None
-            if (
-                latitude is not None
-                and longitude is not None
-                and -90.0 <= latitude <= 90.0
-                and -180.0 <= longitude <= 180.0
-            ):
-                self.latitude = latitude
-                self.longitude = longitude
-                try:
-                    self.gps_accuracy = int(float(payload.get("gps_accuracy", 0)))
-                except (TypeError, ValueError):
-                    self.gps_accuracy = None
-                try:
-                    self.location_age_seconds = int(float(payload.get("location_age_seconds", 0)))
-                except (TypeError, ValueError):
-                    self.location_age_seconds = None
-                self.location_provider = str(payload.get("location_provider", ""))[:32]
-                self.location_reported_at = self.last_seen
         if (
             self.ui_status != previous_ui_status
             and is_portal_error_status(self.ui_status)
@@ -494,7 +545,7 @@ class PcRuntime:
             )
 
 
-def new_challenge_id() -> str:
+def new_request_id() -> str:
     """32 lowercase hex characters, safe to use in an entity attribute."""
     return secrets.token_hex(16)
 

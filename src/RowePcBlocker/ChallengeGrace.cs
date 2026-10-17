@@ -16,6 +16,7 @@ public sealed class ChallengeGrace(IOptions<BlockerOptions> options, ILogger<Cha
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private string? _recordedChallengeId;
+    private string? _failedChallengeId;
 
     public static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -34,9 +35,11 @@ public sealed class ChallengeGrace(IOptions<BlockerOptions> options, ILogger<Cha
         string challengeId = state.Family?.Phone?.Challenge?.Id ?? string.Empty;
         if (string.Equals(challengeId, _recordedChallengeId, StringComparison.Ordinal))
             return;
-        _recordedChallengeId = challengeId;
         if (challengeId.Length == 0 || AlreadyRecorded(challengeId))
+        {
+            _recordedChallengeId = challengeId;
             return;
+        }
         try
         {
             ChallengeGraceState payload = new(options.Value.DeviceId, challengeId, DateTimeOffset.UtcNow);
@@ -45,10 +48,17 @@ public sealed class ChallengeGrace(IOptions<BlockerOptions> options, ILogger<Cha
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(temporary, JsonSerializer.Serialize(payload, JsonOptions));
             File.Move(temporary, path, overwrite: true);
+            _recordedChallengeId = challengeId;
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Could not record the chore challenge grace for {ChallengeId}.", challengeId);
+            // Leave the id unrecorded so the next poll retries, and log once
+            // per challenge so a persistent failure cannot flood the log.
+            if (!string.Equals(challengeId, _failedChallengeId, StringComparison.Ordinal))
+            {
+                _failedChallengeId = challengeId;
+                logger.LogWarning(exception, "Could not record the chore challenge grace for {ChallengeId}; retrying.", challengeId);
+            }
         }
     }
 

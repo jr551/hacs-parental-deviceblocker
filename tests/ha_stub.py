@@ -53,11 +53,34 @@ def object_id(entity) -> str:
 
 
 class FakeState:
-    """A restored state, as ``RestoreEntity.async_get_last_state`` returns it."""
+    """A state, as the state machine or ``async_get_last_state`` returns it."""
 
-    def __init__(self, state: str, attributes: dict | None = None) -> None:
+    def __init__(
+        self, state: str, attributes: dict | None = None, entity_id: str = ""
+    ) -> None:
         self.state = state
         self.attributes = attributes or {}
+        self.entity_id = entity_id
+
+
+class FakeStates:
+    """``hass.states``: only the reads the integration makes."""
+
+    def __init__(self) -> None:
+        self.entities: dict[str, FakeState] = {}
+
+    def async_all(self, domain: str | None = None) -> list[FakeState]:
+        return [
+            state
+            for state in self.entities.values()
+            if domain is None or state.entity_id.startswith(f"{domain}.")
+        ]
+
+    def get(self, entity_id: str) -> FakeState | None:
+        return self.entities.get(entity_id)
+
+    def set(self, entity_id: str, state: str, attributes: dict | None = None) -> None:
+        self.entities[entity_id] = FakeState(state, attributes, entity_id)
 
 
 class FakeBus:
@@ -246,12 +269,19 @@ class FakeConfigEntries:
     def async_entries(self, domain):
         return list(self.entries)
 
+    def async_get_entry(self, entry_id):
+        for entry in self.entries:
+            if entry.entry_id == entry_id:
+                return entry
+        return None
+
 
 class FakeHass:
     """The parts of ``HomeAssistant`` the integration touches in tests."""
 
     def __init__(self, config_dir: str | None = None) -> None:
         self.data: dict = {}
+        self.states = FakeStates()
         self.bus = FakeBus()
         self.storage: dict = {}
         self.dispatcher: dict[str, list] = {}

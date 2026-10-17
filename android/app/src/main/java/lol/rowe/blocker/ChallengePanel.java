@@ -7,10 +7,9 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
-import android.media.MediaPlayer;
 import android.net.Uri;
-import android.os.Handler;
-import android.os.Looper;
+import android.os.Bundle;
+import android.os.Parcelable;
 import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.InputType;
@@ -36,22 +35,23 @@ import java.util.concurrent.ScheduledExecutorService;
  * dismissed on its own.
  */
 public final class ChallengePanel extends LinearLayout {
-    /** How often the lock beeps while it is up. */
-    static final long BEEP_INTERVAL_MS = 25_000L;
-    /** How long each beep lasts. */
-    static final long BEEP_LENGTH_MS = 2_000L;
     /** The longest edge of the thumbnail shown on the lock. */
     private static final int THUMBNAIL_EDGE = 512;
     private static final int REQUEST_CAPTURE = 0x43484C;
+    private static final String STATE_SUPER = "super";
+    private static final String STATE_CHALLENGE_ID = "challenge_id";
+    private static final String STATE_PHRASE = "phrase";
+    private static final String STATE_ANSWER = "answer";
+    private static final String STATE_MESSAGE = "message";
+    private static final String STATE_PHOTO = "photo";
+    private static final String STATE_PENDING_PHOTO = "pending_photo";
 
     /** Told when the child answers the challenge, so the lock can be taken down. */
     interface Listener {
         void onChallengeAccepted();
     }
 
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-    private final Runnable beepTask = this::beep;
     private Listener listener;
     private String challengeId = "";
     private String phrase = "";
@@ -65,7 +65,6 @@ public final class ChallengePanel extends LinearLayout {
     private File photoFile;
     /** The file the camera is writing to, until the shot comes back. */
     private File pendingPhotoFile;
-    private MediaPlayer beepPlayer;
     private boolean uploading;
     /** A message that outranks the step hints until the child changes something. */
     private String message = "";
@@ -96,7 +95,6 @@ public final class ChallengePanel extends LinearLayout {
             clearPhoto();
             message = "";
             updateAcceptState();
-            beep();
         }
         setVisibility(VISIBLE);
     }
@@ -104,24 +102,11 @@ public final class ChallengePanel extends LinearLayout {
     /** Take the lock down: the challenge was answered, or a parent override is running. */
     void hide() {
         setVisibility(GONE);
-        stopBeep();
         endCapture();
-    }
-
-    /** Beep again when the lock comes back to the front. */
-    void onResume() {
-        if (getVisibility() == VISIBLE) {
-            beep();
-        }
-    }
-
-    void onPause() {
-        stopBeep();
     }
 
     /** The block screen is going away for good. */
     void release() {
-        stopBeep();
         endCapture();
         executor.shutdownNow();
     }
@@ -155,6 +140,55 @@ public final class ChallengePanel extends LinearLayout {
         showThumbnail();
         updateAcceptState();
         return true;
+    }
+
+    /**
+     * Keep the challenge, the typed answer and the photo across a recreation.
+     * The camera can push this screen out of memory, and the child must come
+     * back to what they had rather than to an empty lock.
+     */
+    @Override
+    protected Parcelable onSaveInstanceState() {
+        Bundle state = new Bundle();
+        state.putParcelable(STATE_SUPER, super.onSaveInstanceState());
+        state.putString(STATE_CHALLENGE_ID, challengeId);
+        state.putString(STATE_PHRASE, phrase);
+        state.putString(STATE_ANSWER, answer.getText().toString());
+        state.putString(STATE_MESSAGE, message);
+        state.putString(STATE_PHOTO, photoFile == null ? null : photoFile.getAbsolutePath());
+        state.putString(
+                STATE_PENDING_PHOTO,
+                pendingPhotoFile == null ? null : pendingPhotoFile.getAbsolutePath());
+        return state;
+    }
+
+    @Override
+    protected void onRestoreInstanceState(Parcelable state) {
+        if (!(state instanceof Bundle)) {
+            super.onRestoreInstanceState(state);
+            return;
+        }
+        Bundle saved = (Bundle) state;
+        super.onRestoreInstanceState(saved.getParcelable(STATE_SUPER));
+        challengeId = text(saved.getString(STATE_CHALLENGE_ID));
+        phrase = text(saved.getString(STATE_PHRASE));
+        phraseView.setText(phrase);
+        answer.setText(text(saved.getString(STATE_ANSWER)));
+        message = text(saved.getString(STATE_MESSAGE));
+        photoFile = file(saved.getString(STATE_PHOTO));
+        pendingPhotoFile = file(saved.getString(STATE_PENDING_PHOTO));
+        if (hasPhoto()) {
+            showThumbnail();
+        }
+        updateAcceptState();
+    }
+
+    private static String text(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static File file(String path) {
+        return path == null || path.isEmpty() ? null : new File(path);
     }
 
     private void build() {
@@ -349,10 +383,11 @@ public final class ChallengePanel extends LinearLayout {
             }
             final boolean done = accepted;
             final String text = failure;
-            mainHandler.post(() -> {
+            post(() -> {
                 uploading = false;
                 if (done) {
                     Challenge.rememberAccepted(getContext(), id);
+                    Challenge.hold(getContext(), null);
                     Listener target = listener;
                     if (target != null) {
                         target.onChallengeAccepted();
@@ -366,37 +401,139 @@ public final class ChallengePanel extends LinearLayout {
     }
 
     /**
-     * The JPEG to upload: the captured photo downscaled so its longest edge is
-     * at most {@link Challenge#MAX_UPLOAD_EDGE}, which keeps a modern camera
-     * well under Home Assistant's size cap.
+     * The JPEG to upload: the captured photo scaled and compressed to fit
+     * {@link PhotoBudget}, which keeps a modern camera far under Home Assistant's
+     * size cap. The EXIF orientation is applied, so the photo is not sideways.
      */
     private static byte[] uploadBytes(File file) throws Exception {
+        int orientation = exifOrientation(file);
+        int[] bounds = orientedBounds(file, orientation);
+        PhotoEncoder encoder = new PhotoEncoder(file, orientation, bounds);
+        try {
+            return PhotoBudget.encodeWithinTarget(bounds[0], bounds[1], encoder);
+        } finally {
+            encoder.release();
+        }
+    }
+
+    /** The EXIF orientation of the captured photo, or normal when it has none. */
+    private static int exifOrientation(File file) {
+        try (java.io.InputStream input = new java.io.FileInputStream(file)) {
+            return new android.media.ExifInterface(input)
+                    .getAttributeInt(
+                            android.media.ExifInterface.TAG_ORIENTATION,
+                            android.media.ExifInterface.ORIENTATION_NORMAL);
+        } catch (Exception exception) {
+            return android.media.ExifInterface.ORIENTATION_NORMAL;
+        }
+    }
+
+    /** The photo's width and height as the child sees it, after any EXIF rotation. */
+    private static int[] orientedBounds(File file, int orientation) {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
-        int[] target = Challenge.uploadSize(
-                bounds.outWidth, bounds.outHeight, Challenge.MAX_UPLOAD_EDGE);
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        if (target != null) {
-            options.inSampleSize = sampleSize(
-                    bounds.outWidth, bounds.outHeight, Math.max(target[0], target[1]));
+        int width = Math.max(1, bounds.outWidth);
+        int height = Math.max(1, bounds.outHeight);
+        return swapsSides(orientation)
+                ? new int[] {height, width}
+                : new int[] {width, height};
+    }
+
+    /** True when the EXIF orientation turns the photo a quarter turn. */
+    private static boolean swapsSides(int orientation) {
+        return orientation == android.media.ExifInterface.ORIENTATION_ROTATE_90
+                || orientation == android.media.ExifInterface.ORIENTATION_ROTATE_270
+                || orientation == android.media.ExifInterface.ORIENTATION_TRANSPOSE
+                || orientation == android.media.ExifInterface.ORIENTATION_TRANSVERSE;
+    }
+
+    /** The photo's pixels turned the way the EXIF orientation says. */
+    private static Bitmap rotate(Bitmap bitmap, int orientation) {
+        android.graphics.Matrix matrix = new android.graphics.Matrix();
+        switch (orientation) {
+            case android.media.ExifInterface.ORIENTATION_ROTATE_90:
+                matrix.postRotate(90);
+                break;
+            case android.media.ExifInterface.ORIENTATION_ROTATE_180:
+                matrix.postRotate(180);
+                break;
+            case android.media.ExifInterface.ORIENTATION_ROTATE_270:
+                matrix.postRotate(270);
+                break;
+            case android.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+                matrix.postScale(-1, 1);
+                break;
+            case android.media.ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                matrix.postScale(1, -1);
+                break;
+            case android.media.ExifInterface.ORIENTATION_TRANSPOSE:
+                matrix.postRotate(90);
+                matrix.postScale(-1, 1);
+                break;
+            case android.media.ExifInterface.ORIENTATION_TRANSVERSE:
+                matrix.postRotate(270);
+                matrix.postScale(-1, 1);
+                break;
+            default:
+                return bitmap;
         }
-        Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
-        if (bitmap == null) {
-            throw new IllegalStateException("The photo could not be read.");
+        Bitmap turned = Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+        if (turned != bitmap) {
+            bitmap.recycle();
         }
-        if (target != null
-                && (bitmap.getWidth() != target[0] || bitmap.getHeight() != target[1])) {
-            Bitmap scaled = Bitmap.createScaledBitmap(bitmap, target[0], target[1], true);
-            if (scaled != bitmap) {
-                bitmap.recycle();
-                bitmap = scaled;
+        return turned;
+    }
+
+    /** Encodes the captured photo at each size and quality the budget asks for. */
+    private static final class PhotoEncoder implements PhotoBudget.Encoder {
+        private final File file;
+        private final int orientation;
+        private final int[] bounds;
+        private Bitmap decoded;
+
+        PhotoEncoder(File file, int orientation, int[] bounds) {
+            this.file = file;
+            this.orientation = orientation;
+            this.bounds = bounds;
+        }
+
+        @Override
+        public byte[] encode(int width, int height, int quality) throws Exception {
+            Bitmap source = decoded();
+            Bitmap scaled = source.getWidth() == width && source.getHeight() == height
+                    ? source
+                    : Bitmap.createScaledBitmap(source, width, height, true);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality, out);
+            if (scaled != source) {
+                scaled.recycle();
+            }
+            return out.toByteArray();
+        }
+
+        /** The photo decoded once, subsampled to about the largest edge we keep. */
+        private Bitmap decoded() {
+            if (decoded == null) {
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = sampleSize(
+                        bounds[0], bounds[1], PhotoBudget.MAX_EDGE);
+                Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+                if (bitmap == null) {
+                    throw new IllegalStateException("The photo could not be read.");
+                }
+                decoded = rotate(bitmap, orientation);
+            }
+            return decoded;
+        }
+
+        void release() {
+            if (decoded != null) {
+                decoded.recycle();
+                decoded = null;
             }
         }
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        bitmap.compress(Bitmap.CompressFormat.JPEG, Challenge.UPLOAD_QUALITY, out);
-        bitmap.recycle();
-        return out.toByteArray();
     }
 
     /** The largest power-of-two subsample that still covers {@code targetEdge}. */
@@ -420,7 +557,7 @@ public final class ChallengePanel extends LinearLayout {
             thumbnail.setVisibility(GONE);
             return;
         }
-        thumbnail.setImageBitmap(bitmap);
+        thumbnail.setImageBitmap(rotate(bitmap, exifOrientation(photoFile)));
         thumbnail.setVisibility(VISIBLE);
         retake.setVisibility(VISIBLE);
         takePhoto.setVisibility(GONE);
@@ -429,35 +566,6 @@ public final class ChallengePanel extends LinearLayout {
     private void showMessage(String text) {
         message = text;
         updateAcceptState();
-    }
-
-    /** Beep on appearance and every {@link #BEEP_INTERVAL_MS} while the lock is up. */
-    private void beep() {
-        AlarmAudio.unmuteAlarmStream(getContext());
-        stopBeep();
-        Uri tone = AlarmAudio.alarmTone();
-        if (tone != null) {
-            try {
-                MediaPlayer created = new MediaPlayer();
-                created.setAudioAttributes(AlarmAudio.alarmAttributes());
-                created.setDataSource(getContext(), tone);
-                created.prepare();
-                created.start();
-                beepPlayer = created;
-                mainHandler.postDelayed(this::stopBeep, BEEP_LENGTH_MS);
-            } catch (Exception ignored) {
-                // A silent beep must not stop the lock from working.
-            }
-        }
-        mainHandler.postDelayed(beepTask, BEEP_INTERVAL_MS);
-    }
-
-    private void stopBeep() {
-        mainHandler.removeCallbacks(beepTask);
-        if (beepPlayer != null) {
-            beepPlayer.release();
-            beepPlayer = null;
-        }
     }
 
     private void endCapture() {

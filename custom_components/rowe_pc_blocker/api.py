@@ -46,6 +46,7 @@ from .evidence import (
     evidence_refusal,
 )
 from .family import family_peers
+from .location import location_answer_refusal
 from .notifications import MAX_DUMP_BYTES, dump_refusal, parse_dump
 from .pending import (
     async_create_request,
@@ -200,6 +201,8 @@ class PcStateView(HomeAssistantView):
         hass = request.app["hass"]
         runtime = await _require_runtime(hass, request, device_id)
         runtime.last_seen = dt_util.utcnow()
+        # A request nobody answered stops riding the payload once it expires.
+        await runtime.async_expire_location_request()
         runtime.notify()
         return self.json(
             {
@@ -225,6 +228,7 @@ class PcStateView(HomeAssistantView):
                 "allowed_apps": parse_allowed_apps(runtime.allowed_apps)
                 or list(DEFAULT_ALLOWED_APPS),
                 "challenge": runtime.challenge_payload,
+                "location_request": runtime.location_request_payload,
                 "family": family_peers(
                     runtime,
                     _runtimes(hass),
@@ -250,6 +254,39 @@ class PcActivityView(HomeAssistantView):
         except web.HTTPBadRequest as err:
             raise web.HTTPBadRequest(text="Expected a JSON object") from err
         runtime.update_activity(payload)
+        return self.json({"ok": True})
+
+
+class PcLocationView(HomeAssistantView):
+    """Accept the one fix a phone was asked for.
+
+    A parent presses Request location, the request rides the phone's next
+    state poll, and the phone posts the fix here. An answer for a request that
+    is no longer current — answered twice, replaced, or expired — is a 404, so
+    a late answer cannot overwrite a newer one.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/location"
+    name = "api:rowe_pc_blocker:location"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        refusal = location_answer_refusal(
+            payload,
+            runtime.location_request_id,
+            runtime.location_requested_at,
+            dt_util.utcnow(),
+        )
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        await runtime.async_store_location(payload)
         return self.json({"ok": True})
 
 
@@ -799,6 +836,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     hass.http.register_view(PcParentOverrideView)
     hass.http.register_view(PcPointsHourView)
     hass.http.register_view(PcActivityView)
+    hass.http.register_view(PcLocationView)
     hass.http.register_view(PcNotificationsView)
     hass.http.register_view(PcExtensionView)
     hass.http.register_view(PcUnblockRequestView)

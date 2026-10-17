@@ -37,6 +37,7 @@ last known state during an outage.
 - [ ] After five minutes the notice becomes a hard kiosk that cannot be dismissed. Accepting the challenge on the phone, or `rowe_pc_blocker.clear_challenge`, clears it.
 - [ ] A parent override (`extension_until` in the future) suppresses the notice, exactly as it suppresses the block screen.
 - [ ] Stop the phone agent (or turn the phone off) for more than 24 hours: the PC freezes with **<child>'s phone has not checked in for N hours** and **Parental control cannot be verified. Please see a parent.** It cannot be dismissed.
+- [ ] With a second monitor attached, the freeze and the hard challenge kiosk cover every display, not just the primary one.
 - [ ] Start the phone agent again: the freeze clears on the next poll.
 - [ ] A child with no phone entry, or a phone that has never checked in (`last_seen` null), never freezes the PC.
 

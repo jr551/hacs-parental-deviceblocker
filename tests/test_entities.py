@@ -242,7 +242,6 @@ class TelemetryAvailabilityTests(EntityTestCase):
             SENSOR.ActiveWindowSensor(self.runtime),
             SENSOR.EnforcementStatusSensor(self.runtime),
             SENSOR.InstalledAppsSensor(self.runtime),
-            TRACKER.PassiveDeviceTracker(self.runtime),
         ]
         for entity in entities:
             self.assertTrue(entity.available, entity.name)
@@ -269,6 +268,9 @@ class TelemetryAvailabilityTests(EntityTestCase):
             SENSOR.ChallengeSensor(self.runtime),
             SENSOR.UnblockRequestsSensor(self.runtime),
             IMAGE.ChallengeEvidenceImage(self.runtime),
+            # The location tracker is a stored answer, not a live feed: it
+            # keeps the last fix and exposes its age instead.
+            TRACKER.LocationTracker(self.runtime),
         ]
         self._go_silent()
         for entity in entities:
@@ -473,6 +475,16 @@ class PlatformSetupTests(EntityTestCase):
         await TEXT.async_setup_entry(self.hass, entry, texts.extend)
         self.assertTrue(any(isinstance(e, TEXT.AllowedAppsText) for e in texts))
 
+        buttons: list = []
+        await BUTTON.async_setup_entry(self.hass, entry, buttons.extend)
+        self.assertTrue(
+            any(isinstance(e, BUTTON.RequestLocationButton) for e in buttons)
+        )
+
+        trackers: list = []
+        await TRACKER.async_setup_entry(self.hass, entry, trackers.extend)
+        self.assertTrue(any(isinstance(e, TRACKER.LocationTracker) for e in trackers))
+
     async def test_a_pc_gets_no_phone_only_entities(self) -> None:
         self._runtime("entry-1", "casey-pc", CONST.DEVICE_TYPE_WINDOWS)
         entry = FakeConfigEntry({}, entry_id="entry-1")
@@ -486,6 +498,16 @@ class PlatformSetupTests(EntityTestCase):
         texts: list = []
         await TEXT.async_setup_entry(self.hass, entry, texts.extend)
         self.assertFalse(any(isinstance(e, TEXT.AllowedAppsText) for e in texts))
+
+        buttons: list = []
+        await BUTTON.async_setup_entry(self.hass, entry, buttons.extend)
+        self.assertFalse(
+            any(isinstance(e, BUTTON.RequestLocationButton) for e in buttons)
+        )
+
+        trackers: list = []
+        await TRACKER.async_setup_entry(self.hass, entry, trackers.extend)
+        self.assertEqual(trackers, [])
 
     async def test_a_pc_reports_the_portal_status_and_a_phone_the_enforcement_status(self) -> None:
         self._runtime("entry-1", "casey-pc", CONST.DEVICE_TYPE_WINDOWS)

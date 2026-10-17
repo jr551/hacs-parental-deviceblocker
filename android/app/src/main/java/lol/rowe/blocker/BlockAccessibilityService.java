@@ -236,7 +236,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 failOpen(EnforcementStatus.NOT_CONFIGURED, "Home Assistant is not configured.");
                 return;
             }
-            Policy policy = Policy.enforced(
+            Policy policy = Challenge.enforced(
+                    this,
                     new HomeAssistantClient(config).getPolicy(),
                     false,
                     LocalOverride.isActive(this));
@@ -433,9 +434,9 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     private void failOpen(String status, String detail) {
-        currentPolicy = Policy.UNBLOCKED;
-        AppUpdater.challengeActive = false;
-        MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
+        currentPolicy = Challenge.enforced(this, null, true, false);
+        AppUpdater.challengeActive = currentPolicy.challengePending(Challenge.acceptedId(this));
+        MainActivity.applyPolicySnapshot(currentPolicy);
         publishStatus(status, detail == null ? "" : detail, true);
     }
 

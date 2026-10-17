@@ -9,6 +9,7 @@ API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/state"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/activity"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/notifications"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/location"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/extension"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/unblock_request"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/accept"},
@@ -36,6 +37,7 @@ STATE_RESPONSE_KEYS = frozenset(
         "extension_until",
         "allowed_apps",
         "challenge",
+        "location_request",
         "family",
     }
 )
@@ -72,6 +74,12 @@ INSTALLED_APP_KEYS = frozenset({"package", "label"})
 NOTIFICATION_REQUEST_KEYS = frozenset({"date", "count", "truncated", "items"})
 
 NOTIFICATION_ITEM_KEYS = frozenset({"package", "app", "title", "text", "posted_at"})
+
+LOCATION_REQUEST_PAYLOAD_KEYS = frozenset({"id", "requested_at"})
+
+LOCATION_ANSWER_KEYS = frozenset(
+    {"request_id", "latitude", "longitude", "accuracy", "provider", "fix_age_seconds"}
+)
 
 EXTENSION_RESPONSE_KEYS = frozenset(
     {"granted", "extension_until", "extension_available_at"}

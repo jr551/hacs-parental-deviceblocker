@@ -11,6 +11,7 @@
   "extension_until": null,
   "allowed_apps": [],
   "challenge": null,
+  "location_request": null,
   "family": {
     "phone": {
       "device_id": "child-phone",

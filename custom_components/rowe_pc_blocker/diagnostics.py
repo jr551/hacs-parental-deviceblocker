@@ -84,10 +84,12 @@ async def async_get_config_entry_diagnostics(
         "location": {
             "latitude": runtime.latitude,
             "longitude": runtime.longitude,
-            "accuracy_metres": runtime.gps_accuracy,
-            "age_seconds": runtime.location_age_seconds,
+            "accuracy_metres": runtime.location_accuracy,
+            "fix_age_seconds": runtime.location_fix_age_seconds,
             "provider": runtime.location_provider or None,
             "reported_at": _iso(runtime.location_reported_at),
+            # The pending ask, or None once it has expired.
+            "request": runtime.location_request_payload,
         },
         "notifications": _notifications(runtime),
         "screen_monitor": _screen_monitor(runtime),
