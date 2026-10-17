@@ -15,6 +15,14 @@ builder.Services.AddHttpClient<HomeAssistantClient>(client =>
     // the HttpClient default of 100 s; enforcement cadence depends on this.
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddHttpClient<WindowsUpdater>(client =>
+{
+    // The release archive is large; the poll loop never waits on it because
+    // the updater runs its check on a background task.
+    client.Timeout = TimeSpan.FromMinutes(30);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("ParentalDeviceBlocker");
+});
+builder.Services.AddSingleton<ChallengeGrace>();
 builder.Services.AddSingleton<WindowsAccountBlocker>();
 builder.Services.AddHostedService<BlockerWorker>();
 builder.Services.AddWindowsService(options => options.ServiceName = "Parental Device Blocker");

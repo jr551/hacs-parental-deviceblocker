@@ -35,7 +35,12 @@ PROVISION = _load_module(
 POST_VIEWS = frozenset(
     {
         "PcActivityView",
+        "PcNotificationsView",
+        "PcLocationView",
         "PcExtensionView",
+        "PcUnblockRequestView",
+        "PcChallengeSubmitView",
+        "PcChallengeEvidenceView",
         "PcPortalActionView",
         "PcParentOverrideView",
         "PcPointsHourView",
@@ -71,6 +76,16 @@ class ProtocolSurfaceTests(unittest.TestCase):
     def test_state_response_fixture_matches_the_documented_keys(self) -> None:
         self.assertEqual(set(_fixture("state_response.json")), PROTOCOL.STATE_RESPONSE_KEYS)
 
+    def test_the_family_fixture_matches_the_documented_shape(self) -> None:
+        family = _fixture("state_response.json")["family"]
+        self.assertEqual(set(family), PROTOCOL.FAMILY_KEYS)
+        self.assertEqual(set(family["phone"]), PROTOCOL.FAMILY_PEER_KEYS)
+        self.assertEqual(
+            set(family["phone"]["challenge"]), PROTOCOL.CHALLENGE_PAYLOAD_KEYS
+        )
+        # A child with one phone has no PC peer, and the key is still there.
+        self.assertIsNone(family["pc"])
+
     def test_activity_request_fixture_matches_the_documented_keys(self) -> None:
         self.assertEqual(
             set(_fixture("activity_request.json")), PROTOCOL.ACTIVITY_REQUEST_KEYS
@@ -98,6 +113,44 @@ class ProtocolSurfaceTests(unittest.TestCase):
         status_code, body = PROVISION.collection_response(request)
         self.assertEqual(status_code, 200)
         self.assertEqual(set(body), PROTOCOL.PROVISION_APPROVED_KEYS)
+
+    def test_the_unblock_request_fixture_matches_the_documented_keys(self) -> None:
+        self.assertEqual(
+            set(_fixture("unblock_request.json")), PROTOCOL.UNBLOCK_REQUEST_KEYS
+        )
+
+    def test_the_unblock_pending_body_is_the_documented_shape(self) -> None:
+        request = PROVISION.UnblockRequest(
+            request_id="b" * 32,
+            device_id="casey-phone",
+            package="com.roblox.client",
+            label="Roblox",
+            requested_at=datetime(2026, 10, 17, tzinfo=timezone.utc),
+        )
+        body = PROVISION.unblock_pending_body(request)
+        self.assertEqual(set(body), PROTOCOL.UNBLOCK_PENDING_KEYS)
+        self.assertEqual(body["request_id"], "b" * 32)
+        self.assertEqual(body["status"], PROVISION.STATUS_PENDING)
+
+    def test_the_location_answer_fixture_matches_the_documented_keys(self) -> None:
+        self.assertEqual(
+            set(_fixture("location_answer.json")), PROTOCOL.LOCATION_ANSWER_KEYS
+        )
+
+    def test_the_notification_dump_fixture_matches_the_documented_keys(self) -> None:
+        dump = _fixture("notifications_request.json")
+        self.assertEqual(set(dump), PROTOCOL.NOTIFICATION_REQUEST_KEYS)
+        self.assertTrue(dump["items"])
+        for item in dump["items"]:
+            self.assertEqual(set(item), PROTOCOL.NOTIFICATION_ITEM_KEYS)
+
+    def test_the_challenge_shapes_are_the_documented_ones(self) -> None:
+        self.assertEqual(
+            set(_fixture("challenge_submit.json")), PROTOCOL.CHALLENGE_REQUEST_KEYS
+        )
+        self.assertEqual(
+            set(_fixture("challenge_evidence.json")), PROTOCOL.CHALLENGE_EVIDENCE_KEYS
+        )
 
 
 if __name__ == "__main__":

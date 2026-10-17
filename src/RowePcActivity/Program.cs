@@ -94,7 +94,7 @@ internal sealed class AgentApplicationContext : ApplicationContext
                 {
                     _overlay.Apply(policy);
                     foreach (SecondaryBlockOverlayForm overlay in _secondaryOverlays)
-                        overlay.Apply(policy);
+                        overlay.Apply(_overlay.HardCoverMessage);
                 }
                 else
                 {
@@ -225,6 +225,11 @@ internal sealed class AgentApplicationContext : ApplicationContext
 internal sealed class BlockOverlayForm : Form
 {
     private const int PhoneRowHeight = 46;
+    private const int DismissRowHeight = 64;
+    /// <summary>How long the child may keep working before the challenge notice becomes a hard kiosk.</summary>
+    private static readonly TimeSpan ChallengeGrace = TimeSpan.FromMinutes(5);
+    /// <summary>How long a phone may stay silent before the PC freezes.</summary>
+    private static readonly TimeSpan PhoneSilenceLimit = TimeSpan.FromHours(24);
 
     private readonly AgentConfiguration _configuration;
     private readonly TableLayoutPanel _fullLayout;
@@ -234,6 +239,8 @@ internal sealed class BlockOverlayForm : Form
     private readonly Label _phone;
     private readonly RowStyle _phoneRow;
     private readonly Button _extension;
+    private readonly Button _dismiss;
+    private readonly RowStyle _dismissRow;
     private readonly Panel _banner;
     private readonly Label _bannerTitle;
     private readonly Label _bannerCountdown;
@@ -246,6 +253,9 @@ internal sealed class BlockOverlayForm : Form
     private KeyboardKioskGuard? _keyboardGuard;
     private AgentPolicy? _policy;
     private bool _kioskActive;
+    private string _challengeId = "";
+    private DateTimeOffset _challengeFirstSeen;
+    private bool _challengeDismissed;
     private bool _portalReady;
     private bool _portalInitialising;
     private string _reportedPortalStatus = "";
@@ -254,6 +264,13 @@ internal sealed class BlockOverlayForm : Form
 
     public event EventHandler? ExtensionRequested;
     public event EventHandler<PortalTelemetry>? PortalTelemetryChanged;
+
+    /// <summary>
+    /// What the other displays must show while this overlay is a hard kiosk,
+    /// or null when they may stay clear. The primary overlay owns the challenge
+    /// grace, so it decides once and the secondary overlays mirror it.
+    /// </summary>
+    public string? HardCoverMessage { get; private set; }
 
     public BlockOverlayForm(AgentConfiguration configuration)
     {
@@ -291,12 +308,31 @@ internal sealed class BlockOverlayForm : Form
         _extension.FlatAppearance.BorderSize = 0;
         _extension.Click += (_, _) => ExtensionRequested?.Invoke(this, EventArgs.Empty);
 
+        // Shown only while the phone's chore challenge is inside its grace
+        // period: the notice is informational then, and the child may dismiss
+        // it and keep working until the grace lapses.
+        _dismiss = new Button
+        {
+            Anchor = AnchorStyles.None,
+            Width = 350,
+            Height = 64,
+            Font = new Font("Segoe UI", 13, FontStyle.Bold),
+            Text = "Keep working for now",
+            BackColor = Color.FromArgb(65, 132, 228),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            TabStop = true,
+            Visible = false
+        };
+        _dismiss.FlatAppearance.BorderSize = 0;
+        _dismiss.Click += (_, _) => DismissChallengeNotice();
+
         TableLayoutPanel left = new()
         {
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(20, 24, 31),
             Padding = new Padding(34),
-            RowCount = 5,
+            RowCount = 6,
             ColumnCount = 1
         };
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 26));
@@ -307,11 +343,15 @@ internal sealed class BlockOverlayForm : Form
         _phoneRow = new RowStyle(SizeType.Absolute, 0);
         left.RowStyles.Add(_phoneRow);
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
+        // The dismiss row collapses to nothing outside the challenge grace.
+        _dismissRow = new RowStyle(SizeType.Absolute, 0);
+        left.RowStyles.Add(_dismissRow);
         left.Controls.Add(_title, 0, 0);
         left.Controls.Add(_message, 0, 1);
         left.Controls.Add(_countdown, 0, 2);
         left.Controls.Add(_phone, 0, 3);
         left.Controls.Add(_extension, 0, 4);
+        left.Controls.Add(_dismiss, 0, 5);
 
         _portalHost = new Panel
         {
@@ -392,19 +432,37 @@ internal sealed class BlockOverlayForm : Form
     public void Apply(AgentPolicy policy)
     {
         _policy = policy;
-        if (!policy.BlockRequested)
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DateTimeOffset enforceAt = policy.EnforceAt ?? now;
+        TimeSpan remaining = enforceAt - now;
+        bool extended = policy.ExtensionUntil is not null && policy.ExtensionUntil > now && remaining.TotalSeconds > 30;
+        FamilyPeerState? phone = policy.Family?.Phone;
+        TrackChallenge(phone?.Challenge, now);
+
+        // The phone notices only apply while the PC itself is free: a parent
+        // override suppresses them exactly as it suppresses the block screen,
+        // and a parent-requested block keeps the block screen it already has.
+        FamilyChallenge? challenge = policy.BlockRequested || extended ? null : phone?.Challenge;
+        bool challengeDismissed = challenge is not null && _challengeDismissed && ChallengeGraceRemaining(now) > TimeSpan.Zero;
+        TimeSpan? silence = policy.BlockRequested || extended ? null : PhoneSilence(phone);
+
+        if (silence is TimeSpan silentFor && silentFor >= PhoneSilenceLimit)
+        {
+            // A phone that has not checked in for a day cannot answer a
+            // challenge, so the freeze outranks the challenge notice.
+            ApplyPhoneStaleFreeze(policy, silentFor);
+        }
+        else if (challenge is not null && !challengeDismissed)
+        {
+            ApplyChallengeNotice(policy, challenge, now);
+        }
+        else if (!policy.BlockRequested)
         {
             ReportPortalTelemetry("idle");
             HideOverlay();
             return;
         }
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        DateTimeOffset enforceAt = policy.EnforceAt ?? now;
-        TimeSpan remaining = enforceAt - now;
-        bool extended = policy.ExtensionUntil is not null && policy.ExtensionUntil > now && remaining.TotalSeconds > 30;
-
-        if (extended)
+        else if (extended)
         {
             ReportPortalTelemetry("idle");
             ApplyCountdownBanner(remaining);
@@ -432,8 +490,140 @@ internal sealed class BlockOverlayForm : Form
         }
     }
 
+    /// <summary>
+    /// Remembers when this PC first saw the phone's current challenge. The
+    /// service records the same stamp under %ProgramData% so restarting this
+    /// agent cannot restart the five-minute grace; the earlier of the two
+    /// wins, because either side may have seen the challenge first.
+    /// </summary>
+    private void TrackChallenge(FamilyChallenge? challenge, DateTimeOffset now)
+    {
+        if (challenge is null)
+        {
+            _challengeId = "";
+            _challengeDismissed = false;
+            return;
+        }
+        if (string.Equals(challenge.Id, _challengeId, StringComparison.Ordinal))
+            return;
+        _challengeId = challenge.Id;
+        _challengeDismissed = false;
+        _challengeFirstSeen = ChallengeGraceFile.TryRead(_configuration.DeviceId, challenge.Id, out DateTimeOffset recorded)
+            && recorded < now
+            ? recorded
+            : now;
+    }
+
+    private TimeSpan ChallengeGraceRemaining(DateTimeOffset now)
+    {
+        TimeSpan remaining = ChallengeGrace - (now - _challengeFirstSeen);
+        // A clock that moved backwards must not extend the grace past five minutes.
+        return remaining > ChallengeGrace ? ChallengeGrace : remaining;
+    }
+
+    /// <summary>
+    /// Full-screen notice for the phone's active chore challenge. For the first
+    /// five minutes it is informational and the child can dismiss it and keep
+    /// working; after that it is a hard kiosk that stays up until the challenge
+    /// is answered or a parent clears it.
+    /// </summary>
+    private void ApplyChallengeNotice(AgentPolicy policy, FamilyChallenge challenge, DateTimeOffset now)
+    {
+        TimeSpan grace = ChallengeGraceRemaining(now);
+        bool hard = grace <= TimeSpan.Zero;
+        string name = ChildName(policy);
+        string phrase = challenge.Phrase.Trim();
+
+        ReportPortalTelemetry("idle");
+        FormBorderStyle = FormBorderStyle.None;
+        Bounds = ResolveKioskBounds();
+        _banner.Visible = false;
+        _fullLayout.Visible = true;
+        ShowNoticeLayout(false);
+        _title.Text = name.Length == 0
+            ? "Waiting for something on the phone"
+            : $"Waiting for something on {name}'s phone";
+        _message.Text = phrase.Length == 0
+            ? "Your phone is asking you to do a chore."
+            : $"Your phone is asking you to: {phrase}";
+        _countdown.Text = hard
+            ? "Finish it on your phone to carry on."
+            : $"PC waits {FormatRemaining(grace)}\nFinish it on your phone to carry on.";
+        HardCoverMessage = hard ? $"{_title.Text}\n\nFinish it on your phone to carry on." : null;
+        _extension.Visible = false;
+        _dismiss.Visible = !hard;
+        _dismissRow.Height = hard ? 0 : DismissRowHeight;
+        ApplyPhoneStatus(null);
+        SetKioskMode(hard);
+    }
+
+    private void DismissChallengeNotice()
+    {
+        _challengeDismissed = true;
+        HideOverlay();
+    }
+
+    /// <summary>
+    /// Hard freeze for a phone that has stopped checking in. The child cannot
+    /// dismiss it; it clears as soon as the phone checks in again.
+    /// </summary>
+    private void ApplyPhoneStaleFreeze(AgentPolicy policy, TimeSpan silence)
+    {
+        string name = ChildName(policy);
+        int hours = (int)silence.TotalHours;
+
+        ReportPortalTelemetry("idle");
+        FormBorderStyle = FormBorderStyle.None;
+        Bounds = ResolveKioskBounds();
+        _banner.Visible = false;
+        _fullLayout.Visible = true;
+        ShowNoticeLayout(false);
+        _title.Text = name.Length == 0
+            ? $"The phone has not checked in for {hours} hours"
+            : $"{name}'s phone has not checked in for {hours} hours";
+        _message.Text = "Parental control cannot be verified. Please see a parent.";
+        _countdown.Text = "This PC stays frozen until the phone checks in again.";
+        HardCoverMessage = $"{_title.Text}\n\nParental control cannot be verified. Please see a parent.";
+        _extension.Visible = false;
+        _dismiss.Visible = false;
+        _dismissRow.Height = 0;
+        ApplyPhoneStatus(null);
+        SetKioskMode(true);
+    }
+
+    /// <summary>
+    /// How long the phone has been silent, or null when it is online, absent,
+    /// or its last check-in time is unknown. An unknown age must never freeze
+    /// the PC.
+    /// </summary>
+    private static TimeSpan? PhoneSilence(FamilyPeerState? phone)
+    {
+        if (phone is null || phone.AgentOnline || phone.LastSeen is null)
+            return null;
+        TimeSpan silence = DateTimeOffset.UtcNow - phone.LastSeen.Value;
+        return silence > TimeSpan.Zero ? silence : TimeSpan.Zero;
+    }
+
+    /// <summary>
+    /// The child's name as Home Assistant reports it, used to name the phone in
+    /// the notices. Empty when the payload omits it.
+    /// </summary>
+    private static string ChildName(AgentPolicy policy) => policy.WindowsUsername?.Trim() ?? string.Empty;
+
+    /// <summary>
+    /// Switches the two-column block layout to a single centred column for the
+    /// notice states, which have no points portal to show.
+    /// </summary>
+    private void ShowNoticeLayout(bool portalVisible)
+    {
+        _fullLayout.ColumnStyles[0].Width = portalVisible ? 38 : 100;
+        _fullLayout.ColumnStyles[1].Width = portalVisible ? 62 : 0;
+        _portalHost.Visible = portalVisible;
+    }
+
     public void HideOverlay()
     {
+        HardCoverMessage = null;
         SetKioskMode(false);
         if (Visible)
             Hide();
@@ -453,6 +643,10 @@ internal sealed class BlockOverlayForm : Form
         Bounds = ResolveKioskBounds();
         _banner.Visible = false;
         _fullLayout.Visible = true;
+        // The block screen keeps its two-column layout even when the portal is
+        // disabled; only the notice states collapse to one column.
+        _fullLayout.ColumnStyles[0].Width = 38;
+        _fullLayout.ColumnStyles[1].Width = 62;
         _portalHost.Visible = _configuration.PortalEnabled;
         _title.Text = policy.Blocked ? "PC time is paused" : "PC time is ending";
         _message.Text = policy.Message;
@@ -460,6 +654,11 @@ internal sealed class BlockOverlayForm : Form
             ? "Use your points portal while you wait for a parent to unpause this PC."
             : $"Save your work — blocking in {FormatRemaining(remaining)}";
         _extension.Visible = !policy.Blocked && policy.ExtensionAvailable;
+        _dismiss.Visible = false;
+        _dismissRow.Height = 0;
+        HardCoverMessage = policy.Blocked
+            ? "PC time is paused\n\nPlease use the points screen on your main display."
+            : "PC time is ending\n\nPlease save your work on your main display.";
         if (!_extension.Visible && !policy.Blocked && policy.ExtensionAvailableAt is not null)
             _countdown.Text += $"\nAnother 5-minute extension is available at {policy.ExtensionAvailableAt:HH:mm}.";
         ApplyPhoneStatus(policy.Family?.Phone);
@@ -518,6 +717,7 @@ internal sealed class BlockOverlayForm : Form
 
     private void ApplyCountdownBanner(TimeSpan remaining)
     {
+        HardCoverMessage = null;
         SetKioskMode(false);
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         Rectangle working = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
@@ -832,8 +1032,7 @@ internal sealed class SecondaryBlockOverlayForm : Form
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI", 22, FontStyle.Bold),
             ForeColor = Color.White,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Text = "PC time is paused\n\nPlease use the points screen on your main display."
+            TextAlign = ContentAlignment.MiddleCenter
         };
         Controls.Add(_message);
     }
@@ -848,21 +1047,20 @@ internal sealed class SecondaryBlockOverlayForm : Form
         base.OnFormClosing(e);
     }
 
-    public void Apply(AgentPolicy policy)
+    /// <summary>
+    /// Covers this screen while the primary overlay is a hard kiosk. The
+    /// primary decides — it owns the challenge grace — and this form only
+    /// mirrors the message, so every display is covered by the same state.
+    /// </summary>
+    public void Apply(string? coverMessage)
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        DateTimeOffset enforceAt = policy.EnforceAt ?? now;
-        TimeSpan remaining = enforceAt - now;
-        bool extended = policy.ExtensionUntil is not null && policy.ExtensionUntil > now && remaining.TotalSeconds > 30;
-        if (!policy.BlockRequested || extended)
+        if (coverMessage is null)
         {
             HideOverlay();
             return;
         }
         Bounds = _screen.Bounds;
-        _message.Text = policy.Blocked
-            ? "PC time is paused\n\nPlease use the points screen on your main display."
-            : "PC time is ending\n\nPlease save your work on your main display.";
+        _message.Text = coverMessage;
         if (!Visible)
             Show();
         BringToFront();
@@ -879,6 +1077,7 @@ internal sealed record AgentPolicy(
     [property: System.Text.Json.Serialization.JsonPropertyName("blocked")] bool Blocked,
     [property: System.Text.Json.Serialization.JsonPropertyName("block_requested")] bool BlockRequested,
     [property: System.Text.Json.Serialization.JsonPropertyName("message")] string Message,
+    [property: System.Text.Json.Serialization.JsonPropertyName("windows_username")] string WindowsUsername,
     [property: System.Text.Json.Serialization.JsonPropertyName("enforce_at")] DateTimeOffset? EnforceAt,
     [property: System.Text.Json.Serialization.JsonPropertyName("extension_available")] bool ExtensionAvailable,
     [property: System.Text.Json.Serialization.JsonPropertyName("extension_available_at")] DateTimeOffset? ExtensionAvailableAt,
@@ -919,7 +1118,23 @@ internal sealed record FamilyState(FamilyPeerState? Phone, FamilyPeerState? Pc)
             ReadString(peer, "message"),
             ReadBoolean(peer, "agent_online"),
             ReadTimestamp(peer, "last_seen"),
-            ReadString(peer, "active_application"));
+            ReadString(peer, "active_application"),
+            ParseChallenge(peer));
+    }
+
+    /// <summary>
+    /// Reads the peer's active chore challenge. A missing key, an explicit
+    /// null, or a challenge without an id all mean "no challenge", so a
+    /// malformed payload can never freeze the PC.
+    /// </summary>
+    private static FamilyChallenge? ParseChallenge(JsonElement peer)
+    {
+        if (!peer.TryGetProperty("challenge", out JsonElement challenge) || challenge.ValueKind != JsonValueKind.Object)
+            return null;
+        string id = ReadString(challenge, "id");
+        if (id.Length == 0)
+            return null;
+        return new FamilyChallenge(id, ReadString(challenge, "phrase"), ReadTimestamp(challenge, "sent_at"));
     }
 
     private static string ReadString(JsonElement element, string name) =>
@@ -950,7 +1165,63 @@ internal sealed record FamilyPeerState(
     string Message,
     bool AgentOnline,
     DateTimeOffset? LastSeen,
-    string ActiveApplication);
+    string ActiveApplication,
+    FamilyChallenge? Challenge);
+
+/// <summary>An active chore challenge on a peer device, or null when there is none.</summary>
+internal sealed record FamilyChallenge(string Id, string Phrase, DateTimeOffset? SentAt);
+
+/// <summary>
+/// Reads the first-seen stamp the service records for the phone's current
+/// chore challenge. The file lives under %ProgramData% because the activity
+/// agent runs as the child, who must not be able to reset the grace by editing
+/// their own state.
+/// </summary>
+internal static class ChallengeGraceFile
+{
+    public static bool TryRead(string deviceId, string challengeId, out DateTimeOffset firstSeen)
+    {
+        firstSeen = default;
+        try
+        {
+            string path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "RowePcBlocker",
+                "challenge-grace.json");
+            if (!File.Exists(path))
+                return false;
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return false;
+            if (!string.Equals(ReadString(root, "device_id"), deviceId, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (!string.Equals(ReadString(root, "challenge_id"), challengeId, StringComparison.Ordinal))
+                return false;
+            if (!root.TryGetProperty("first_seen", out JsonElement seen)
+                || seen.ValueKind != JsonValueKind.String
+                || !DateTimeOffset.TryParse(
+                    seen.GetString(),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out DateTimeOffset parsed))
+                return false;
+            firstSeen = parsed;
+            return true;
+        }
+        catch
+        {
+            // A missing or malformed file only costs the persisted grace; the
+            // notice still works from the in-memory first sighting.
+            return false;
+        }
+    }
+
+    private static string ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? string.Empty
+            : string.Empty;
+}
 
 internal sealed record AgentConfiguration(
     string HomeAssistantUrl,

@@ -5,6 +5,8 @@ import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
@@ -14,16 +16,20 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +46,15 @@ public final class MainActivity extends Activity {
     static final String EXTRA_EXTENSION_UNTIL = "extension_until";
     static final String EXTRA_UNINSTALL_GUARD = "uninstall_guard";
     static final String EXTRA_ALLOWED_APPS = "allowed_apps";
+    /** The disallowed app the block screen was raised for, from the service. */
+    static final String EXTRA_BLOCKED_PACKAGE = "blocked_package";
+    /** The unapproved challenge the block screen must show, from the service. */
+    static final String EXTRA_CHALLENGE_ID = "challenge_id";
+    static final String EXTRA_CHALLENGE_PHRASE = "challenge_phrase";
+    static final String EXTRA_CHALLENGE_STATUS = "challenge_status";
+    static final String EXTRA_CHALLENGE_SUBMITTED_AT = "challenge_submitted_at";
+    static final String EXTRA_CHALLENGE_ATTEMPT = "challenge_attempt";
+    static final String EXTRA_CHALLENGE_AUTO_APPROVE_AT = "challenge_auto_approve_at";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
@@ -48,22 +63,35 @@ public final class MainActivity extends Activity {
             Executors.newSingleThreadScheduledExecutor();
     private ScrollView setupScroll;
     private View blockedPanel;
+    private View blockCopyPanel;
+    private ChallengePanel challengePanel;
+    private Button installUpdateButton;
     private TextView statusText;
     private TextView blockTitle;
     private TextView blockMessage;
     private TextView blockCountdown;
     private TextView familyStatus;
+    private TextView blockLastApp;
+    private TextView blockRequestStatus;
     private Button extensionButton;
     private Button pointsHourButton;
+    private Button requestUnblockButton;
+    private Button requestAppButton;
     private GridLayout allowedApps;
     private EditText homeAssistantUrl;
     private EditText childName;
     private View moreSection;
     private volatile Policy currentPolicy = Policy.UNBLOCKED;
+    /** The disallowed app this block screen was raised for, or "" when unknown. */
+    private String blockedPackage = "";
+    /** The name shown for {@link #blockedPackage}. */
+    private String blockedAppLabel = "";
     /** Local PIN unlock for changing a phone that is already set up. */
     private boolean setupUnlocked;
     private String pendingAfterPin;
     private boolean uninstallGuard;
+    /** True while the update screen is the one on show. */
+    private boolean updateScreen;
     private boolean pinDialogShowing;
     private int pinFailures;
     private long pinLockoutUntil;
@@ -91,13 +119,31 @@ public final class MainActivity extends Activity {
 
         setupScroll = findViewById(R.id.setupScroll);
         blockedPanel = findViewById(R.id.blockedPanel);
+        blockCopyPanel = findViewById(R.id.blockCopyPanel);
+        challengePanel = findViewById(R.id.challengePanel);
+        challengePanel.setListener(new ChallengePanel.Listener() {
+            @Override
+            public void onChallengeGone() {
+                MainActivity.this.onChallengeGone();
+            }
+
+            @Override
+            public void onChallengeDenied(boolean denied) {
+                showChallengeTone(denied);
+            }
+        });
+        installUpdateButton = findViewById(R.id.installUpdateButton);
         statusText = findViewById(R.id.statusText);
         blockTitle = findViewById(R.id.blockTitle);
         blockMessage = findViewById(R.id.blockMessage);
         blockCountdown = findViewById(R.id.blockCountdown);
         familyStatus = findViewById(R.id.familyStatus);
+        blockLastApp = findViewById(R.id.blockLastApp);
+        blockRequestStatus = findViewById(R.id.blockRequestStatus);
         extensionButton = findViewById(R.id.extensionButton);
         pointsHourButton = findViewById(R.id.pointsHourButton);
+        requestUnblockButton = findViewById(R.id.requestUnblockButton);
+        requestAppButton = findViewById(R.id.requestAppButton);
         allowedApps = findViewById(R.id.allowedApps);
         homeAssistantUrl = findViewById(R.id.homeAssistantUrl);
         childName = findViewById(R.id.childName);
@@ -112,8 +158,13 @@ public final class MainActivity extends Activity {
         findViewById(R.id.batteryButton).setOnClickListener(view -> requestUnrestrictedBattery());
         findViewById(R.id.uninstallGuardButton).setOnClickListener(view -> activateUninstallGuard());
         findViewById(R.id.wakePermissionButton).setOnClickListener(view -> requestExactAlarmPermission());
+        findViewById(R.id.notificationAccessButton)
+                .setOnClickListener(view -> openNotificationAccess());
         extensionButton.setOnClickListener(view -> requestExtension());
         pointsHourButton.setOnClickListener(view -> requestPointsHour());
+        requestUnblockButton.setOnClickListener(view -> requestUnblock());
+        requestAppButton.setOnClickListener(view -> showAppPicker());
+        installUpdateButton.setOnClickListener(view -> AppUpdater.install(this));
         findViewById(R.id.parentOverrideButton)
                 .setOnClickListener(view -> promptForParentOverride());
 
@@ -123,8 +174,7 @@ public final class MainActivity extends Activity {
         if (getIntent().getBooleanExtra(EXTRA_UNINSTALL_GUARD, false)) {
             showUninstallGuard();
         } else if (getIntent().getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
-            setupScroll.setVisibility(View.GONE);
-            showBlocked(policyFromIntent(getIntent()));
+            showFromIntent(getIntent());
         } else {
             showSetupForm();
         }
@@ -144,8 +194,7 @@ public final class MainActivity extends Activity {
         if (intent.getBooleanExtra(EXTRA_UNINSTALL_GUARD, false)) {
             showUninstallGuard();
         } else if (intent.getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
-            uninstallGuard = false;
-            showBlocked(policyFromIntent(intent));
+            showFromIntent(intent);
         }
     }
 
@@ -153,7 +202,22 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         updateStatus();
+        refreshNotificationAccess();
         executor.execute(this::refreshPolicy);
+    }
+
+    @Override
+    protected void onPause() {
+        // The camera preview must not stay open behind another screen.
+        challengePanel.onPause();
+        super.onPause();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        challengePanel.onRequestPermissionsResult(requestCode, grantResults);
     }
 
     @Override
@@ -161,6 +225,7 @@ public final class MainActivity extends Activity {
         if (activeInstance == this) {
             activeInstance = null;
         }
+        challengePanel.release();
         executor.shutdownNow();
         setupExecutor.shutdownNow();
         super.onDestroy();
@@ -168,7 +233,7 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (!currentPolicy.shouldCaptureForeground()) {
+        if (!updateScreen && !currentPolicy.isLocked()) {
             super.onBackPressed();
         }
     }
@@ -329,7 +394,10 @@ public final class MainActivity extends Activity {
     /**
      * Parent-facing escape hatch on the block screen: entering the PIN asks Home
      * Assistant for one extra hour. Home Assistant does the verification and
-     * attempt limiting so this phone cannot be tricked into granting time.
+     * attempt limiting so this phone cannot be tricked into granting time. When
+     * Home Assistant refuses or cannot be reached, the phone's own parent PIN
+     * grants the hour locally instead, so a parent is never left with no way to
+     * give time at the device.
      */
     private void promptForParentOverride() {
         if (isFinishing() || pinDialogShowing) {
@@ -348,15 +416,27 @@ public final class MainActivity extends Activity {
                     String pin = input.getText().toString().trim();
                     blockCountdown.setText("Checking PIN…");
                     executor.execute(() -> {
-                        String message;
+                        HomeAssistantClient.OverrideOutcome outcome = null;
                         try {
-                            message = new HomeAssistantClient(AppConfig.load(MainActivity.this))
+                            outcome = new HomeAssistantClient(AppConfig.load(MainActivity.this))
                                     .requestParentOverride(pin);
                         } catch (Exception exception) {
-                            message = "Could not reach Home Assistant.";
+                            // Unreachable: the local PIN is the only way to grant time.
                         }
-                        final String result = message;
-                        mainHandler.post(() -> blockCountdown.setText(result));
+                        final HomeAssistantClient.OverrideOutcome result = outcome;
+                        mainHandler.post(() -> {
+                            if (isFinishing() || isDestroyed()) {
+                                return;
+                            }
+                            if (result != null && result.granted) {
+                                blockCountdown.setText(result.message);
+                                return;
+                            }
+                            blockCountdown.setText(localOverrideFallback(pin));
+                            if (LocalOverride.isActive(this)) {
+                                applyPolicy(Policy.UNBLOCKED);
+                            }
+                        });
                     });
                 })
                 .setNegativeButton("Cancel", (dialog, which) -> pinDialogShowing = false)
@@ -364,12 +444,41 @@ public final class MainActivity extends Activity {
                 .show();
     }
 
+    /**
+     * Home Assistant refused the override or could not be reached, so the
+     * phone's own parent PIN decides. The attempt counter and lockout are the
+     * same ones the setup screen uses, so this adds no new way to guess the PIN.
+     *
+     * @return a message suitable for showing on the block screen.
+     */
+    private String localOverrideFallback(String pin) {
+        long now = System.currentTimeMillis();
+        long remaining = ParentPin.remainingMillis(pinLockoutUntil, now);
+        if (remaining > 0L) {
+            return "Too many wrong PINs. Try again in "
+                    + ParentPin.wholeMinutesRemaining(remaining) + " minute(s).";
+        }
+        if (ParentPin.verify(this, pin)) {
+            pinFailures = 0;
+            pinLockoutUntil = 0L;
+            savePinFailures();
+            LocalOverride.grantFor(this, LocalOverride.DURATION_MS);
+            return "Unlocked for 1 hour on this phone.";
+        }
+        pinFailures++;
+        if (pinFailures >= ParentPin.MAX_ATTEMPTS) {
+            pinLockoutUntil = ParentPin.lockoutDeadline(pinFailures, now);
+        }
+        savePinFailures();
+        return "Incorrect PIN.";
+    }
+
     private void unlockSetup() {
         setupUnlocked = true;
         ParentMaintenance.allowForTenMinutes();
         // Ask once, from the parent-gated screen: without this the passive
         // position reader has nothing it is allowed to read.
-        if (!PassiveLocation.hasPermission(this)) {
+        if (!OnDemandLocation.hasPermission(this)) {
             requestPermissions(new String[] {
                     android.Manifest.permission.ACCESS_FINE_LOCATION,
                     android.Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -470,7 +579,7 @@ public final class MainActivity extends Activity {
         childName.setText(outcome.childName);
         statusText.setText("This phone is set up.");
         findViewById(R.id.moreButton).setVisibility(View.VISIBLE);
-        if (!PassiveLocation.hasPermission(this)) {
+        if (!OnDemandLocation.hasPermission(this)) {
             requestPermissions(new String[] {
                     android.Manifest.permission.ACCESS_FINE_LOCATION,
                     android.Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -490,7 +599,11 @@ public final class MainActivity extends Activity {
                         "Home Assistant is not configured. Blocking is disabled."));
                 return;
             }
-            Policy policy = new HomeAssistantClient(config).getPolicy();
+            Policy policy = Challenge.enforced(
+                    this,
+                    new HomeAssistantClient(config).getPolicy(),
+                    false,
+                    LocalOverride.isActive(this));
             mainHandler.post(() -> {
                 EnforcementNote.record(
                         this,
@@ -520,7 +633,7 @@ public final class MainActivity extends Activity {
 
     private void failOpen(String status, String message) {
         EnforcementNote.record(this, status, message);
-        applyPolicy(Policy.UNBLOCKED);
+        applyPolicy(Challenge.enforced(this, null, true, false));
         if (!isFinishing() && setupUnlocked) {
             statusText.setText(EnforcementStatus.parentText(status, message));
         }
@@ -531,9 +644,24 @@ public final class MainActivity extends Activity {
         WakeAlarm.applyServer(this, policy.wakeAlarm);
         refreshWakeStatus();
         BlockAccessibilityService.applyPolicySnapshot(policy);
-        if (policy.blockRequested || policy.blocked) {
+        AppUpdater.Pending pending = pendingUpdate(policy);
+        if (pending != null) {
             uninstallGuard = false;
-            showBlocked(policy);
+            showUpdateScreen(pending);
+            return;
+        }
+        if (policy.blockRequested || policy.isLocked()) {
+            uninstallGuard = false;
+            if (!policy.challengePending()
+                    && blockedPanel.getVisibility() == View.VISIBLE
+                    && blockedAppAllowed(policy)) {
+                // The parent allowed the app this screen was raised for. Leave so the
+                // child can go back to it; the service raises the screen again for any
+                // other disallowed app. An unapproved challenge keeps the screen up.
+                finish();
+            } else {
+                showBlocked(policy);
+            }
         } else if (uninstallGuard) {
             showUninstallGuard();
         } else if (blockedPanel.getVisibility() == View.VISIBLE) {
@@ -552,11 +680,72 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /**
+     * The verified update the lock screen must gate on, or null. A challenge
+     * outranks it (an update must never interrupt a chore), and a parent
+     * override releases it so a parent can always get the phone usable.
+     */
+    private AppUpdater.Pending pendingUpdate(Policy policy) {
+        AppUpdater.Pending pending = AppUpdater.pending(this);
+        if (!UpdateGate.shouldShowUpdateScreen(
+                pending != null,
+                policy.challengePending(),
+                policy.isExtensionActive(),
+                LocalOverride.isActive(this))) {
+            return null;
+        }
+        return pending;
+    }
+
+    /** The block screen was raised with a challenge a parent has not approved. */
+    private void showFromIntent(Intent intent) {
+        uninstallGuard = false;
+        blockedPackage = blockedPackageFrom(intent);
+        Policy policy = policyFromIntent(intent);
+        AppUpdater.Pending pending = pendingUpdate(policy);
+        currentPolicy = policy;
+        if (pending != null) {
+            showUpdateScreen(pending);
+            return;
+        }
+        showBlocked(policy);
+    }
+
+    /**
+     * Home Assistant no longer has the challenge — a parent approved it, or it
+     * was cleared or replaced while the child was filling it in. Drop it from
+     * the policy in force and let the lock go; the next poll is authoritative.
+     */
+    private void onChallengeGone() {
+        Challenge.hold(this, null);
+        Policy policy = currentPolicy.withChallenge(null);
+        currentPolicy = policy;
+        BlockAccessibilityService.applyPolicySnapshot(policy);
+        if (policy.blocked || policy.blockRequested) {
+            showBlocked(policy);
+        } else {
+            finish();
+        }
+        executor.execute(this::refreshPolicy);
+    }
+
     private void showBlocked(Policy policy) {
         currentPolicy = policy;
+        updateScreen = false;
+        blockedPanel.setBackgroundColor(getColor(R.color.block_background));
+        installUpdateButton.setVisibility(View.GONE);
+        Challenge challenge = policy.challengePending() ? policy.challenge : null;
+        if (challenge != null) {
+            showChallenge(challenge);
+            return;
+        }
+        challengePanel.hide();
+        blockCopyPanel.setVisibility(View.VISIBLE);
         blockMessage.setText(policy.message);
         refreshAllowedApps();
+        refreshRequestAppButton(true);
         refreshFamilyStatus();
+        refreshBlockedApp();
         if (policy.blocked) {
             blockTitle.setText("This phone is paused");
             blockCountdown.setText("The apps below stay available until a parent unpauses this phone.");
@@ -594,6 +783,58 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** The challenge lock: the same kiosk screen, with the chore on it instead. */
+    private void showChallenge(Challenge challenge) {
+        updateScreen = false;
+        installUpdateButton.setVisibility(View.GONE);
+        blockCopyPanel.setVisibility(View.GONE);
+        challengePanel.show(challenge);
+        showChallengeTone(challengePanel.isDenied());
+        refreshAllowedApps();
+        refreshRequestAppButton(false);
+        setupScroll.setVisibility(View.GONE);
+        blockedPanel.setVisibility(View.VISIBLE);
+        enterImmersiveMode();
+    }
+
+    /**
+     * The challenge screen's tone: the ordinary indigo, or red while a parent's
+     * rejection is the thing the child has to see.
+     */
+    private void showChallengeTone(boolean denied) {
+        blockedPanel.setBackgroundColor(getColor(denied
+                ? R.color.challenge_denied_background
+                : R.color.challenge_background));
+    }
+
+    /**
+     * The update lock: the phone must install a verified update before it can be
+     * used. It stays up until the running version changes or a parent override
+     * releases it, and the allowed apps stay reachable underneath.
+     */
+    private void showUpdateScreen(AppUpdater.Pending pending) {
+        updateScreen = true;
+        blockedPanel.setBackgroundColor(getColor(R.color.block_background));
+        challengePanel.hide();
+        blockCopyPanel.setVisibility(View.VISIBLE);
+        blockTitle.setText("Update needed");
+        blockMessage.setText("This phone must install version " + pending.version
+                + " before it can be used.");
+        blockCountdown.setText("Tap Install, then confirm in the system installer.");
+        familyStatus.setVisibility(View.GONE);
+        blockLastApp.setVisibility(View.GONE);
+        requestUnblockButton.setVisibility(View.GONE);
+        blockRequestStatus.setVisibility(View.GONE);
+        extensionButton.setVisibility(View.GONE);
+        pointsHourButton.setVisibility(View.GONE);
+        installUpdateButton.setVisibility(View.VISIBLE);
+        refreshAllowedApps();
+        refreshRequestAppButton(false);
+        setupScroll.setVisibility(View.GONE);
+        blockedPanel.setVisibility(View.VISIBLE);
+        enterImmersiveMode();
+    }
+
     private void refreshPolicyIfServiceIsDown() {
         if (AccessibilityEnforcement.isEnabled(this)) {
             return;
@@ -603,7 +844,11 @@ public final class MainActivity extends Activity {
 
     private void tickCountdown() {
         mainHandler.post(() -> {
-            if (isFinishing() || blockedPanel.getVisibility() != View.VISIBLE || uninstallGuard) {
+            if (isFinishing()
+                    || blockedPanel.getVisibility() != View.VISIBLE
+                    || uninstallGuard
+                    || updateScreen
+                    || challengePanel.getVisibility() == View.VISIBLE) {
                 return;
             }
             if (!currentPolicy.shouldWarnGrace() && !currentPolicy.isExtensionActive()) {
@@ -621,13 +866,22 @@ public final class MainActivity extends Activity {
 
     private void showUninstallGuard() {
         uninstallGuard = true;
+        updateScreen = false;
+        blockedPanel.setBackgroundColor(getColor(R.color.block_background));
+        challengePanel.hide();
+        blockCopyPanel.setVisibility(View.VISIBLE);
+        installUpdateButton.setVisibility(View.GONE);
         blockTitle.setText("Uninstall is locked");
         blockMessage.setText("A parent has to turn uninstall protection off before this app can be removed.");
         blockCountdown.setText("Leave Settings to go back to the phone.");
         familyStatus.setVisibility(View.GONE);
+        blockLastApp.setVisibility(View.GONE);
+        requestUnblockButton.setVisibility(View.GONE);
+        blockRequestStatus.setVisibility(View.GONE);
         extensionButton.setVisibility(View.GONE);
         pointsHourButton.setVisibility(View.GONE);
         refreshAllowedApps();
+        refreshRequestAppButton(false);
         setupScroll.setVisibility(View.GONE);
         blockedPanel.setVisibility(View.VISIBLE);
         enterImmersiveMode();
@@ -672,6 +926,29 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Notification access is optional: without it the daily notification dump is
+     * simply empty. The status line says plainly what the app does with it, so a
+     * parent knows before turning it on.
+     */
+    private void refreshNotificationAccess() {
+        TextView status = findViewById(R.id.notificationAccessStatus);
+        if (status == null) {
+            return;
+        }
+        status.setText(NotificationDump.hasAccess(this)
+                ? "Notification access is on. Every notification this phone receives is recorded, and the previous day's list is sent to Home Assistant at midnight."
+                : "Notification access is off. Turn it on to record this phone's notifications and send the previous day's list to Home Assistant at midnight.");
+    }
+
+    private void openNotificationAccess() {
+        try {
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        } catch (RuntimeException exception) {
+            Toast.makeText(this, "Open Settings, then Notification access.", Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void requestPointsHour() {
         pointsHourButton.setEnabled(false);
         blockCountdown.setText("Spending points for 1 hour…");
@@ -704,11 +981,234 @@ public final class MainActivity extends Activity {
         familyStatus.setVisibility(line.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
+    /**
+     * The app the child was blocked on, with the button that asks a parent to
+     * allow it. Launcher and other non-app windows are not something a parent
+     * can allow, so they show nothing.
+     */
+    private void refreshBlockedApp() {
+        String packageName = blockedPackage;
+        if (packageName.isEmpty() || !isLaunchableApp(packageName)) {
+            blockedAppLabel = "";
+            blockLastApp.setVisibility(View.GONE);
+            requestUnblockButton.setVisibility(View.GONE);
+            blockRequestStatus.setVisibility(View.GONE);
+            return;
+        }
+        blockedAppLabel = appLabel(packageName);
+        blockLastApp.setText("Last app used: " + blockedAppLabel);
+        blockLastApp.setVisibility(View.VISIBLE);
+        boolean asked = !UnblockRequest.mayRequest(
+                UnblockRequest.lastRequestAt(this, packageName), System.currentTimeMillis());
+        requestUnblockButton.setVisibility(View.VISIBLE);
+        requestUnblockButton.setEnabled(!asked);
+        blockRequestStatus.setText(asked ? "Asked a parent to allow " + blockedAppLabel + "." : "");
+        blockRequestStatus.setVisibility(asked ? View.VISIBLE : View.GONE);
+    }
+
+    /** Ask a parent to allow the app the child was blocked on. */
+    private void requestUnblock() {
+        final String packageName = blockedPackage;
+        final String label = blockedAppLabel;
+        if (packageName.isEmpty() || label.isEmpty()) {
+            return;
+        }
+        if (!UnblockRequest.mayRequest(
+                UnblockRequest.lastRequestAt(this, packageName), System.currentTimeMillis())) {
+            blockRequestStatus.setText("Asked a parent to allow " + label + ".");
+            blockRequestStatus.setVisibility(View.VISIBLE);
+            requestUnblockButton.setEnabled(false);
+            return;
+        }
+        requestUnblockButton.setEnabled(false);
+        sendUnblockRequest(packageName, label, () -> requestUnblockButton.setEnabled(true));
+    }
+
+    /**
+     * Send one unblock request and show what Home Assistant said. The caller
+     * owns its own button state; this only talks to the server and reports.
+     *
+     * @param onFailure run when the request was not accepted, so the caller can
+     *     let the child try again
+     */
+    private void sendUnblockRequest(String packageName, String label, Runnable onFailure) {
+        blockRequestStatus.setText("Asking a parent to allow " + label + "…");
+        blockRequestStatus.setVisibility(View.VISIBLE);
+        executor.execute(() -> {
+            UnblockRequest.Outcome outcome;
+            try {
+                outcome = new HomeAssistantClient(AppConfig.load(this))
+                        .requestUnblock(packageName, label);
+            } catch (Exception exception) {
+                outcome = UnblockRequest.Outcome.failed(
+                        "Could not reach Home Assistant. Please try again.");
+            }
+            final UnblockRequest.Outcome result = outcome;
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                blockRequestStatus.setText(result.message);
+                blockRequestStatus.setVisibility(View.VISIBLE);
+                if (result.accepted) {
+                    UnblockRequest.remember(this, packageName, System.currentTimeMillis());
+                    return;
+                }
+                if (onFailure != null) {
+                    onFailure.run();
+                }
+            });
+        });
+    }
+
+    /**
+     * The child's "ask a parent to allow another app" picker: the phone's
+     * launchable apps, minus this one, each sending the same request the
+     * per-app button sends.
+     */
+    private void showAppPicker() {
+        if (!UnblockPicker.canRequest(currentPolicy)) {
+            refreshRequestAppButton(true);
+            return;
+        }
+        final List<InstalledApps.App> choices = UnblockPicker.choices(
+                InstalledApps.launchable(getPackageManager()), getPackageName());
+        if (choices.isEmpty()) {
+            blockRequestStatus.setText("There are no other apps to ask about.");
+            blockRequestStatus.setVisibility(View.VISIBLE);
+            return;
+        }
+        ListView list = new ListView(this);
+        list.setAdapter(new AppPickerAdapter(choices));
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Ask a parent to allow an app")
+                .setView(list)
+                .setNegativeButton("Close", null)
+                .create();
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            dialog.dismiss();
+            requestApp(choices.get(position));
+        });
+        dialog.show();
+    }
+
+    /** Ask a parent to allow one app the child picked from the list. */
+    private void requestApp(InstalledApps.App app) {
+        String label = UnblockRequest.label(app.packageName, app.label);
+        if (!UnblockRequest.mayRequest(
+                UnblockRequest.lastRequestAt(this, app.packageName), System.currentTimeMillis())) {
+            blockRequestStatus.setText("Asked a parent to allow " + label + ".");
+            blockRequestStatus.setVisibility(View.VISIBLE);
+            return;
+        }
+        sendUnblockRequest(app.packageName, label, null);
+    }
+
+    /**
+     * The "request another app" button: hidden while the screen is about
+     * something else, and disabled once a parent is already looking at as many
+     * requests as they will take.
+     */
+    private void refreshRequestAppButton(boolean visible) {
+        if (!visible) {
+            requestAppButton.setVisibility(View.GONE);
+            return;
+        }
+        boolean exhausted = !UnblockPicker.canRequest(currentPolicy);
+        requestAppButton.setVisibility(View.VISIBLE);
+        requestAppButton.setEnabled(!exhausted);
+        requestAppButton.setText(exhausted
+                ? "A parent is already looking at your requests."
+                : "Request another app");
+    }
+
+    /** Two lines per app: the label, then the package name underneath. */
+    private final class AppPickerAdapter extends BaseAdapter {
+        private final List<InstalledApps.App> apps;
+
+        AppPickerAdapter(List<InstalledApps.App> apps) {
+            this.apps = apps;
+        }
+
+        @Override
+        public int getCount() {
+            return apps.size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return apps.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View recycled, ViewGroup parent) {
+            LinearLayout row;
+            if (recycled instanceof LinearLayout && recycled.findViewById(R.id.pickerLabel) != null) {
+                row = (LinearLayout) recycled;
+            } else {
+                row = new LinearLayout(MainActivity.this);
+                row.setOrientation(LinearLayout.VERTICAL);
+                int padding = Math.round(16 * getResources().getDisplayMetrics().density);
+                row.setPadding(padding, padding / 2, padding, padding / 2);
+                TextView label = new TextView(MainActivity.this);
+                label.setId(R.id.pickerLabel);
+                label.setTextSize(16);
+                row.addView(label);
+                TextView packageName = new TextView(MainActivity.this);
+                packageName.setId(R.id.pickerPackage);
+                packageName.setTextSize(12);
+                packageName.setAlpha(0.7f);
+                row.addView(packageName);
+            }
+            InstalledApps.App app = apps.get(position);
+            ((TextView) row.findViewById(R.id.pickerLabel))
+                    .setText(UnblockRequest.label(app.packageName, app.label));
+            ((TextView) row.findViewById(R.id.pickerPackage)).setText(app.packageName);
+            return row;
+        }
+    }
+
+    /** The app's name for the block screen, or the package name when it has none. */
+    private String appLabel(String packageName) {
+        try {
+            ApplicationInfo info = getPackageManager().getApplicationInfo(packageName, 0);
+            CharSequence label = getPackageManager().getApplicationLabel(info);
+            return UnblockRequest.label(packageName, label == null ? null : label.toString());
+        } catch (PackageManager.NameNotFoundException exception) {
+            return UnblockRequest.label(packageName, null);
+        }
+    }
+
+    /** True when this package is an app the child can open, not launcher chrome. */
+    private boolean isLaunchableApp(String packageName) {
+        return getPackageManager().getLaunchIntentForPackage(packageName) != null;
+    }
+
+    private static String blockedPackageFrom(Intent intent) {
+        String packageName = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE);
+        return packageName == null ? "" : packageName.trim();
+    }
+
+    /** True when the parent has allowed the app this block screen was raised for. */
+    private boolean blockedAppAllowed(Policy policy) {
+        return !blockedPackage.isEmpty() && policy.allowedApps.contains(blockedPackage);
+    }
+
     private void refreshAllowedApps() {
         allowedApps.removeAllViews();
         float density = getResources().getDisplayMetrics().density;
         int iconSize = Math.round(56 * density);
-        int cellWidth = Math.round(84 * density);
+        int margin = Math.round(6 * density);
+        View parent = (View) allowedApps.getParent();
+        int available = getResources().getDisplayMetrics().widthPixels
+                - parent.getPaddingLeft() - parent.getPaddingRight();
+        AllowedApps.Grid grid = AllowedApps.grid(available, Math.round(84 * density), margin);
+        allowedApps.setColumnCount(grid.columns);
         for (AllowedApps.Shortcut shortcut
                 : AllowedApps.installed(getPackageManager(), currentPolicy.allowedApps)) {
             LinearLayout cell = new LinearLayout(this);
@@ -722,12 +1222,16 @@ public final class MainActivity extends Activity {
             label.setTextColor(getColor(R.color.white));
             label.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
             label.setTextSize(12);
+            // A long label wraps inside the cell and is cut off after two lines,
+            // so it can never widen the grid or push the note off the screen.
+            label.setMaxLines(2);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             cell.addView(label);
             cell.setOnClickListener(view -> launchPackage(
                     shortcut.packageName, shortcut.label + " is not installed."));
             GridLayout.LayoutParams params = new GridLayout.LayoutParams();
-            params.width = cellWidth;
-            params.setMargins(Math.round(6 * density), Math.round(8 * density), Math.round(6 * density), 0);
+            params.width = grid.cellWidth;
+            params.setMargins(margin, Math.round(8 * density), margin, 0);
             allowedApps.addView(cell, params);
         }
     }
@@ -784,7 +1288,25 @@ public final class MainActivity extends Activity {
                 null,
                 intent.getStringArrayListExtra(EXTRA_ALLOWED_APPS),
                 null,
-                null);
+                null,
+                challengeFrom(intent));
+    }
+
+    /** The challenge the service put on the block-screen intent, or null. */
+    private static Challenge challengeFrom(Intent intent) {
+        String id = intent.getStringExtra(EXTRA_CHALLENGE_ID);
+        String phrase = intent.getStringExtra(EXTRA_CHALLENGE_PHRASE);
+        if (id == null || id.trim().isEmpty() || phrase == null || phrase.trim().isEmpty()) {
+            return null;
+        }
+        return new Challenge(
+                id,
+                phrase,
+                null,
+                intent.getStringExtra(EXTRA_CHALLENGE_STATUS),
+                intent.getStringExtra(EXTRA_CHALLENGE_SUBMITTED_AT),
+                intent.getIntExtra(EXTRA_CHALLENGE_ATTEMPT, 0),
+                intent.getStringExtra(EXTRA_CHALLENGE_AUTO_APPROVE_AT));
     }
 
     private static String formatRemaining(long seconds) {

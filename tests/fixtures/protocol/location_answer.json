@@ -1,0 +1,8 @@
+{
+  "request_id": "0123456789abcdef0123456789abcdef",
+  "latitude": 51.37,
+  "longitude": -0.28,
+  "accuracy": 12.5,
+  "provider": "fused",
+  "fix_age_seconds": 3
+}

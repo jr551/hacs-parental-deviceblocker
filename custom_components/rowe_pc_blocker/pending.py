@@ -1,9 +1,12 @@
-"""Home Assistant glue for pending phone setup requests.
+"""Home Assistant glue for pending phone requests.
 
-The request model and its rules live in ``provision.py``. This module owns the
-``.storage/rowe_pc_blocker.pending`` file, the approve/reject entry points the
-dashboard buttons call, and the dispatcher signal that keeps the pending
+The request models and their rules live in ``provision.py``. This module owns
+the ``.storage/rowe_pc_blocker.pending`` file, the approve/reject entry points
+the dashboard buttons call, and the dispatcher signal that keeps the pending
 entities in step.
+
+Two kinds of request share the file: a phone asking to be set up, and a phone
+asking for one blocked app to be allowed.
 """
 
 from __future__ import annotations
@@ -16,6 +19,13 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .apps import (
+    DEFAULT_ALLOWED_APPS,
+    MAX_APP_FIELD_LENGTH,
+    PACKAGE_PATTERN,
+    append_allowed_app,
+    parse_allowed_apps,
+)
 from .const import (
     CONF_API_KEY,
     CONF_DEVICE_ID,
@@ -27,13 +37,18 @@ from .const import (
     SIGNAL_PENDING,
 )
 from .provision import (
+    MAX_PENDING_UNBLOCK_REQUESTS,
     ApprovalDecision,
     PendingProvisionStore,
     PendingRequest,
+    PendingUnblockStore,
     PhoneEntry,
     STATUS_PENDING,
+    UnblockRequest,
     decide_approval,
+    unblock_pending_body,
 )
+from .runtime import runtime_for_device
 
 STORE_KEY = f"{DOMAIN}.pending"
 STORE_VERSION = 1
@@ -46,27 +61,42 @@ def pending_store(hass: HomeAssistant) -> PendingProvisionStore:
     )
 
 
+def unblock_store(hass: HomeAssistant) -> PendingUnblockStore:
+    """The in-memory unblock store. Empty until ``async_load_pending`` has run."""
+    return hass.data.setdefault(DOMAIN, {}).setdefault(
+        "_unblock", PendingUnblockStore()
+    )
+
+
 async def async_load_pending(hass: HomeAssistant) -> PendingProvisionStore:
-    """Load the pending requests once per Home Assistant run."""
+    """Load the pending requests once per Home Assistant run.
+
+    The stores are created on first use, so this loads into whichever objects
+    already exist rather than replacing them: an entity platform that reads a
+    store before this runs must not be left holding an empty one.
+    """
     data = hass.data.setdefault(DOMAIN, {})
-    store = data.get("_pending")
-    if store is not None:
+    store = pending_store(hass)
+    if data.get("_pending_loaded"):
         return store
-    store = PendingProvisionStore()
+    data["_pending_loaded"] = True
+    unblock = unblock_store(hass)
     storage = Store(hass, STORE_VERSION, STORE_KEY)
-    data["_pending"] = store
     data["_pending_storage"] = storage
-    store.load(await storage.async_load())
+    loaded = await storage.async_load()
+    store.load(loaded)
+    unblock.load(loaded)
     return store
 
 
 async def _async_save_pending(hass: HomeAssistant) -> None:
     data = hass.data.setdefault(DOMAIN, {})
     store = data.get("_pending")
+    unblock = data.get("_unblock")
     storage = data.get("_pending_storage")
-    if store is None or storage is None:
+    if store is None or unblock is None or storage is None:
         return
-    await storage.async_save(store.dump())
+    await storage.async_save({**store.dump(), **unblock.dump()})
     async_dispatcher_send(hass, SIGNAL_PENDING)
 
 
@@ -87,6 +117,17 @@ def awaiting_requests(hass: HomeAssistant) -> list[PendingRequest]:
         for request in pending_requests(hass)
         if request.status == STATUS_PENDING
     ]
+
+
+def unblock_requests(
+    hass: HomeAssistant, device_id: str | None = None
+) -> list[UnblockRequest]:
+    """Every live unblock request, or one device's, newest last."""
+    store = unblock_store(hass)
+    now = dt_util.utcnow()
+    if device_id is None:
+        return store.list(now)
+    return store.for_device(device_id, now)
 
 
 def claim_pending_entities(hass: HomeAssistant, entry_id: str) -> bool:
@@ -198,6 +239,75 @@ async def async_reject_request(hass: HomeAssistant, request_id: str) -> bool:
     """Decline one pending request. The phone is told a parent said no."""
     store = await async_load_pending(hass)
     if store.reject(request_id, dt_util.utcnow()) is None:
+        return False
+    await _async_save_pending(hass)
+    return True
+
+
+async def async_create_unblock_request(
+    hass: HomeAssistant, runtime, package: str, label: str
+) -> tuple[int, dict]:
+    """Record one app a blocked phone wants allowed.
+
+    Returns the HTTP status and body the phone is answered with. A package that
+    is already allowed, or one a parent is already looking at, is a conflict
+    rather than a second request, and a phone with the cap already waiting on a
+    parent is told to wait rather than adding another.
+    """
+    package = package.strip()
+    if PACKAGE_PATTERN.fullmatch(package) is None:
+        return 400, {"error": "That is not an Android package name."}
+    allowed = parse_allowed_apps(runtime.allowed_apps) or list(DEFAULT_ALLOWED_APPS)
+    if package in allowed:
+        return 409, {"error": "That app is already allowed on this phone."}
+
+    await async_load_pending(hass)
+    now = dt_util.utcnow()
+    unblock = unblock_store(hass)
+    if unblock.pending_for(runtime.device_id, package, now) is not None:
+        return 409, {"error": "A parent already has a request for that app."}
+    if len(unblock.for_device(runtime.device_id, now)) >= MAX_PENDING_UNBLOCK_REQUESTS:
+        return 429, {"error": "A parent is already looking at your requests."}
+    request = unblock.create(
+        runtime.device_id,
+        package,
+        label.strip()[:MAX_APP_FIELD_LENGTH],
+        now,
+    )
+    await _async_save_pending(hass)
+    return 200, unblock_pending_body(request)
+
+
+async def async_approve_unblock_request(hass: HomeAssistant, request_id: str) -> bool:
+    """Allow one app on the device that asked, and drop the request.
+
+    The package is appended to the device's allowlist, which is what the phone
+    reads on its next state poll; the block screen then clears itself. A list
+    that cannot take another app is left alone and the request stays pending,
+    so a parent can shorten the list and press approve again.
+    """
+    await async_load_pending(hass)
+    now = dt_util.utcnow()
+    request = unblock_store(hass).get(request_id, now)
+    if request is None:
+        return False
+    runtime = runtime_for_device(hass, request.device_id)
+    if runtime is None:
+        return False
+    try:
+        runtime.allowed_apps = append_allowed_app(runtime.allowed_apps, request.package)
+    except ValueError:
+        return False
+    unblock_store(hass).remove(request_id, now)
+    await _async_save_pending(hass)
+    runtime.notify()
+    return True
+
+
+async def async_reject_unblock_request(hass: HomeAssistant, request_id: str) -> bool:
+    """Decline one unblock request. The allowlist is left untouched."""
+    await async_load_pending(hass)
+    if not unblock_store(hass).remove(request_id, dt_util.utcnow()):
         return False
     await _async_save_pending(hass)
     return True

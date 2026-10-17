@@ -8,7 +8,12 @@ AUTH_QUERY_PARAM = "key"  # portal HTML only
 API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/state"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/activity"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/notifications"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/location"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/extension"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/unblock_request"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/submit"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/evidence"},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal", "query_key_ok": True},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal/data"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/portal/action"},
@@ -31,9 +36,15 @@ STATE_RESPONSE_KEYS = frozenset(
         "extension_available_at",
         "extension_until",
         "allowed_apps",
+        "challenge",
+        "location_request",
+        "unblock_requests_pending",
+        "unblock_requests_limit",
         "family",
     }
 )
+
+FAMILY_KEYS = frozenset({"phone", "pc"})
 
 FAMILY_PEER_KEYS = frozenset(
     {
@@ -44,6 +55,7 @@ FAMILY_PEER_KEYS = frozenset(
         "agent_online",
         "last_seen",
         "active_application",
+        "challenge",
     }
 )
 
@@ -61,6 +73,16 @@ ACTIVITY_REQUEST_KEYS = frozenset(
 
 INSTALLED_APP_KEYS = frozenset({"package", "label"})
 
+NOTIFICATION_REQUEST_KEYS = frozenset({"date", "count", "truncated", "items"})
+
+NOTIFICATION_ITEM_KEYS = frozenset({"package", "app", "title", "text", "posted_at"})
+
+LOCATION_REQUEST_PAYLOAD_KEYS = frozenset({"id", "requested_at"})
+
+LOCATION_ANSWER_KEYS = frozenset(
+    {"request_id", "latitude", "longitude", "accuracy", "provider", "fix_age_seconds"}
+)
+
 EXTENSION_RESPONSE_KEYS = frozenset(
     {"granted", "extension_until", "extension_available_at"}
 )
@@ -71,7 +93,22 @@ PROVISION_PENDING_KEYS = frozenset({"status", "request_id", "child_name"})
 
 PROVISION_APPROVED_KEYS = frozenset({"status", "device_id", "api_key", "child_name"})
 
-ACTIVITY_OK_BODY = {"ok": True}
+UNBLOCK_REQUEST_KEYS = frozenset({"package", "label"})
+
+UNBLOCK_PENDING_KEYS = frozenset({"ok", "request_id", "status"})
+
+CHALLENGE_REQUEST_KEYS = frozenset({"id"})
+
+CHALLENGE_PAYLOAD_KEYS = frozenset(
+    {"id", "phrase", "sent_at", "status", "submitted_at", "auto_approve_at", "attempt"}
+)
+
+CHALLENGE_SUBMIT_RESPONSE_KEYS = frozenset({"ok", "status"})
+
+CHALLENGE_EVIDENCE_KEYS = frozenset({"ok", "expires_at"})
+
+# The success body of every write endpoint that has nothing else to say.
+OK_BODY = {"ok": True}
 
 PARENT_OVERRIDE_REQUEST_KEYS = frozenset({"pin"})
 

@@ -1,18 +1,21 @@
 package lol.rowe.blocker;
 
 import android.app.Activity;
-import android.media.AudioAttributes;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public final class WakeAlarmActivity extends Activity {
+    private MediaPlayer player;
     private Ringtone ringtone;
 
     @Override
@@ -26,17 +29,21 @@ public final class WakeAlarmActivity extends Activity {
                 | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED);
 
-        android.media.AudioManager audio = getSystemService(android.media.AudioManager.class);
+        AudioManager audio = getSystemService(AudioManager.class);
         if (audio != null) {
-            int max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_ALARM);
+            int max = audio.getStreamMaxVolume(AudioManager.STREAM_ALARM);
             int level = WakeSchedule.alarmStreamIndex(WakeAlarm.volumePercent(this), max);
-            audio.setStreamVolume(android.media.AudioManager.STREAM_ALARM, level, 0);
+            audio.setStreamVolume(AudioManager.STREAM_ALARM, level, 0);
         }
+        // A phone left on silent or in Do Not Disturb still has its alarm stream
+        // muted; the alarm must be audible anyway.
+        AlarmAudio.unmuteAlarmStream(this);
 
+        float density = getResources().getDisplayMetrics().density;
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setGravity(android.view.Gravity.CENTER);
-        int padding = Math.round(28 * getResources().getDisplayMetrics().density);
+        layout.setGravity(Gravity.CENTER);
+        int padding = Math.round(28 * density);
         layout.setPadding(padding, padding, padding, padding);
         layout.setBackgroundColor(0xFF111827);
 
@@ -44,37 +51,88 @@ public final class WakeAlarmActivity extends Activity {
         title.setText("Wake up");
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(36);
-        title.setGravity(android.view.Gravity.CENTER);
+        title.setGravity(Gravity.CENTER);
         layout.addView(title);
 
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        Button snooze = new Button(this);
+        snooze.setText("Snooze 5 min");
+        snooze.setOnClickListener(view -> snoozeAlarm());
         Button stop = new Button(this);
         stop.setText("Stop alarm");
         stop.setOnClickListener(view -> finish());
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                Math.round(72 * getResources().getDisplayMetrics().density));
-        params.topMargin = padding;
-        layout.addView(stop, params);
+        int buttonHeight = Math.round(72 * density);
+        buttons.addView(snooze, new LinearLayout.LayoutParams(0, buttonHeight, 1f));
+        LinearLayout.LayoutParams stopParams = new LinearLayout.LayoutParams(0, buttonHeight, 1f);
+        stopParams.leftMargin = Math.round(12 * density);
+        buttons.addView(stop, stopParams);
+        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rowParams.topMargin = padding;
+        layout.addView(buttons, rowParams);
         setContentView(layout);
 
-        Uri tone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
-        ringtone = RingtoneManager.getRingtone(this, tone);
-        if (ringtone != null) {
-            if (Build.VERSION.SDK_INT >= 21) {
-                ringtone.setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build());
+        startAlarmSound();
+    }
+
+    /**
+     * Play the alarm tone as an alarm, so silent mode and Do Not Disturb do not
+     * hide it. The player loops; the Ringtone path is the fallback when the
+     * player cannot start.
+     */
+    private void startAlarmSound() {
+        Uri tone = AlarmAudio.alarmTone();
+        if (tone != null) {
+            try {
+                MediaPlayer created = new MediaPlayer();
+                created.setAudioAttributes(AlarmAudio.alarmAttributes());
+                created.setDataSource(this, tone);
+                created.setLooping(true);
+                created.setOnErrorListener((failed, what, extra) -> {
+                    failed.release();
+                    if (player == failed) {
+                        player = null;
+                    }
+                    startRingtoneFallback();
+                    return true;
+                });
+                created.prepare();
+                created.start();
+                player = created;
+                return;
+            } catch (Exception exception) {
+                // Fall through to the Ringtone path.
             }
-            if (Build.VERSION.SDK_INT >= 28) {
-                ringtone.setLooping(true);
-            }
-            ringtone.play();
         }
+        startRingtoneFallback();
+    }
+
+    private void startRingtoneFallback() {
+        Uri tone = AlarmAudio.alarmTone();
+        if (tone == null) {
+            return;
+        }
+        Ringtone created = RingtoneManager.getRingtone(this, tone);
+        if (created == null) {
+            return;
+        }
+        created.setAudioAttributes(AlarmAudio.alarmAttributes());
+        created.play();
+        ringtone = created;
+    }
+
+    private void snoozeAlarm() {
+        WakeAlarm.snooze(this, WakeAlarm.SNOOZE_MILLIS);
+        finish();
     }
 
     @Override
     protected void onDestroy() {
+        if (player != null) {
+            player.release();
+            player = null;
+        }
         if (ringtone != null && ringtone.isPlaying()) {
             ringtone.stop();
         }

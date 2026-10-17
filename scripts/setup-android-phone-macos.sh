@@ -198,9 +198,6 @@ if [[ ${configured_automatically:-0} -eq 0 ]]; then
      • Device id: $device_id
      • Device key: the API key from Home Assistant
      • Tap Save
-     • If S3 backup is enabled for this entry, tap the optional media-backup
-       button and grant full photo/video access; uploads wait for external power
-       and the initial full-library synchronisation also waits for Wi-Fi
 MANUAL
   pause
 else
@@ -208,9 +205,6 @@ else
    Finish configuration on the phone (the app is open):
      • Create and confirm a unique parent PIN; there is no default PIN
      • The Home Assistant URL, device id, and key were provisioned securely
-     • If S3 backup is enabled, grant full photo/video access from the optional
-       media-backup button; uploads wait for external power and the initial
-       full-library synchronisation also waits for Wi-Fi
 MANUAL
   pause
 fi

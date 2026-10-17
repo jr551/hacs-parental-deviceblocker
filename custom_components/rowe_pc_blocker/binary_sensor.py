@@ -6,7 +6,6 @@ from homeassistant.components.binary_sensor import BinarySensorDeviceClass, Bina
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
-from .agent_status import agent_is_online
 from .const import DOMAIN, ONLINE_TIMEOUT_SECONDS
 from .entity import ParentalDeviceEntity
 
@@ -16,6 +15,14 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
 
 
 class PcOnlineSensor(ParentalDeviceEntity, BinarySensorEntity):
+    """Whether the agent is checking in, and how long ago it last did.
+
+    This is the one entity that stays available while the agent is silent: it
+    is what tells a parent the device is offline, and it carries the staleness
+    detail (``last_seen``, ``last_seen_age_seconds``) that the telemetry
+    entities deliberately do not repeat.
+    """
+
     _attr_name = "Agent online"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
 
@@ -25,16 +32,19 @@ class PcOnlineSensor(ParentalDeviceEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return agent_is_online(
-            self.runtime.last_seen, dt_util.utcnow(), ONLINE_TIMEOUT_SECONDS
-        )
+        return self.agent_online
 
     @property
     def extra_state_attributes(self) -> dict:
+        last_seen = self.runtime.last_seen
         return {
-            "last_seen": (
-                self.runtime.last_seen.isoformat() if self.runtime.last_seen else None
+            "last_seen": last_seen.isoformat() if last_seen else None,
+            "last_seen_age_seconds": (
+                int((dt_util.utcnow() - last_seen).total_seconds())
+                if last_seen
+                else None
             ),
+            "online_timeout_seconds": ONLINE_TIMEOUT_SECONDS,
         }
 
     async def async_added_to_hass(self) -> None:

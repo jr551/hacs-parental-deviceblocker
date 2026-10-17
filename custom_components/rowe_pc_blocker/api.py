@@ -39,8 +39,21 @@ from .const import (
     PARENT_PIN_MAX_ATTEMPTS,
 )
 from .apps import DEFAULT_ALLOWED_APPS, parse_allowed_apps
+from .challenge import challenge_submit_refusal
+from .evidence import (
+    MAX_EVIDENCE_BYTES,
+    async_save_evidence,
+    evidence_refusal,
+)
 from .family import family_peers
-from .pending import async_create_request, async_load_pending
+from .location import location_answer_refusal
+from .notifications import MAX_DUMP_BYTES, dump_refusal, parse_dump
+from .pending import (
+    async_create_request,
+    async_create_unblock_request,
+    async_load_pending,
+    unblock_requests,
+)
 from .portal import (
     PORTAL_HTML,
     ChildIdentity,
@@ -49,11 +62,13 @@ from .portal import (
     resolve_child_identity,
 )
 from .provision import (
+    MAX_PENDING_UNBLOCK_REQUESTS,
     collection_response,
     match_child,
     request_response,
     unknown_child_response,
 )
+from .runtime import runtime_for_device
 from .wake_alarm import wake_alarm_payload
 
 
@@ -83,17 +98,6 @@ def _pin_lockout_remaining(hass: HomeAssistant, device_id: str) -> int:
     return int(remaining)
 
 
-def _runtime_for_request(hass: HomeAssistant, device_id: str):
-    return next(
-        (
-            item
-            for item in hass.data.get(DOMAIN, {}).values()
-            if getattr(item, "device_id", None) == device_id
-        ),
-        None,
-    )
-
-
 def _runtimes(hass: HomeAssistant) -> list:
     """Every configured device runtime."""
     return [
@@ -115,7 +119,7 @@ async def _require_runtime(
         await reject_unauthorized(hass, request)
     if integration_auth_blocked(hass, request):
         raise web.HTTPUnauthorized()
-    runtime = _runtime_for_request(hass, device_id)
+    runtime = runtime_for_device(hass, device_id)
     supplied = extract_device_key(request, allow_query=allow_query)
     if not device_authorized(
         hass,
@@ -199,6 +203,11 @@ class PcStateView(HomeAssistantView):
         hass = request.app["hass"]
         runtime = await _require_runtime(hass, request, device_id)
         runtime.last_seen = dt_util.utcnow()
+        # A request nobody answered stops riding the payload once it expires,
+        # and a challenge nobody decided on approves itself, so the phone
+        # unlocks on this same poll.
+        await runtime.async_expire_location_request()
+        await runtime.async_auto_approve_challenge()
         runtime.notify()
         return self.json(
             {
@@ -223,6 +232,14 @@ class PcStateView(HomeAssistantView):
                 "wake_alarm": _wake_alarm(request.app["hass"], runtime),
                 "allowed_apps": parse_allowed_apps(runtime.allowed_apps)
                 or list(DEFAULT_ALLOWED_APPS),
+                "challenge": runtime.challenge_payload,
+                "location_request": runtime.location_request_payload,
+                # What the block screen's picker needs to disable itself
+                # before the phone hits the cap.
+                "unblock_requests_pending": len(
+                    unblock_requests(hass, runtime.device_id)
+                ),
+                "unblock_requests_limit": MAX_PENDING_UNBLOCK_REQUESTS,
                 "family": family_peers(
                     runtime,
                     _runtimes(hass),
@@ -248,6 +265,73 @@ class PcActivityView(HomeAssistantView):
         except web.HTTPBadRequest as err:
             raise web.HTTPBadRequest(text="Expected a JSON object") from err
         runtime.update_activity(payload)
+        return self.json({"ok": True})
+
+
+class PcLocationView(HomeAssistantView):
+    """Accept the one fix a phone was asked for.
+
+    A parent presses Request location, the request rides the phone's next
+    state poll, and the phone posts the fix here. An answer for a request that
+    is no longer current — answered twice, replaced, or expired — is a 404, so
+    a late answer cannot overwrite a newer one.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/location"
+    name = "api:rowe_pc_blocker:location"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        refusal = location_answer_refusal(
+            payload,
+            runtime.location_request_id,
+            runtime.location_requested_at,
+            dt_util.utcnow(),
+        )
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        await runtime.async_store_location(payload)
+        return self.json({"ok": True})
+
+
+class PcNotificationsView(HomeAssistantView):
+    """Accept the phone's daily notification dump.
+
+    The phone captures notifications and posts one dump a day; Home Assistant
+    keeps only the latest, so the sensor is a summary rather than a growing
+    log. A dump for a day older than the stored one is accepted and ignored,
+    so a late retry cannot overwrite a newer day.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/notifications"
+    name = "api:rowe_pc_blocker:notifications"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request, max_bytes=MAX_DUMP_BYTES)
+        except web.HTTPRequestEntityTooLarge:
+            return self.json(
+                {"error": "That notification dump is too large."}, status_code=413
+            )
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        refusal = dump_refusal(payload)
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        await runtime.async_store_notifications(
+            parse_dump(payload, dt_util.utcnow())
+        )
         return self.json({"ok": True})
 
 
@@ -277,6 +361,102 @@ class PcExtensionView(HomeAssistantView):
             },
             status_code=200 if granted else 429,
         )
+
+
+class PcUnblockRequestView(HomeAssistantView):
+    """Let a blocked phone ask a parent to allow one app.
+
+    The phone shows the block screen; the child taps an app and asks. The
+    request waits for a parent on the dashboard, and approving it appends the
+    package to the device's allowlist, which the phone reads on its next state
+    poll. The rules live in ``pending.py``.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/unblock_request"
+    name = "api:rowe_pc_blocker:unblock_request"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        status_code, body = await async_create_unblock_request(
+            hass,
+            runtime,
+            str(payload.get("package", "")),
+            str(payload.get("label", "")),
+        )
+        return self.json(body, status_code=status_code)
+
+
+class PcChallengeSubmitView(HomeAssistantView):
+    """Let a phone hand a challenge to a parent.
+
+    The photo comes first: a challenge is only submitted once evidence for it
+    is stored, so a child cannot hand it over by typing the phrase alone. The
+    phone then waits — a parent approves it, and only then does the challenge
+    leave the state payload and the phone unlock.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/challenge/submit"
+    name = "api:rowe_pc_blocker:challenge_submit"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        challenge_id = str(payload.get("id", ""))[:64]
+        refusal = challenge_submit_refusal(hass, runtime, challenge_id)
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        await runtime.async_submit_challenge(challenge_id)
+        return self.json({"ok": True, "status": "submitted"})
+
+
+class PcChallengeEvidenceView(HomeAssistantView):
+    """Accept the photo a child took for the active challenge.
+
+    The body is the JPEG itself rather than JSON, so the phone can stream the
+    camera output straight through.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/challenge/evidence"
+    name = "api:rowe_pc_blocker:challenge_evidence"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        # Read the id once: a parent sending a new challenge while the body is
+        # still arriving must not have this photo filed under it.
+        challenge_id = runtime.challenge_id
+        if not challenge_id:
+            return self.json(
+                {"error": "That challenge is no longer active."}, status_code=404
+            )
+        content_type = request.headers.get("Content-Type", "")
+        refusal = evidence_refusal(content_type, request.content_length)
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        data = await request.content.read(MAX_EVIDENCE_BYTES + 1)
+        refusal = evidence_refusal(content_type, len(data))
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        expires_at = await async_save_evidence(
+            hass, runtime.device_id, challenge_id, data
+        )
+        runtime.notify()
+        return self.json({"ok": True, "expires_at": expires_at.isoformat()})
 
 
 class PcPortalView(HomeAssistantView):
@@ -669,7 +849,12 @@ def async_register_api(hass: HomeAssistant) -> None:
     hass.http.register_view(PcParentOverrideView)
     hass.http.register_view(PcPointsHourView)
     hass.http.register_view(PcActivityView)
+    hass.http.register_view(PcLocationView)
+    hass.http.register_view(PcNotificationsView)
     hass.http.register_view(PcExtensionView)
+    hass.http.register_view(PcUnblockRequestView)
+    hass.http.register_view(PcChallengeSubmitView)
+    hass.http.register_view(PcChallengeEvidenceView)
     hass.http.register_view(PcPortalView)
     hass.http.register_view(PcPortalDataView)
     hass.http.register_view(PcPortalActionView)

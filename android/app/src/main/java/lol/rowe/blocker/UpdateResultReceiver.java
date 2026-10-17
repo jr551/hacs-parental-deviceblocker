@@ -9,9 +9,10 @@ import android.widget.Toast;
 public final class UpdateResultReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
-        UpdateGate.installInProgress = false;
         int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            // The system installer prompt is open, so the uninstall guard stays stood down.
+            UpdateGate.installInProgress = true;
             Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
             if (confirm != null) {
                 confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -19,6 +20,7 @@ public final class UpdateResultReceiver extends BroadcastReceiver {
             }
             return;
         }
+        UpdateGate.installInProgress = false;
         if (status != PackageInstaller.STATUS_SUCCESS) {
             Toast.makeText(context, "Phone update did not install.", Toast.LENGTH_LONG).show();
         }

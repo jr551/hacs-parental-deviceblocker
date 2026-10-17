@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import timedelta
+from types import SimpleNamespace
 
 import ha_stub
 from ha_stub import FakeConfigEntry, FakeHass, FakeState, object_id
@@ -21,6 +22,10 @@ SENSOR = ha_stub.load("sensor")
 TEXT = ha_stub.load("text")
 BUTTON = ha_stub.load("button")
 BINARY_SENSOR = ha_stub.load("binary_sensor")
+SWITCH = ha_stub.load("switch")
+TRACKER = ha_stub.load("device_tracker")
+IMAGE = ha_stub.load("image")
+STATUS = ha_stub.load("agent_status")
 
 PHONE_DATA = {
     CONST.CONF_DEVICE_ID: "casey-phone",
@@ -114,19 +119,29 @@ class AgentOnlineSensorTests(EntityTestCase):
     async def test_last_seen_is_reported_and_online_follows_the_timeout(self) -> None:
         sensor = BINARY_SENSOR.PcOnlineSensor(self.runtime)
         self.assertFalse(sensor.is_on)
-        self.assertEqual(sensor.extra_state_attributes, {"last_seen": None})
+        self.assertEqual(
+            sensor.extra_state_attributes,
+            {
+                "last_seen": None,
+                "last_seen_age_seconds": None,
+                "online_timeout_seconds": CONST.ONLINE_TIMEOUT_SECONDS,
+            },
+        )
 
         self.runtime.last_seen = ha_stub.utcnow()
         self.assertTrue(sensor.is_on)
-        self.assertEqual(
-            sensor.extra_state_attributes["last_seen"],
-            self.runtime.last_seen.isoformat(),
-        )
+        attributes = sensor.extra_state_attributes
+        self.assertEqual(attributes["last_seen"], self.runtime.last_seen.isoformat())
+        self.assertEqual(attributes["last_seen_age_seconds"], 0)
 
         self.runtime.last_seen = ha_stub.utcnow() - timedelta(
             seconds=CONST.ONLINE_TIMEOUT_SECONDS + 1
         )
         self.assertFalse(sensor.is_on)
+        self.assertEqual(
+            sensor.extra_state_attributes["last_seen_age_seconds"],
+            CONST.ONLINE_TIMEOUT_SECONDS + 1,
+        )
 
     async def test_the_tick_fires_one_stale_event_per_episode(self) -> None:
         sensor = self._attach(BINARY_SENSOR.PcOnlineSensor(self.runtime))
@@ -191,6 +206,247 @@ class AgentOnlineSensorTests(EntityTestCase):
         self.assertFalse(restarted.agent_stale)
 
 
+class FakeScreenMonitor:
+    """The screen-monitor fields the sensors read, without aiohttp or PIL."""
+
+    def __init__(self, configured: bool = True) -> None:
+        self.settings = SimpleNamespace(configured=configured, schedule_mode="manual")
+        self.status = "idle"
+        self.last_summary = ""
+        self.last_error = ""
+        self.last_checked_at = None
+        self.last_attempted_at = None
+        self.last_trigger = ""
+        self.last_category = "unknown"
+        self.last_risk_score = 0
+        self.last_risk_level = "none"
+        self.last_reasons: tuple = ()
+        self.next_check_at = None
+
+
+class TelemetryAvailabilityTests(EntityTestCase):
+    """A silent agent must not leave stale readings on the dashboard."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.runtime.last_seen = ha_stub.utcnow()
+
+    def _go_silent(self) -> None:
+        self.runtime.last_seen = ha_stub.utcnow() - timedelta(
+            seconds=CONST.ONLINE_TIMEOUT_SECONDS + 1
+        )
+
+    def test_agent_telemetry_goes_unavailable_while_the_agent_is_silent(self) -> None:
+        entities = [
+            SENSOR.ActiveApplicationSensor(self.runtime),
+            SENSOR.ActiveWindowSensor(self.runtime),
+            SENSOR.EnforcementStatusSensor(self.runtime),
+            SENSOR.InstalledAppsSensor(self.runtime),
+        ]
+        for entity in entities:
+            self.assertTrue(entity.available, entity.name)
+        self._go_silent()
+        for entity in entities:
+            self.assertFalse(entity.available, entity.name)
+
+    def test_a_device_that_never_checked_in_is_not_presented_as_live(self) -> None:
+        self.runtime.last_seen = None
+        self.assertFalse(SENSOR.ActiveApplicationSensor(self.runtime).available)
+
+    async def test_the_block_switch_stays_settable_while_the_agent_is_silent(self) -> None:
+        switch = SWITCH.PcBlockedSwitch(self.runtime)
+        self._go_silent()
+        self.assertTrue(switch.available)
+        await switch.async_turn_on()
+        self.assertTrue(self.runtime.blocked)
+
+    def test_parent_controls_and_home_assistant_state_stay_available(self) -> None:
+        entities = [
+            BINARY_SENSOR.PcOnlineSensor(self.runtime),
+            TEXT.PcMessageText(self.runtime),
+            TEXT.AllowedAppsText(self.runtime),
+            SENSOR.ChallengeSensor(self.runtime),
+            SENSOR.UnblockRequestsSensor(self.runtime),
+            IMAGE.ChallengeEvidenceImage(self.runtime),
+            # The location tracker is a stored answer, not a live feed: it
+            # keeps the last fix and exposes its age instead.
+            TRACKER.LocationTracker(self.runtime),
+        ]
+        self._go_silent()
+        for entity in entities:
+            self.assertTrue(entity.available, entity.name)
+
+    async def test_the_stale_tick_rerenders_the_telemetry_entities(self) -> None:
+        sensor = self._attach(SENSOR.ActiveApplicationSensor(self.runtime))
+        await sensor.async_added_to_hass()
+        self.assertTrue(sensor.available)
+        self.assertEqual(sensor.state_writes, 0)
+
+        self._go_silent()
+        await self.runtime.check_agent_stale()
+        # The runtime tells every entity to re-read itself, so the dashboard
+        # shows unavailable without waiting for another agent poll.
+        self.assertEqual(sensor.state_writes, 1)
+        self.assertFalse(sensor.available)
+
+        self.runtime.last_seen = ha_stub.utcnow()
+        await self.runtime.check_agent_stale()
+        self.assertEqual(sensor.state_writes, 2)
+        self.assertTrue(sensor.available)
+
+
+class BlockedSwitchTests(EntityTestCase):
+    async def test_the_switch_says_why_the_block_is_not_in_force(self) -> None:
+        switch = SWITCH.PcBlockedSwitch(self.runtime)
+        self.assertEqual(switch.extra_state_attributes["block_reason"], "off")
+        self.assertIsNone(switch.extra_state_attributes["extension_until"])
+
+        await switch.async_turn_on()
+        attributes = switch.extra_state_attributes
+        self.assertFalse(attributes["effective_blocked"])
+        self.assertEqual(attributes["block_reason"], "grace_period")
+        self.assertEqual(
+            attributes["enforce_at"], self.runtime.enforce_at.isoformat()
+        )
+
+        self.runtime.block_requested_at = ha_stub.utcnow() - timedelta(
+            seconds=CONST.INITIAL_GRACE_SECONDS + 1
+        )
+        attributes = switch.extra_state_attributes
+        self.assertTrue(attributes["effective_blocked"])
+        self.assertEqual(attributes["block_reason"], "enforced")
+
+        self.runtime.extension_until = ha_stub.utcnow() + timedelta(minutes=30)
+        attributes = switch.extra_state_attributes
+        self.assertFalse(attributes["effective_blocked"])
+        self.assertEqual(attributes["block_reason"], "extension")
+        self.assertEqual(
+            attributes["extension_until"], self.runtime.extension_until.isoformat()
+        )
+
+        await switch.async_turn_off()
+        self.assertEqual(switch.extra_state_attributes["block_reason"], "off")
+
+
+class StatusSensorTests(EntityTestCase):
+    def test_the_enforcement_sensor_flags_every_degraded_status(self) -> None:
+        sensor = SENSOR.EnforcementStatusSensor(self.runtime)
+        self.assertEqual(sensor.native_value, "unknown")
+        self.assertFalse(sensor.extra_state_attributes["degraded"])
+
+        for status in sorted(STATUS.DEGRADED_UI_STATUSES):
+            self.runtime.ui_status = status
+            self.assertTrue(sensor.extra_state_attributes["degraded"], status)
+
+        self.runtime.ui_status = "enforcing"
+        self.assertFalse(sensor.extra_state_attributes["degraded"])
+
+    def test_the_portal_sensor_flags_a_broken_kiosk(self) -> None:
+        sensor = SENSOR.PortalStatusSensor(self.runtime)
+        self.assertTrue(sensor.extra_state_attributes["healthy"])
+
+        self.runtime.ui_status = "portal_error"
+        self.assertFalse(sensor.extra_state_attributes["healthy"])
+
+        self.runtime.ui_status = "portal_ready"
+        self.assertTrue(sensor.extra_state_attributes["healthy"])
+
+
+class EnumSensorTests(EntityTestCase):
+    def test_the_challenge_sensor_offers_every_state_it_can_report(self) -> None:
+        sensor = SENSOR.ChallengeSensor(self.runtime)
+        self.assertEqual(sensor.device_class, SENSOR.SensorDeviceClass.ENUM)
+        self.assertEqual(set(sensor.options), set(SENSOR.CHALLENGE_STATES))
+
+        # Every state the runtime can report must be one of the options, or
+        # Home Assistant rejects the reading.
+        self.assertIn(sensor.native_value, sensor.options)
+        self.runtime.challenge_id = "a" * 32
+        self.assertIn(sensor.native_value, sensor.options)
+        self.runtime.challenge_submitted_at = ha_stub.utcnow()
+        self.assertIn(sensor.native_value, sensor.options)
+        self.runtime.challenge_approved_at = ha_stub.utcnow()
+        self.assertIn(sensor.native_value, sensor.options)
+
+    def test_the_screen_safety_sensor_offers_every_risk_level(self) -> None:
+        self.runtime.screen_monitor = FakeScreenMonitor()
+        sensor = SENSOR.ScreenSafetySensor(self.runtime)
+        self.assertEqual(sensor.device_class, SENSOR.SensorDeviceClass.ENUM)
+        self.assertEqual(set(sensor.options), set(SENSOR.RISK_LEVELS))
+
+        for level in SENSOR.RISK_LEVELS:
+            self.runtime.screen_monitor.last_risk_level = level
+            self.assertIn(sensor.native_value, sensor.options)
+
+
+class ScreenMonitorAvailabilityTests(EntityTestCase):
+    def test_the_screen_sensors_follow_the_monitor_being_configured(self) -> None:
+        entities = [
+            SENSOR.ScreenAssessmentSensor(self.runtime),
+            SENSOR.ScreenSafetySensor(self.runtime),
+            SENSOR.DailyActivitySummarySensor(self.runtime),
+            SENSOR.WeeklyActivitySummarySensor(self.runtime),
+        ]
+        for entity in entities:
+            self.assertFalse(entity.available, entity.name)
+
+        self.runtime.screen_monitor = FakeScreenMonitor(configured=False)
+        for entity in entities:
+            self.assertFalse(entity.available, entity.name)
+
+        self.runtime.screen_monitor = FakeScreenMonitor(configured=True)
+        for entity in entities:
+            self.assertTrue(entity.available, entity.name)
+
+
+class DeviceInfoTests(EntityTestCase):
+    def test_the_agent_version_is_the_device_firmware_version(self) -> None:
+        sensor = SENSOR.ActiveApplicationSensor(self.runtime)
+        self.assertIsNone(sensor.device_info["sw_version"])
+        self.assertEqual(
+            sensor.device_info["identifiers"], {(CONST.DOMAIN, "casey-phone")}
+        )
+        self.assertEqual(sensor.device_info["model"], "Android Accessibility Agent")
+
+        self.runtime.agent_version = "0.5.5"
+        self.runtime.reported_username = "casey"
+        self.assertEqual(sensor.device_info["sw_version"], "0.5.5")
+        # The account the activity was reported under stays with the activity.
+        self.assertEqual(sensor.extra_state_attributes, {"username": "casey"})
+
+    def test_a_new_agent_version_is_pushed_to_the_device_registry(self) -> None:
+        # Home Assistant reads device info only when an entity is added, so a
+        # version that changes under a running Home Assistant needs a push.
+        device = self.hass.device_registry.add(
+            "device-1", {(CONST.DOMAIN, "casey-phone")}, sw_version="0.5.4"
+        )
+        self.runtime.update_activity({"agent_version": "0.5.5"})
+        self.assertEqual(
+            self.hass.device_registry.updates, [("device-1", {"sw_version": "0.5.5"})]
+        )
+        self.assertEqual(device.sw_version, "0.5.5")
+
+        # A heartbeat that repeats the same version writes nothing.
+        self.runtime.update_activity({"agent_version": "0.5.5"})
+        self.assertEqual(len(self.hass.device_registry.updates), 1)
+
+    def test_a_version_for_an_unknown_device_is_not_pushed(self) -> None:
+        self.runtime.update_activity({"agent_version": "0.5.5"})
+        self.assertEqual(self.hass.device_registry.updates, [])
+
+    def test_the_older_registry_lookup_is_used_when_it_is_all_there_is(self) -> None:
+        # Home Assistant before identifiers were scoped to a config entry has
+        # no scoped lookup at all, so the fallback has to work.
+        self.hass.device_registry.async_get_device_by_identifier = None
+        self.hass.device_registry.add(
+            "device-1", {(CONST.DOMAIN, "casey-phone")}, sw_version="0.5.4"
+        )
+        self.runtime.update_activity({"agent_version": "0.5.5"})
+        self.assertEqual(
+            self.hass.device_registry.updates, [("device-1", {"sw_version": "0.5.5"})]
+        )
+
+
 class PlatformSetupTests(EntityTestCase):
     """Which entities each platform creates for which kind of device."""
 
@@ -214,11 +470,22 @@ class PlatformSetupTests(EntityTestCase):
         sensors: list = []
         await SENSOR.async_setup_entry(self.hass, entry, sensors.extend)
         self.assertTrue(any(isinstance(e, SENSOR.InstalledAppsSensor) for e in sensors))
+        self.assertTrue(any(isinstance(e, SENSOR.NotificationsSensor) for e in sensors))
         self.assertTrue(any(isinstance(e, SENSOR.PendingSetupsSensor) for e in sensors))
 
         texts: list = []
         await TEXT.async_setup_entry(self.hass, entry, texts.extend)
         self.assertTrue(any(isinstance(e, TEXT.AllowedAppsText) for e in texts))
+
+        buttons: list = []
+        await BUTTON.async_setup_entry(self.hass, entry, buttons.extend)
+        self.assertTrue(
+            any(isinstance(e, BUTTON.RequestLocationButton) for e in buttons)
+        )
+
+        trackers: list = []
+        await TRACKER.async_setup_entry(self.hass, entry, trackers.extend)
+        self.assertTrue(any(isinstance(e, TRACKER.LocationTracker) for e in trackers))
 
     async def test_a_pc_gets_no_phone_only_entities(self) -> None:
         self._runtime("entry-1", "casey-pc", CONST.DEVICE_TYPE_WINDOWS)
@@ -227,11 +494,46 @@ class PlatformSetupTests(EntityTestCase):
         sensors: list = []
         await SENSOR.async_setup_entry(self.hass, entry, sensors.extend)
         self.assertFalse(any(isinstance(e, SENSOR.InstalledAppsSensor) for e in sensors))
+        self.assertFalse(any(isinstance(e, SENSOR.NotificationsSensor) for e in sensors))
         self.assertTrue(any(isinstance(e, SENSOR.PendingSetupsSensor) for e in sensors))
 
         texts: list = []
         await TEXT.async_setup_entry(self.hass, entry, texts.extend)
         self.assertFalse(any(isinstance(e, TEXT.AllowedAppsText) for e in texts))
+
+        buttons: list = []
+        await BUTTON.async_setup_entry(self.hass, entry, buttons.extend)
+        self.assertFalse(
+            any(isinstance(e, BUTTON.RequestLocationButton) for e in buttons)
+        )
+
+        trackers: list = []
+        await TRACKER.async_setup_entry(self.hass, entry, trackers.extend)
+        self.assertEqual(trackers, [])
+
+    async def test_a_pc_reports_the_portal_status_and_a_phone_the_enforcement_status(self) -> None:
+        self._runtime("entry-1", "casey-pc", CONST.DEVICE_TYPE_WINDOWS)
+        self._runtime("entry-2", "casey-phone", CONST.DEVICE_TYPE_ANDROID)
+
+        pc_sensors: list = []
+        await SENSOR.async_setup_entry(
+            self.hass, FakeConfigEntry({}, entry_id="entry-1"), pc_sensors.extend
+        )
+        self.assertTrue(any(isinstance(e, SENSOR.PortalStatusSensor) for e in pc_sensors))
+        self.assertFalse(
+            any(isinstance(e, SENSOR.EnforcementStatusSensor) for e in pc_sensors)
+        )
+
+        phone_sensors: list = []
+        await SENSOR.async_setup_entry(
+            self.hass, FakeConfigEntry({}, entry_id="entry-2"), phone_sensors.extend
+        )
+        self.assertTrue(
+            any(isinstance(e, SENSOR.EnforcementStatusSensor) for e in phone_sensors)
+        )
+        self.assertFalse(
+            any(isinstance(e, SENSOR.PortalStatusSensor) for e in phone_sensors)
+        )
 
     async def test_only_one_device_creates_the_pending_entities(self) -> None:
         self._runtime("entry-1", "casey-phone", CONST.DEVICE_TYPE_ANDROID)
@@ -324,7 +626,7 @@ class PendingSetupButtonTests(EntityTestCase):
     async def test_approving_creates_the_phone_and_removes_the_buttons(self) -> None:
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         self.assertEqual(len(added), 2)
         approve = next(
             button for button in added if button._action == BUTTON.APPROVE
@@ -354,7 +656,7 @@ class PendingSetupButtonTests(EntityTestCase):
         )
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         approve = next(button for button in added if button._action == BUTTON.APPROVE)
 
         await approve.async_press()
@@ -372,7 +674,7 @@ class PendingSetupButtonTests(EntityTestCase):
     async def test_an_expired_request_loses_its_buttons(self) -> None:
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         self.assertEqual(len(added), 2)
         sweep, interval = self.hass.intervals[0]
         self.assertEqual(interval, timedelta(seconds=60))
@@ -391,7 +693,7 @@ class PendingSetupButtonTests(EntityTestCase):
     async def test_rejecting_answers_the_phone_without_creating_anything(self) -> None:
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         reject = next(button for button in added if button._action == BUTTON.REJECT)
 
         await reject.async_press()

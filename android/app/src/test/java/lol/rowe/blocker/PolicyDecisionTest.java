@@ -238,4 +238,48 @@ public class PolicyDecisionTest {
         assertFalse(decision.shouldShowBlockScreen(true, "com.roblox.client"));
         assertTrue(decision.shouldShowBlockScreen(true, PolicyDecision.WHATSAPP));
     }
+
+    @Test
+    public void aChallengeBlocksDisallowedAppsAndLeavesAllowedOnesUsable() {
+        Policy policy = challengePolicy(null);
+        boolean locked = policy.isLocked();
+
+        assertTrue(locked);
+        assertTrue(decision.shouldShowBlockScreen(locked, "com.android.chrome"));
+        assertTrue(decision.shouldShowBlockScreen(locked, "com.sec.android.app.launcher"));
+        assertFalse(decision.shouldShowBlockScreen(locked, PolicyDecision.WHATSAPP));
+        assertFalse(decision.shouldShowBlockScreen(locked, PolicyDecision.SAMSUNG_CAMERA));
+    }
+
+    @Test
+    public void aSubmittedChallengeStillBlocksUntilAParentApproves() {
+        // Sending the photo does not unlock anything: the allowed apps stay
+        // usable and everything else stays covered until the challenge is gone.
+        Policy policy = challengePolicy(null, Challenge.STATUS_SUBMITTED);
+        boolean locked = policy.isLocked();
+
+        assertTrue(locked);
+        assertTrue(decision.shouldShowBlockScreen(locked, "com.android.chrome"));
+        assertFalse(decision.shouldShowBlockScreen(locked, PolicyDecision.WHATSAPP));
+    }
+
+    @Test
+    public void aParentOverrideSuppressesTheChallengeBlock() {
+        Policy policy = challengePolicy("2099-01-01T00:05:00Z");
+        boolean locked = policy.isLocked();
+
+        assertFalse(locked);
+        assertFalse(decision.shouldShowBlockScreen(locked, "com.android.chrome"));
+    }
+
+    private static Policy challengePolicy(String extensionUntil) {
+        return challengePolicy(extensionUntil, Challenge.STATUS_PENDING);
+    }
+
+    private static Policy challengePolicy(String extensionUntil, String status) {
+        return new Policy(
+                false, false, "Paused", false, null, extensionUntil,
+                null, 0, null, Collections.emptyList(), null, null,
+                new Challenge("abc123", "I have brushed my teeth", null, status, null));
+    }
 }

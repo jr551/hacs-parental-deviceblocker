@@ -22,6 +22,29 @@ final class AllowedApps {
         }
     }
 
+    /** The block-screen grid: how many columns fit, and how wide each cell is. */
+    static final class Grid {
+        final int columns;
+        final int cellWidth;
+
+        private Grid(int columns, int cellWidth) {
+            this.columns = columns;
+            this.cellWidth = cellWidth;
+        }
+    }
+
+    /**
+     * The grid that keeps every shortcut inside {@code availableWidth}: three or
+     * four columns, whichever fits {@code targetCellWidth}, with the cells
+     * sharing the width evenly so a long label can never widen the grid past the
+     * screen. {@code margin} is the space on each side of a cell.
+     */
+    static Grid grid(int availableWidth, int targetCellWidth, int margin) {
+        int columns = Math.max(3, Math.min(4, availableWidth / Math.max(1, targetCellWidth)));
+        int cellWidth = Math.max(1, (availableWidth - columns * 2 * margin) / columns);
+        return new Grid(columns, cellWidth);
+    }
+
     private static final String[][] CANDIDATES = {
             {"Calls", PolicyDecision.SAMSUNG_DIALER, "com.google.android.dialer", "com.android.dialer"},
             {"WhatsApp", PolicyDecision.WHATSAPP},

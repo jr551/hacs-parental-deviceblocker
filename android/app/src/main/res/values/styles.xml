@@ -3,6 +3,9 @@
     <style name="Theme.ParentalDeviceBlocker" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">@color/primary</item>
+        <!-- The lock screens are dark; a light window background flashes white
+             behind them during a transition. -->
+        <item name="android:windowBackground">@color/block_background</item>
         <item name="android:navigationBarColor">@color/block_background</item>
         <item name="android:statusBarColor">@color/block_background</item>
         <item name="android:windowLightStatusBar">false</item>

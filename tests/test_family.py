@@ -31,6 +31,7 @@ class FakeRuntime:
         message="Paused",
         last_seen=None,
         active_application="",
+        challenge_payload=None,
     ) -> None:
         self.device_id = device_id
         self.device_type = device_type
@@ -39,6 +40,9 @@ class FakeRuntime:
         self.message = message
         self.last_seen = last_seen
         self.active_application = active_application
+        # The real runtime exposes this as a property built from the stored
+        # challenge; the payload itself is what a peer reads.
+        self.challenge_payload = challenge_payload
 
 
 class FamilyPeerTests(unittest.TestCase):
@@ -89,6 +93,39 @@ class FamilyPeerTests(unittest.TestCase):
         runtime = FakeRuntime("casey-pc", "windows", "Casey")
         payload = FAMILY.peer_payload(runtime, NOW, TIMEOUT)
         self.assertEqual(set(payload), PROTOCOL.FAMILY_PEER_KEYS)
+
+    def test_a_phone_waiting_on_a_chore_reports_its_challenge(self):
+        challenge = {
+            "id": "a" * 32,
+            "phrase": "I have brushed my teeth",
+            "sent_at": NOW.isoformat(),
+        }
+        pc = FakeRuntime("casey-pc", "windows", "Casey")
+        phone = FakeRuntime(
+            "casey-phone", "android", "Casey", challenge_payload=challenge
+        )
+        peers = FAMILY.family_peers(pc, [pc, phone], NOW, TIMEOUT)
+        self.assertEqual(peers["phone"]["challenge"], challenge)
+
+    def test_a_phone_with_no_challenge_reports_null(self):
+        pc = FakeRuntime("casey-pc", "windows", "Casey")
+        phone = FakeRuntime("casey-phone", "android", "Casey")
+        peers = FAMILY.family_peers(pc, [pc, phone], NOW, TIMEOUT)
+        self.assertIsNone(peers["phone"]["challenge"])
+
+    def test_a_pc_peer_always_reports_a_null_challenge(self):
+        # Challenges are phone-only, so the key is present but empty on the PC
+        # peer even when the phone is waiting on one.
+        phone = FakeRuntime(
+            "casey-phone",
+            "android",
+            "Casey",
+            challenge_payload={"id": "b" * 32, "phrase": "Tidy your room", "sent_at": None},
+        )
+        pc = FakeRuntime("casey-pc", "windows", "Casey")
+        peers = FAMILY.family_peers(phone, [pc, phone], NOW, TIMEOUT)
+        self.assertIsNone(peers["pc"]["challenge"])
+        self.assertIn("challenge", peers["pc"])
 
 
 if __name__ == "__main__":

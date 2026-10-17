@@ -19,6 +19,12 @@ public final class BlockAccessibilityService extends AccessibilityService {
 
     private final ScheduledExecutorService policyExecutor = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService activityExecutor = Executors.newSingleThreadScheduledExecutor();
+    /** Downloads and verifies an update; never the poll thread. */
+    private final ScheduledExecutorService updateExecutor = Executors.newSingleThreadScheduledExecutor();
+    /** Posts the day's notification dump; never the poll thread. */
+    private final ScheduledExecutorService notificationExecutor = Executors.newSingleThreadScheduledExecutor();
+    /** Fetches one on-demand location fix; never the poll thread. */
+    private final ScheduledExecutorService locationExecutor = Executors.newSingleThreadScheduledExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean pollRunning = new AtomicBoolean();
     private final AtomicBoolean pollScheduled = new AtomicBoolean();
@@ -26,6 +32,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private volatile String enforcementStatus = EnforcementStatus.MONITORING;
     private volatile String enforcementDetail = "";
     private volatile String foregroundPackage = "";
+    /** The verified update waiting to be installed, or null. */
+    private volatile AppUpdater.Pending pendingUpdate;
     /** Allow-listed package just opened from the block screen, if any. */
     private volatile String pendingAllowedPackage;
     private volatile long pendingAllowedAt;
@@ -36,8 +44,10 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private String lastReportedPackage = "";
     private String lastReportedTitle = "";
     private long lastHeartbeat;
-    /** Elapsed time of the last report that carried a position. */
-    private long lastLocationReport;
+    /** The status Home Assistant last received, so a change posts at once. */
+    private volatile String lastPostedStatus = "";
+    /** The location request id this phone last answered or gave up on. */
+    private volatile String lastLocationRequest = "";
     private PolicyDecision decision;
 
     @Override
@@ -45,6 +55,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         activeInstance = this;
         decision = new PolicyDecision(getPackageName());
+        refreshPendingUpdate();
+        lastLocationRequest = OnDemandLocation.lastRequestId(this);
         if (AppConfig.load(this).isConfigured()) {
             EnforcementWatchdogJobService.schedule(this);
             EnforcementWatchdogService.start(this);
@@ -93,18 +105,19 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
         String title = eventTitle(event.getClassName());
         Policy policy = currentPolicy;
+        boolean kiosk = kioskActive(policy);
         if (windowStateChanged
                 && decision.isUninstallSurface(eventPackage, title)
                 && !ParentMaintenance.allows()) {
             foregroundPackage = eventPackage;
-            if (policy.shouldCaptureForeground() || policy.shouldWarnGrace()) {
+            if (kiosk || policy.shouldWarnGrace()) {
                 showBlockScreen(policy);
             } else {
                 showUninstallGuard();
             }
             return;
         }
-        if (!policy.shouldCaptureForeground()
+        if (!kiosk
                 && !policy.shouldWarnGrace()
                 && !eventPackage.equals(getPackageName())
                 && !decision.isUninstallSurface(eventPackage, title)) {
@@ -114,7 +127,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 ? -1L
                 : SystemClock.elapsedRealtime() - pendingAllowedAt;
         PolicyDecision.WindowUpdate update = decision.onForegroundEvent(
-                policy.shouldCaptureForeground(),
+                kiosk,
                 windowStateChanged,
                 foregroundPackage,
                 eventPackage,
@@ -166,6 +179,9 @@ public final class BlockAccessibilityService extends AccessibilityService {
         reporter.start();
         policyExecutor.shutdownNow();
         activityExecutor.shutdownNow();
+        updateExecutor.shutdownNow();
+        notificationExecutor.shutdownNow();
+        locationExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -189,17 +205,24 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 failOpen(EnforcementStatus.NOT_CONFIGURED, "Home Assistant is not configured.");
                 return;
             }
-            Policy policy = new HomeAssistantClient(config).getPolicy();
+            Policy policy = Challenge.enforced(
+                    this,
+                    new HomeAssistantClient(config).getPolicy(),
+                    false,
+                    LocalOverride.isActive(this));
             WakeAlarm.applyServer(this, policy.wakeAlarm);
             currentPolicy = policy;
             decision.setAllowedApps(policy.allowedApps);
+            boolean challengePending = policy.challengePending();
+            AppUpdater.challengeActive = challengePending;
+            refreshPendingUpdate();
             publishStatus(
                     policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
                     "",
                     false);
             MainActivity.applyPolicySnapshot(policy);
-            reportLocationIfDue();
-            if (decision.shouldShowBlockScreen(policy.shouldCaptureForeground(), foregroundPackage)) {
+            answerLocationRequest(policy);
+            if (decision.shouldShowBlockScreen(kioskActive(policy), foregroundPackage)) {
                 showBlockScreen(policy);
             } else if (policy.shouldWarnGrace()) {
                 // Re-show the grace warning (countdown + extension button) on
@@ -208,6 +231,13 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 // enforcement turns it into a hard block.
                 showBlockScreen(policy);
             }
+            // A challenge must never be interrupted by an update, and the
+            // download must never hold up the poll.
+            if (!challengePending) {
+                updateExecutor.execute(this::checkForUpdate);
+            }
+            // A midnight the phone slept through is caught up here.
+            notificationExecutor.execute(() -> NotificationDump.flushIfDue(this));
         } catch (Exception exception) {
             String detail = exception.getMessage();
             failOpen(
@@ -220,26 +250,83 @@ public final class BlockAccessibilityService extends AccessibilityService {
         }
     }
 
+    /** Check the release off the poll thread, then raise the update screen at once. */
+    private void checkForUpdate() {
+        AppUpdater.check(this);
+        mainHandler.post(() -> {
+            refreshPendingUpdate();
+            if (kioskActive(currentPolicy)) {
+                showBlockScreen(currentPolicy);
+            }
+        });
+    }
+
+    private void refreshPendingUpdate() {
+        pendingUpdate = AppUpdater.pending(this);
+    }
+
     /**
-     * Send a position as soon as one is available instead of waiting for the
-     * hourly batch. {@link PassiveLocation#latest} also asks a provider for a
-     * fresh fix when the cache is stale, so the poll both warms the cache and
-     * reports it. Reading a cached fix is free; the request itself is throttled
-     * inside PassiveLocation, so this adds no extra wakeups.
+     * True when a lock screen (a parent block, an unapproved challenge or a
+     * verified update) must cover disallowed apps. All three go through the
+     * same enforcement path; only the screen differs.
      */
-    private void reportLocationIfDue() {
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastLocationReport < ReportSchedule.LOCATION_REPORT_INTERVAL_MS) {
+    private boolean kioskActive(Policy policy) {
+        return policy.isLocked() || updateScreenPending(policy);
+    }
+
+    private boolean updateScreenPending(Policy policy) {
+        return UpdateGate.shouldShowUpdateScreen(
+                pendingUpdate != null,
+                policy.challengePending(),
+                policy.isExtensionActive(),
+                LocalOverride.isActive(this));
+    }
+
+    /**
+     * Answer a parent's location request. Nothing touches the provider until
+     * one arrives, and each request id is answered at most once: a fix that
+     * cannot be fetched inside the timeout is left unanswered rather than
+     * filled with a stale position.
+     */
+    private void answerLocationRequest(Policy policy) {
+        Policy.LocationRequest request = policy.locationRequest;
+        if (request == null || !OnDemandLocation.shouldFetch(request.id, lastLocationRequest)) {
             return;
         }
-        android.location.Location location = PassiveLocation.latest(this);
-        if (location == null) {
-            // Nothing recent enough yet; the request above will fill the cache.
+        if (!OnDemandLocation.hasPermission(this)) {
+            // Never prompt from the background; the setup screen offers the button.
             return;
         }
-        lastLocationReport = now;
-        String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
-        activityExecutor.execute(() -> postReport(application, "", true));
+        lastLocationRequest = request.id;
+        OnDemandLocation.rememberRequestId(this, request.id);
+        locationExecutor.execute(() -> {
+            android.location.Location fix = OnDemandLocation.fetch(this, OnDemandLocation.TIMEOUT_MILLIS);
+            if (fix == null) {
+                return;
+            }
+            long ageSeconds = Math.max(0L, (System.currentTimeMillis() - fix.getTime()) / 1000L);
+            Double latitude = fix.getLatitude();
+            Double longitude = fix.getLongitude();
+            if (!OnDemandLocation.isSendable(latitude, longitude, ageSeconds)) {
+                return;
+            }
+            try {
+                AppConfig config = AppConfig.load(this);
+                if (!config.isConfigured()) {
+                    return;
+                }
+                new HomeAssistantClient(config).postLocation(
+                        request.id,
+                        latitude,
+                        longitude,
+                        fix.hasAccuracy() ? fix.getAccuracy() : 0f,
+                        fix.getProvider() == null ? "" : fix.getProvider(),
+                        ageSeconds);
+            } catch (Exception ignored) {
+                // A failed upload must not affect blocking, the challenge or the
+                // poll, and the request is not retried in a loop.
+            }
+        });
     }
 
     private void reportActivityIfNeeded(String packageName, String title) {
@@ -252,7 +339,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
         lastHeartbeat = now;
         String application = packageName;
         String window = title;
-        activityExecutor.execute(() -> postReport(application, window, true));
+        activityExecutor.execute(() -> postReport(application, window));
     }
 
     private void adoptAllowedLaunch(String packageName) {
@@ -265,10 +352,13 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     private void showBlockScreen(Policy policy) {
+        // The system installer prompt must stay on top of the lock screen.
+        if (UpdateGate.installInProgress) {
+            return;
+        }
+        boolean kiosk = policy.isLocked() || updateScreenPending(policy);
         // Never resume the block activity over an app the holder is allowed to use.
-        if (policy.shouldCaptureForeground()
-                && decision != null
-                && decision.isAllowed(true, foregroundPackage)) {
+        if (kiosk && decision != null && decision.isAllowed(true, foregroundPackage)) {
             return;
         }
         long now = SystemClock.elapsedRealtime();
@@ -287,12 +377,23 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 .putExtra(MainActivity.EXTRA_EXTENSION_AVAILABLE, policy.extensionAvailable)
                 .putExtra(MainActivity.EXTRA_ENFORCE_AT, policy.enforceAt == null ? null : policy.enforceAt.toString())
                 .putExtra(MainActivity.EXTRA_EXTENSION_UNTIL, policy.extensionUntil == null ? null : policy.extensionUntil.toString())
+                .putExtra(MainActivity.EXTRA_BLOCKED_PACKAGE, blockedPackageForScreen())
                 .putStringArrayListExtra(
                         MainActivity.EXTRA_ALLOWED_APPS, new ArrayList<>(policy.allowedApps));
+        if (policy.challengePending()) {
+            intent.putExtra(MainActivity.EXTRA_CHALLENGE_ID, policy.challenge.id)
+                    .putExtra(MainActivity.EXTRA_CHALLENGE_PHRASE, policy.challenge.phrase)
+                    .putExtra(MainActivity.EXTRA_CHALLENGE_STATUS, policy.challenge.status)
+                    .putExtra(
+                            MainActivity.EXTRA_CHALLENGE_SUBMITTED_AT,
+                            policy.challenge.submittedAt)
+                    .putExtra(MainActivity.EXTRA_CHALLENGE_ATTEMPT, policy.challenge.attempt)
+                    .putExtra(
+                            MainActivity.EXTRA_CHALLENGE_AUTO_APPROVE_AT,
+                            policy.challenge.autoApproveAt);
+        }
         mainHandler.post(() -> {
-            if (policy.shouldCaptureForeground()
-                    && decision != null
-                    && decision.isAllowed(true, foregroundPackage)) {
+            if (kiosk && decision != null && decision.isAllowed(true, foregroundPackage)) {
                 return;
             }
             startActivity(intent);
@@ -313,9 +414,19 @@ public final class BlockAccessibilityService extends AccessibilityService {
         mainHandler.post(() -> startActivity(intent));
     }
 
+    /**
+     * The app the block screen was raised for, so the child can ask a parent to
+     * allow it. The last disallowed app is the one the holder was using; the
+     * foreground is the fallback when no event has named one yet.
+     */
+    private String blockedPackageForScreen() {
+        return lastDisallowedPackage.isEmpty() ? foregroundPackage : lastDisallowedPackage;
+    }
+
     private void failOpen(String status, String detail) {
-        currentPolicy = Policy.UNBLOCKED;
-        MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
+        currentPolicy = Challenge.enforced(this, null, true, false);
+        AppUpdater.challengeActive = currentPolicy.challengePending();
+        MainActivity.applyPolicySnapshot(currentPolicy);
         publishStatus(status, detail == null ? "" : detail, true);
     }
 
@@ -324,29 +435,27 @@ public final class BlockAccessibilityService extends AccessibilityService {
         enforcementDetail = detail;
         EnforcementNote.record(this, status, detail);
         long now = SystemClock.elapsedRealtime();
-        // Local fail-open already happened. Status, activity, and location share
-        // one hourly upload. The unused force flag stays so callers can ask for
-        // a report without bypassing that batch.
-        if (!ReportSchedule.due(lastHeartbeat, now)) {
+        // A status change is what a parent watches for after flipping the
+        // switch, so it must not wait for the hourly batch: Home Assistant
+        // would keep showing the previous status and the block would look
+        // broken. An unchanged status still rides that batch.
+        boolean changed = !status.equals(lastPostedStatus);
+        if (!changed && !ReportSchedule.due(lastHeartbeat, now)) {
             return;
         }
         lastHeartbeat = now;
         lastStatusPost = now;
+        lastPostedStatus = status;
         String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
         activityExecutor.execute(() -> postReport(application, ""));
     }
 
     private void postReport(String application, String window) {
-        postReport(application, window, false);
-    }
-
-    private void postReport(String application, String window, boolean includeLocation) {
         try {
             AppConfig config = AppConfig.load(this);
             if (!config.isConfigured()) {
                 return;
             }
-            android.location.Location location = includeLocation ? PassiveLocation.latest(this) : null;
             List<InstalledApps.App> apps = InstalledApps.launchable(getPackageManager());
             String fingerprint = InstalledApps.fingerprint(apps);
             boolean changed = InstalledApps.shouldSend(
@@ -354,7 +463,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
             new HomeAssistantClient(config).postActivity(
                     application,
                     window,
-                    location,
+                    null,
                     enforcementStatus,
                     enforcementDetail,
                     changed ? apps : null);

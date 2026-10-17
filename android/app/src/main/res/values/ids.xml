@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The two lines of one row in the "request another app" picker. -->
+    <item name="pickerLabel" type="id" />
+    <item name="pickerPackage" type="id" />
+</resources>

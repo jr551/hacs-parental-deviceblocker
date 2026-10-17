@@ -1,9 +1,9 @@
 # Android deploy checklist
 
-Use this before installing Parental Device Blocker on a child's phone. Android **0.5.1** belongs with Home Assistant **0.10.0** or newer. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
+Use this before installing Parental Device Blocker on a child's phone. Android **0.5.6** belongs with Home Assistant **0.10.0** or newer. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
 
-- `ParentalDeviceBlocker-0.5.1.apk`
-- `ParentalDeviceBlocker-0.5.1.apk.sha256`
+- `ParentalDeviceBlocker-0.5.6.apk`
+- `ParentalDeviceBlocker-0.5.6.apk.sha256`
 
 Verify the checksum before install. Do not install `*-debug.apk` on a phone a child uses.
 
@@ -20,8 +20,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 - [ ] Device type: Android phone. Store each API key in a parent password manager.
 - [ ] Set a distinct Home Assistant parent-override PIN, or leave the override disabled on purpose. This PIN is not the phone's local configuration PIN.
 - [ ] Choose an HTTPS Home Assistant URL that the phone can reach on Wi-Fi and on mobile data. Plain HTTP is accepted only for a local address.
-- [ ] Server-mediated S3 backup was removed in integration 0.10.0; skip media-backup planning unless you use a separate tool.
-- [ ] Download the **0.5.1** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.5.1.apk.sha256`.
+- [ ] Download the **0.5.6** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.5.6.apk.sha256`.
 
 ## Upgrading a phone that is already set up
 
@@ -32,7 +31,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 ## Per phone
 
 - [ ] The parent Google account is the device owner. The child is not a device admin.
-- [ ] Install `ParentalDeviceBlocker-0.5.1.apk` (package `lol.rowe.blocker`, not `lol.rowe.blocker.debug`).
+- [ ] Install `ParentalDeviceBlocker-0.5.6.apk` (package `lol.rowe.blocker`, not `lol.rowe.blocker.debug`).
 - [ ] Create a local configuration PIN of at least four digits. There is no default and no recovery PIN. Two wrong attempts lock the setup screen for 15 minutes.
 - [ ] Enter the child's name and the Home Assistant address, then tap **Set up this phone**. The screen waits for a parent to approve the request in Home Assistant (`sensor.rowe_pc_blocker_pending_setups`, then the approve button). The phone stores the device id and API key; the parent does not type the key. A declined or expired request saves nothing.
 - [ ] Turn Accessibility on for Parental Device Blocker (the app installs as **Android Settings** on the launcher; the accessibility service keeps its own name). Allow restricted settings if Android asks.
@@ -44,11 +43,17 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
   - Turn off **Put unused apps to sleep** for this app, or add it to Never sleeping apps
   - Re-check these after an One UI update
 - [ ] Xiaomi/MIUI only: enable Autostart and background pop-up windows. Stock Samsung does not have that menu.
-- [ ] Grant location only if a position is wanted. The phone reads cached fixes and, when the newest one is over 15 minutes old, asks for one fresh fix at most once every 15 minutes.
+- [ ] Grant location only if a position is wanted. The phone sends no position on its own: a parent presses **Request location** in Home Assistant, the request rides the next state poll, and the phone answers once. The request expires after ten minutes.
+- [ ] Allow the camera when the phone asks. The challenge photo is taken by a preview inside the lock screen, so the app holds the camera itself instead of handing the shot to the system camera app, which the lock screen would cover. The first **Take photo** raises Android's camera prompt; tap **Allow**. Without it the challenge cannot be completed, and the phone says so on the challenge screen.
 - [ ] Set the allow-list in Home Assistant (`text.<device>_allowed_apps`, comma-separated package names) or leave it empty for the built-in Calls/WhatsApp/Maps/MapMyWalk/Classroom/Clock/Camera set. The block screen shows whichever list applies.
 - [ ] Turn **off** Developer options and USB debugging. A release build cannot be configured with `adb run-as`.
 - [ ] Within about a minute, Home Assistant shows Agent online and foreground app updates while unblocked. Enforcement status reads `monitoring`.
 - [ ] Supervised block: block screen appears, WhatsApp works, Google Maps works, the dialler works, and Back/Home do not dismiss a hard block.
+- [ ] Chore challenge: set one from Home Assistant, then confirm the phone locks like a block — the phrase screen cannot be dismissed with Back or Home, disallowed apps stay blocked, and the allowed apps still open. **Take photo** stays disabled until the phrase matches, the photo is taken by the preview inside the lock screen, and **Submit** stays disabled until both are in. The phone then waits with a countdown to `auto_approve_at` (two hours after submission), and the lock clears only once a parent approves it in Home Assistant (`rowe_pc_blocker.approve_challenge`) or that deadline passes. Rejecting sends it back to the child with the photo deleted: the screen turns red, the phrase shows `— attempt N`, and the red clears as soon as the child starts again.
+- [ ] Unblock requests: on the block screen, **Request another app** lists the phone's apps (label and package, this app left out) and sends the same request the per-app button sends. With three requests already waiting, the button is disabled and says so; approving, rejecting or letting one expire re-enables it.
+- [ ] Notification access (optional): tap **Allow notification access** on the setup screen and turn it on. The phone then records the day's notifications and sends the previous day's list to Home Assistant at midnight; without it the dump is empty. The setup screen says so in plain words.
+- [ ] Self-update: with a newer release published, the phone downloads it, checks the release's `.sha256` and the signing certificate, then shows an **Update needed** screen with an **Install** button. Confirm the screen cannot be dismissed, that Install opens the system installer, and that it clears once the new version is running. A parent override releases it.
+- [ ] Notification shade: the foreground notification reads **Android Settings** / "Keeping this device up to date." and sits collapsed at the bottom of the shade. Nothing in the shade names the app or what it does.
 - [ ] Secure Folder / Dual Messenger clones are not the apps the allow-list launches. Test them if anyone uses them.
 - [ ] Fail-open proof: airplane mode or stop Home Assistant during a block. The phone unlocks. Enforcement status becomes `fail_open` when the phone can still reach Home Assistant; otherwise Agent online turns off and you treat the phone as unblocked with no fresh status. The `rowe_pc_blocker_enforcement_degraded` event fires only when Home Assistant receives a status report while a block was requested.
 - [ ] Turn Accessibility off briefly. Enforcement status becomes `accessibility_disabled` while the watchdog is alive. Turn it back on before leaving the phone.
@@ -59,6 +64,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 
 - [ ] Record both local PINs and both Home Assistant override PINs where the children cannot read them.
 - [ ] Emergency unlock paths: turn the Home Assistant block switch off, use the parent override on the block screen, or disable Accessibility / uninstall. Uninstall is still possible. Do not describe this build as uninstall-proof.
+- [ ] If Home Assistant refuses the parent override (no override PIN configured there, or locked out) or cannot be reached, the phone falls back to its own local configuration PIN and grants an hour locally. The same attempt counter and 15-minute lockout apply, so a wrong PIN still unlocks nothing.
 - [ ] If the network is unreliable, do not use the phone block as the only bedtime control. Keep the PC and socket automations that already exist.
 - [ ] Example alert: `deploy/home-assistant/rowe_pc_blocker_android_enforcement.yaml`. Replace the placeholder entity ids before use.
 

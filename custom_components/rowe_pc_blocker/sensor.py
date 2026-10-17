@@ -1,27 +1,67 @@
-"""PC activity sensors."""
+"""Per-device sensors: what a child's device is doing, and what needs a parent.
 
-from homeassistant.components.sensor import SensorEntity
+Naming and categories follow one rule across the platforms:
+
+* an entity a parent watches or acts on from the device card is left without an
+  ``entity_category``;
+* an entity that only explains the machinery behind those — agent internals,
+  the optional screen monitor's detail, the app list used to build an
+  allowlist — is ``diagnostic``.
+
+Telemetry that only an agent check-in refreshes derives from
+``AgentTelemetryEntity``, so a silent agent shows as unavailable instead of
+leaving a stale reading on the dashboard.
+"""
+
+from datetime import timedelta
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.const import EntityCategory
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.util import dt as dt_util
 
+from .agent_status import DEGRADED_UI_STATUSES, is_portal_error_status
 from .const import DEVICE_TYPE_ANDROID, DOMAIN, SIGNAL_PENDING
-from .entity import ParentalDeviceEntity
-from .pending import awaiting_requests, claim_pending_entities
+from .entity import AgentTelemetryEntity, ParentalDeviceEntity
+from .evidence import evidence_expires_at, evidence_file
+from .notifications import recent_items
+from .pending import awaiting_requests, claim_pending_entities, unblock_requests
+from .provision import MAX_PENDING_UNBLOCK_REQUESTS
+
+# The states the challenge sensor reports, and the concern levels the screen
+# monitor reports. Both are enum sensors, so Home Assistant needs the full set
+# up front.
+CHALLENGE_STATES = ["none", "pending", "submitted", "approved"]
+RISK_LEVELS = ["none", "low", "moderate", "high", "critical"]
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     runtime = hass.data[DOMAIN][entry.entry_id]
-    entities = [
+    entities: list[SensorEntity] = [
         ActiveApplicationSensor(runtime),
         ActiveWindowSensor(runtime),
-        PortalStatusSensor(runtime),
-        EnforcementStatusSensor(runtime),
         ScreenAssessmentSensor(runtime),
         ScreenSafetySensor(runtime),
         DailyActivitySummarySensor(runtime),
         WeeklyActivitySummarySensor(runtime),
     ]
     if runtime.device_type == DEVICE_TYPE_ANDROID:
-        entities.append(InstalledAppsSensor(runtime))
+        entities += [
+            EnforcementStatusSensor(runtime),
+            InstalledAppsSensor(runtime),
+            UnblockRequestsSensor(runtime),
+            ChallengeSensor(runtime),
+            NotificationsSensor(runtime),
+        ]
+    else:
+        # A PC reports the points-kiosk state in the same agent field a phone
+        # uses for Accessibility state, so only the one that applies exists.
+        entities.append(PortalStatusSensor(runtime))
     async_add_entities(entities)
     # The pending-setups sensor is integration-wide, so only the entry that
     # owns the pending entities creates it.
@@ -29,7 +69,9 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
         async_add_entities([PendingSetupsSensor(hass)])
 
 
-class ActiveApplicationSensor(ParentalDeviceEntity, SensorEntity):
+class ActiveApplicationSensor(AgentTelemetryEntity, SensorEntity):
+    """The foreground application the agent last reported."""
+
     _attr_name = "Active application"
     _attr_icon = "mdi:application"
 
@@ -44,14 +86,19 @@ class ActiveApplicationSensor(ParentalDeviceEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         return {
-            "username": self.runtime.reported_username,
-            "agent_version": self.runtime.agent_version,
+            # The account the agent reported the activity under. The agent
+            # version is a device fact and lives in the device firmware
+            # version instead.
+            "username": self.runtime.reported_username or None,
         }
 
 
-class ActiveWindowSensor(ParentalDeviceEntity, SensorEntity):
+class ActiveWindowSensor(AgentTelemetryEntity, SensorEntity):
+    """The window title behind the active application."""
+
     _attr_name = "Active window"
     _attr_icon = "mdi:monitor-eye"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
@@ -62,11 +109,12 @@ class ActiveWindowSensor(ParentalDeviceEntity, SensorEntity):
         return self.runtime.active_window or "Idle"
 
 
-class PortalStatusSensor(ParentalDeviceEntity, SensorEntity):
-    """Sanitised child-kiosk status reported by the Windows activity app."""
+class PortalStatusSensor(AgentTelemetryEntity, SensorEntity):
+    """The Windows points-kiosk state reported by the activity app."""
 
     _attr_name = "Points portal status"
     _attr_icon = "mdi:web-check"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
@@ -79,21 +127,22 @@ class PortalStatusSensor(ParentalDeviceEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         return {
-            "last_error": self.runtime.ui_error or None,
+            "detail": self.runtime.ui_error or None,
             "reported_at": (
                 self.runtime.ui_reported_at.isoformat()
                 if self.runtime.ui_reported_at
                 else None
             ),
-            "agent_version": self.runtime.agent_version or None,
+            "healthy": not is_portal_error_status(self.runtime.ui_status),
         }
 
 
-class EnforcementStatusSensor(ParentalDeviceEntity, SensorEntity):
-    """Android fail-open / Accessibility state, and the same field on Windows."""
+class EnforcementStatusSensor(AgentTelemetryEntity, SensorEntity):
+    """The Android Accessibility and fail-open state reported by the phone."""
 
     _attr_name = "Enforcement status"
     _attr_icon = "mdi:shield-alert"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
@@ -112,25 +161,38 @@ class EnforcementStatusSensor(ParentalDeviceEntity, SensorEntity):
                 if self.runtime.ui_reported_at
                 else None
             ),
-            "fail_open": self.runtime.ui_status == "fail_open",
-            "accessibility_disabled": self.runtime.ui_status
-            == "accessibility_disabled",
+            # One flag for every status that means the block is not being
+            # enforced, matching the rowe_pc_blocker_enforcement_degraded
+            # event. The state names which one it is.
+            "degraded": self.runtime.ui_status in DEGRADED_UI_STATUSES,
         }
 
 
-class ScreenAssessmentSensor(ParentalDeviceEntity, SensorEntity):
+class _ScreenMonitorSensor(ParentalDeviceEntity, SensorEntity):
+    """Shared availability for the optional VNC screen-assessment sensors.
+
+    These read the screen monitor rather than the device agent, so they follow
+    the monitor's own configured state: with the feature off there is nothing
+    to report, and the entity says so by being unavailable. The Check screen
+    now button uses the same rule.
+    """
+
+    @property
+    def available(self) -> bool:
+        monitor = self.runtime.screen_monitor
+        return monitor is not None and monitor.settings.configured
+
+
+class ScreenAssessmentSensor(_ScreenMonitorSensor):
     """Latest text assessment; raw screenshots are never retained."""
 
     _attr_name = "Screen assessment"
     _attr_icon = "mdi:image-search"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
         self._attr_unique_id = f"{runtime.device_id}_screen_assessment"
-
-    @property
-    def available(self) -> bool:
-        return self.runtime.screen_monitor is not None
 
     @property
     def native_value(self) -> str:
@@ -167,11 +229,13 @@ class ScreenAssessmentSensor(ParentalDeviceEntity, SensorEntity):
         }
 
 
-class ScreenSafetySensor(ParentalDeviceEntity, SensorEntity):
+class ScreenSafetySensor(_ScreenMonitorSensor):
     """Latest structured concern level for automation triggers."""
 
     _attr_name = "Screen safety"
     _attr_icon = "mdi:shield-check"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = RISK_LEVELS
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
@@ -179,7 +243,8 @@ class ScreenSafetySensor(ParentalDeviceEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
-        return self.runtime.screen_monitor.last_risk_level
+        monitor = self.runtime.screen_monitor
+        return monitor.last_risk_level if monitor is not None else "none"
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -197,7 +262,7 @@ class ScreenSafetySensor(ParentalDeviceEntity, SensorEntity):
         }
 
 
-class _ActivitySummarySensor(ParentalDeviceEntity, SensorEntity):
+class _ActivitySummarySensor(_ScreenMonitorSensor):
     """Shared deterministic text-only activity report sensor."""
 
     period = "today"
@@ -221,6 +286,7 @@ class _ActivitySummarySensor(ParentalDeviceEntity, SensorEntity):
 class DailyActivitySummarySensor(_ActivitySummarySensor):
     _attr_name = "Daily activity summary"
     _attr_icon = "mdi:calendar-today"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     period = "today"
 
     def __init__(self, runtime) -> None:
@@ -231,6 +297,7 @@ class DailyActivitySummarySensor(_ActivitySummarySensor):
 class WeeklyActivitySummarySensor(_ActivitySummarySensor):
     _attr_name = "Weekly activity summary"
     _attr_icon = "mdi:calendar-week"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     period = "week"
 
     def __init__(self, runtime) -> None:
@@ -238,11 +305,13 @@ class WeeklyActivitySummarySensor(_ActivitySummarySensor):
         self._attr_unique_id = f"{runtime.device_id}_weekly_activity_summary"
 
 
-class InstalledAppsSensor(ParentalDeviceEntity, SensorEntity):
+class InstalledAppsSensor(AgentTelemetryEntity, SensorEntity):
     """The launchable apps the phone last reported, for choosing an allowlist."""
 
     _attr_name = "Installed apps"
     _attr_icon = "mdi:apps"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
@@ -257,6 +326,180 @@ class InstalledAppsSensor(ParentalDeviceEntity, SensorEntity):
         return {"apps": [dict(app) for app in self.runtime.installed_apps]}
 
 
+class UnblockRequestsSensor(ParentalDeviceEntity, SensorEntity):
+    """The apps this phone has asked a parent to allow.
+
+    The phone polls its state every minute, so an approved app clears the block
+    screen by itself; this sensor is how a parent sees what is waiting. It is
+    Home Assistant state rather than agent telemetry, so it stays available
+    while the phone is offline.
+    """
+
+    _attr_name = "Unblock requests"
+    _attr_icon = "mdi:lock-open-alert"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_unblock_requests"
+
+    @property
+    def native_value(self) -> int:
+        return len(unblock_requests(self.hass, self.runtime.device_id))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        requests = unblock_requests(self.hass, self.runtime.device_id)
+        return {
+            # The state is the count; the limit is what the phone's picker
+            # reads from the state payload to disable itself in time.
+            "unblock_requests_pending": len(requests),
+            "unblock_requests_limit": MAX_PENDING_UNBLOCK_REQUESTS,
+            "requests": [
+                {
+                    "request_id": request.request_id,
+                    "package": request.package,
+                    "label": request.label,
+                    "requested_at": request.requested_at.isoformat(),
+                }
+                for request in requests
+            ],
+        }
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_PENDING, self.async_write_ha_state
+            )
+        )
+
+
+class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
+    """The chore challenge this phone must answer before it unlocks.
+
+    ``none`` until a parent sends a phrase, ``pending`` while the child still
+    has to type it back, ``submitted`` once the photo is in and a parent has
+    not decided, and ``approved`` once they have. The evidence attributes come
+    from the stored photo, so they survive a restart. Like the unblock
+    requests, this is Home Assistant state and stays available while the phone
+    is offline.
+    """
+
+    _attr_name = "Challenge"
+    _attr_icon = "mdi:form-textbox"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = CHALLENGE_STATES
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_challenge"
+
+    @property
+    def native_value(self) -> str:
+        return self.runtime.challenge_state
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # A submitted challenge approves itself after two hours. The phone's
+        # state poll settles it too; this tick is what settles it for a
+        # dashboard when no phone is polling.
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass,
+                self._handle_interval,
+                timedelta(seconds=30),
+            )
+        )
+
+    async def _handle_interval(self, _now) -> None:
+        await self.runtime.async_auto_approve_challenge()
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        path = evidence_file(
+            self.hass, self.runtime.device_id, self.runtime.challenge_id
+        )
+        return {
+            "phrase": self.runtime.challenge_phrase or None,
+            "sent_at": (
+                self.runtime.challenge_sent_at.isoformat()
+                if self.runtime.challenge_sent_at
+                else None
+            ),
+            "submitted_at": (
+                self.runtime.challenge_submitted_at.isoformat()
+                if self.runtime.challenge_submitted_at
+                else None
+            ),
+            "approved_at": (
+                self.runtime.challenge_approved_at.isoformat()
+                if self.runtime.challenge_approved_at
+                else None
+            ),
+            "auto_approve_at": (
+                self.runtime.challenge_auto_approve_at.isoformat()
+                if self.runtime.challenge_auto_approve_at
+                else None
+            ),
+            "attempt": self.runtime.challenge_attempt if self.runtime.challenge_id else None,
+            "evidence_at": (
+                dt_util.utc_from_timestamp(path.stat().st_mtime).isoformat()
+                if path is not None
+                else None
+            ),
+            "evidence_expires_at": (
+                evidence_expires_at(path).isoformat() if path is not None else None
+            ),
+        }
+
+
+class NotificationsSensor(ParentalDeviceEntity, SensorEntity):
+    """The phone's notifications for the latest day it reported.
+
+    The phone posts one dump a day; this sensor is the parent-facing summary:
+    the day's count, which apps were noisiest, and the most recent items. The
+    dump is trimmed at ingest, so the attributes stay inside the recorder's
+    size limit. Home Assistant state rather than agent telemetry, so it stays
+    available while the phone is offline.
+    """
+
+    _attr_name = "Notifications"
+    _attr_icon = "mdi:bell-ring-outline"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_notifications"
+
+    @property
+    def native_value(self) -> int | None:
+        dump = self.runtime.notifications
+        return dump.count if dump is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        dump = self.runtime.notifications
+        if dump is None:
+            return {
+                "date": None,
+                "truncated": None,
+                "apps": [],
+                "items": [],
+                "received_at": None,
+            }
+        return {
+            "date": dump.date,
+            "truncated": dump.truncated,
+            # The summary covers the whole day, so it is computed once at
+            # ingest rather than from the trimmed items.
+            "apps": [dict(app) for app in dump.apps],
+            "items": [item.as_dict() for item in recent_items(dump.items)],
+            "received_at": dump.received_at.isoformat(),
+        }
+
+
 class PendingSetupsSensor(SensorEntity):
     """How many phones are waiting for a parent to approve their setup.
 
@@ -268,6 +511,7 @@ class PendingSetupsSensor(SensorEntity):
     _attr_has_entity_name = False
     _attr_name = "Rowe PC blocker pending setups"
     _attr_icon = "mdi:cellphone-arrow-down"
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unique_id = f"{DOMAIN}_pending_setups"
 
     def __init__(self, hass) -> None:

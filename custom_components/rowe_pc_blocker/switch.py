@@ -1,13 +1,15 @@
 """Blocking switch."""
 
 import logging
+from datetime import timedelta
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, INITIAL_GRACE_SECONDS
 from .entity import ParentalDeviceEntity
 
 _LOGGER = logging.getLogger(__name__)
@@ -18,6 +20,15 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
 
 
 class PcBlockedSwitch(ParentalDeviceEntity, SwitchEntity, RestoreEntity):
+    """The parent's block control.
+
+    Deliberately always available: a parent must be able to block a device
+    whose agent is offline, and this switch is the only entity that can. Its
+    attributes say what the block is doing right now — ``effective_blocked``
+    and ``block_reason`` — so the dashboard can show why a requested block is
+    not yet in force.
+    """
+
     _attr_name = "Blocked"
     _attr_icon = "mdi:account-lock"
 
@@ -32,21 +43,19 @@ class PcBlockedSwitch(ParentalDeviceEntity, SwitchEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         old = await self.async_get_last_state()
-        if old is not None:
-            self.runtime.blocked = old.state == "on"
-            if self.runtime.blocked and self.runtime.block_requested_at is None:
-                # Do not grant a fresh 30s grace after restart — the original
-                # block time is lost, so enforce immediately (keep any active
-                # override/extension, but do not create a new grace window).
-                from homeassistant.util import dt as dt_util
-                from datetime import timedelta
-                from .const import INITIAL_GRACE_SECONDS
-                # Set requested to grace-ago so enforce_at == now.
-                self.runtime.block_requested_at = dt_util.utcnow() - timedelta(
-                    seconds=INITIAL_GRACE_SECONDS
-                )
-                await self.runtime.async_save()
-                self.runtime.notify()
+        if old is None:
+            return
+        self.runtime.blocked = old.state == "on"
+        if self.runtime.blocked and self.runtime.block_requested_at is None:
+            # Do not grant a fresh 30s grace after restart — the original
+            # block time is lost, so enforce immediately (keep any active
+            # override/extension, but do not create a new grace window).
+            self.runtime.block_requested_at = dt_util.utcnow() - timedelta(
+                seconds=INITIAL_GRACE_SECONDS
+            )
+            await self.runtime.async_save()
+            self.runtime.notify()
+
     async def async_turn_on(self, **kwargs) -> None:
         await self.runtime.async_set_blocked(True)
 
@@ -80,7 +89,17 @@ class PcBlockedSwitch(ParentalDeviceEntity, SwitchEntity, RestoreEntity):
     def extra_state_attributes(self) -> dict:
         return {
             "effective_blocked": self.runtime.effective_blocked,
-            "enforce_at": self.runtime.enforce_at.isoformat() if self.runtime.enforce_at else None,
+            "block_reason": self.runtime.block_reason,
+            "enforce_at": (
+                self.runtime.enforce_at.isoformat()
+                if self.runtime.enforce_at
+                else None
+            ),
+            "extension_until": (
+                self.runtime.extension_until.isoformat()
+                if self.runtime.extension_until
+                else None
+            ),
             "extension_available": self.runtime.extension_available,
             "extension_available_at": (
                 self.runtime.extension_available_at.isoformat()

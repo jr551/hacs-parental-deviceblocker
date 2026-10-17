@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
+import secrets
 from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -25,6 +27,7 @@ from .agent_status import (
 from .apps import parse_installed_apps
 from .const import (
     DEFAULT_MESSAGE,
+    DOMAIN,
     EVENT_AGENT_RECOVERED,
     EVENT_AGENT_STALE,
     EXTENSION_COOLDOWN_SECONDS,
@@ -35,9 +38,30 @@ from .const import (
     POINTS_HOUR_MINUTES,
     SIGNAL_UPDATE,
 )
+from .location import (
+    parse_accuracy,
+    parse_coordinates,
+    parse_fix_age,
+    parse_provider,
+    request_is_live,
+)
+from .notifications import NotificationDump, is_newer
 
 if TYPE_CHECKING:
     from .screen_monitor import ScreenMonitor
+
+# The four states the challenge sensor reports. A child fills the phrase in
+# (``pending``), sends the photo (``submitted``), and a parent approves it
+# (``approved``); ``approved`` stays until a parent clears the challenge or
+# sends a new one, so the dashboard can show that the chore was done.
+CHALLENGE_NONE = "none"
+CHALLENGE_PENDING = "pending"
+CHALLENGE_SUBMITTED = "submitted"
+CHALLENGE_APPROVED = "approved"
+
+# A submitted challenge approves itself after this long, so a parent who is
+# away from their phone cannot leave a child locked indefinitely.
+CHALLENGE_AUTO_APPROVE_SECONDS = 2 * 60 * 60
 
 
 @dataclass(slots=True)
@@ -67,21 +91,45 @@ class PcRuntime:
     # True between the stale event and the agent's next check-in, so one
     # offline episode fires exactly one event.
     agent_stale: bool = False
-    # Passive (cached-only) position reported by the Android agent. May be stale
-    # or absent by design — the agent never asks the GPS chip for a fix.
+    # On-demand position. The phone no longer reports one on every heartbeat:
+    # a parent asks, the request rides the next state poll, and the phone posts
+    # one fix back. The fix is deliberately not persisted — a child's position
+    # does not belong in the runtime store — so the tracker is unknown again
+    # after a restart until the next answer.
     latitude: float | None = None
     longitude: float | None = None
-    gps_accuracy: int | None = None
-    location_age_seconds: int | None = None
+    location_accuracy: float | None = None
+    # How old the phone said the fix already was when it answered. The tracker
+    # adds the time since it arrived, so the age a parent sees is the age of
+    # the position, not of the answer.
+    location_fix_age_seconds: int | None = None
     location_provider: str = ""
     location_reported_at: datetime | None = None
+    # The pending request: an empty id means there is nothing to answer.
+    location_request_id: str = ""
+    location_requested_at: datetime | None = None
     # The parent's comma-separated allowlist for this phone, and the apps the
     # phone last reported. Both are empty for a PC.
     allowed_apps: str = ""
     installed_apps: list[dict] = field(default_factory=list)
+    # A chore challenge: the phone stays locked until the child types the
+    # phrase back and a parent approves the photo. ``challenge_id`` is empty
+    # when there is no challenge; ``challenge_submitted_at`` is set when the
+    # child sends it, and ``challenge_approved_at`` when a parent accepts it.
+    challenge_id: str = ""
+    challenge_phrase: str = ""
+    challenge_sent_at: datetime | None = None
+    challenge_submitted_at: datetime | None = None
+    challenge_approved_at: datetime | None = None
+    # Which try the child is on. A rejection counts as an attempt, so the
+    # phone can tell them "attempt 2 of 3" instead of starting over silently.
+    challenge_attempt: int = 1
     block_requested_at: datetime | None = None
     extension_used_at: datetime | None = None
     extension_until: datetime | None = None
+    # The latest notification dump the phone posted, already trimmed to what
+    # the notifications sensor shows. None until the phone reports one.
+    notifications: NotificationDump | None = None
     # A reward purchase is money-like: one portal submission may spend points
     # only once for the current blocked session.  Keep this durable so a Home
     # Assistant restart cannot turn a slow or failed unlock into a new charge.
@@ -121,6 +169,27 @@ class PcRuntime:
         return self.blocked and self.enforce_at is not None and dt_util.utcnow() >= self.enforce_at
 
     @property
+    def block_reason(self) -> str:
+        """Why the block is, or is not, in force right now.
+
+        One word a dashboard can show next to the switch: ``off`` when no
+        parent asked for a block, ``grace_period`` while the agent's initial
+        grace window is still running, ``extension`` while a save-work
+        extension or a parent override is holding the block off, and
+        ``enforced`` once the device is actually blocked.
+        """
+        if not self.blocked:
+            return "off"
+        if self.effective_blocked:
+            return "enforced"
+        if (
+            self.extension_until is not None
+            and self.extension_until > dt_util.utcnow()
+        ):
+            return "extension"
+        return "grace_period"
+
+    @property
     def extension_available(self) -> bool:
         return self.extension_used_at is None or dt_util.utcnow() >= (
             self.extension_used_at + timedelta(seconds=EXTENSION_COOLDOWN_SECONDS)
@@ -132,6 +201,67 @@ class PcRuntime:
             return None
         return self.extension_used_at + timedelta(seconds=EXTENSION_COOLDOWN_SECONDS)
 
+    @property
+    def challenge_state(self) -> str:
+        """``none``, ``pending``, ``submitted`` or ``approved``."""
+        if not self.challenge_id:
+            return CHALLENGE_NONE
+        if self.challenge_approved_at is not None:
+            return CHALLENGE_APPROVED
+        if self.challenge_submitted_at is not None:
+            return CHALLENGE_SUBMITTED
+        return CHALLENGE_PENDING
+
+    @property
+    def challenge_auto_approve_at(self) -> datetime | None:
+        """When a submitted challenge approves itself, or None.
+
+        Only a challenge that is waiting on a parent has a deadline; a pending
+        one has not been sent yet, and an approved one is already decided.
+        """
+        if self.challenge_submitted_at is None or self.challenge_approved_at is not None:
+            return None
+        return self.challenge_submitted_at + timedelta(
+            seconds=CHALLENGE_AUTO_APPROVE_SECONDS
+        )
+
+    @property
+    def challenge_payload(self) -> dict | None:
+        """The challenge the phone reads on its state poll, or None.
+
+        None once a parent has approved it — that is how the phone knows the
+        chore is done and it may unlock — and None when there is no challenge.
+        """
+        if not self.challenge_id or self.challenge_approved_at is not None:
+            return None
+        return {
+            "id": self.challenge_id,
+            "phrase": self.challenge_phrase,
+            "sent_at": (
+                self.challenge_sent_at.isoformat() if self.challenge_sent_at else None
+            ),
+            "status": (
+                CHALLENGE_SUBMITTED
+                if self.challenge_submitted_at is not None
+                else CHALLENGE_PENDING
+            ),
+            "submitted_at": (
+                self.challenge_submitted_at.isoformat()
+                if self.challenge_submitted_at
+                else None
+            ),
+            "auto_approve_at": (
+                self.challenge_auto_approve_at.isoformat()
+                if self.challenge_auto_approve_at
+                else None
+            ),
+            "attempt": self.challenge_attempt,
+        }
+
+    def challenge_is_current(self, challenge_id: str) -> bool:
+        """True when this id is the challenge the phone should be answering."""
+        return bool(self.challenge_id) and challenge_id == self.challenge_id
+
     async def async_load(self) -> None:
         self._store = Store(self.hass, 1, f"{__package__}.{self.device_id}")
         data = await self._store.async_load() or {}
@@ -142,6 +272,15 @@ class PcRuntime:
             str(value) for value in data.get("portal_reward_claims", []) if str(value)
         }
         self.agent_stale = bool(data.get("agent_stale", False))
+        self.challenge_id = str(data.get("challenge_id", ""))
+        self.challenge_phrase = str(data.get("challenge_phrase", ""))
+        self.challenge_sent_at = _parse_datetime(data.get("challenge_sent_at"))
+        self.challenge_submitted_at = _parse_datetime(data.get("challenge_submitted_at"))
+        self.challenge_approved_at = _parse_datetime(data.get("challenge_approved_at"))
+        self.challenge_attempt = _attempt(data.get("challenge_attempt"))
+        self.notifications = NotificationDump.from_dict(data.get("notifications"))
+        self.location_request_id = str(data.get("location_request_id", ""))
+        self.location_requested_at = _parse_datetime(data.get("location_requested_at"))
 
     async def async_save(self) -> None:
         if self._store is None:
@@ -153,6 +292,19 @@ class PcRuntime:
                 "extension_until": _format_datetime(self.extension_until),
                 "portal_reward_claims": sorted(self.portal_reward_claims),
                 "agent_stale": self.agent_stale,
+                "challenge_id": self.challenge_id,
+                "challenge_phrase": self.challenge_phrase,
+                "challenge_sent_at": _format_datetime(self.challenge_sent_at),
+                "challenge_submitted_at": _format_datetime(self.challenge_submitted_at),
+                "challenge_approved_at": _format_datetime(self.challenge_approved_at),
+                "challenge_attempt": self.challenge_attempt,
+                "notifications": (
+                    self.notifications.as_dict() if self.notifications else None
+                ),
+                # The fix itself is not persisted; only the request, so a
+                # restart does not lose a parent's ask.
+                "location_request_id": self.location_request_id,
+                "location_requested_at": _format_datetime(self.location_requested_at),
             }
         )
 
@@ -223,12 +375,178 @@ class PcRuntime:
         self.notify()
         return self.extension_until
 
+    async def async_send_challenge(self, phrase: str) -> None:
+        """Start a new challenge. The phone shows it on its next state poll."""
+        self.challenge_id = new_request_id()
+        self.challenge_phrase = phrase
+        self.challenge_sent_at = dt_util.utcnow()
+        self.challenge_submitted_at = None
+        self.challenge_approved_at = None
+        self.challenge_attempt = 1
+        await self.async_save()
+        self.notify()
+
+    async def async_clear_challenge(self) -> None:
+        """Cancel the challenge, approved or not."""
+        self.challenge_id = ""
+        self.challenge_phrase = ""
+        self.challenge_sent_at = None
+        self.challenge_submitted_at = None
+        self.challenge_approved_at = None
+        await self.async_save()
+        self.notify()
+
+    @property
+    def location_request_payload(self) -> dict | None:
+        """The pending location request the phone reads on its state poll.
+
+        None once the request has expired, so a phone that was offline cannot
+        answer a request a parent has stopped waiting for.
+        """
+        if not self.location_request_id:
+            return None
+        if not request_is_live(self.location_requested_at, dt_util.utcnow()):
+            return None
+        return {
+            "id": self.location_request_id,
+            "requested_at": (
+                self.location_requested_at.isoformat()
+                if self.location_requested_at
+                else None
+            ),
+        }
+
+    async def async_request_location(self) -> str:
+        """Ask the phone for one fix. A second press replaces the request."""
+        self.location_request_id = new_request_id()
+        self.location_requested_at = dt_util.utcnow()
+        await self.async_save()
+        self.notify()
+        return self.location_request_id
+
+    async def async_expire_location_request(self) -> bool:
+        """Drop a request nobody answered in time. True when one was dropped."""
+        if not self.location_request_id:
+            return False
+        if request_is_live(self.location_requested_at, dt_util.utcnow()):
+            return False
+        self.location_request_id = ""
+        await self.async_save()
+        self.notify()
+        return True
+
+    async def async_store_location(self, payload: dict) -> None:
+        """Store one answered fix and clear the request it answers."""
+        coordinates = parse_coordinates(payload)
+        if coordinates is None:
+            return
+        self.latitude, self.longitude = coordinates
+        self.location_accuracy = parse_accuracy(payload)
+        self.location_fix_age_seconds = parse_fix_age(payload)
+        self.location_provider = parse_provider(payload)
+        self.location_reported_at = dt_util.utcnow()
+        self.location_request_id = ""
+        await self.async_save()
+        self.notify()
+
+    async def async_store_notifications(self, dump: NotificationDump) -> bool:
+        """Keep a dump for a day that is not older than the stored one.
+
+        False when a newer day is already stored, so a late retry cannot
+        overwrite it.
+        """
+        if self.notifications is not None and not is_newer(
+            dump.date, self.notifications.date
+        ):
+            return False
+        self.notifications = dump
+        await self.async_save()
+        self.notify()
+        return True
+
+    async def async_submit_challenge(self, challenge_id: str) -> bool:
+        """Mark the current challenge sent. False when that id is not current.
+
+        The child waits for a parent from here, so a retry after a dropped
+        response is answered the same way and the first submission time is
+        kept.
+        """
+        if not self.challenge_is_current(challenge_id):
+            return False
+        if self.challenge_approved_at is not None:
+            return False
+        if self.challenge_submitted_at is None:
+            self.challenge_submitted_at = dt_util.utcnow()
+            await self.async_save()
+            self.notify()
+        return True
+
+    async def async_auto_approve_challenge(self) -> bool:
+        """Approve a submitted challenge nobody decided on in time.
+
+        Called whenever the challenge is read — the phone's state poll and the
+        challenge sensor's tick — so no scheduler is needed. A parent's
+        decision before the deadline wins: this only fires while the challenge
+        is still waiting on one.
+        """
+        deadline = self.challenge_auto_approve_at
+        if deadline is None or dt_util.utcnow() < deadline:
+            return False
+        return await self.async_approve_challenge()
+
+    async def async_approve_challenge(self) -> bool:
+        """Approve a submitted challenge. False when nothing is waiting."""
+        if not self.challenge_id or self.challenge_submitted_at is None:
+            return False
+        if self.challenge_approved_at is None:
+            self.challenge_approved_at = dt_util.utcnow()
+            await self.async_save()
+            self.notify()
+        return True
+
+    async def async_reject_challenge(self) -> bool:
+        """Send a submitted challenge back to the child. False when nothing is waiting.
+
+        The rejection counts as an attempt, so the child's next try is the next
+        number rather than a silent restart.
+        """
+        if not self.challenge_id or self.challenge_submitted_at is None:
+            return False
+        self.challenge_submitted_at = None
+        self.challenge_approved_at = None
+        self.challenge_attempt += 1
+        await self.async_save()
+        self.notify()
+        return True
+
+    def _async_update_device_version(self) -> None:
+        """Keep the device page's firmware version current.
+
+        Home Assistant reads an entity's device info only when the entity is
+        added, so a version that changed under a running Home Assistant has to
+        be pushed to the registry as well.
+        """
+        registry = device_registry.async_get(self.hass)
+        identifier = (DOMAIN, self.device_id)
+        lookup = getattr(registry, "async_get_device_by_identifier", None)
+        if lookup is not None:
+            # Identifiers are scoped to a config entry on current versions.
+            device = lookup(identifier, self.entry_id)
+        else:  # Home Assistant before identifiers were scoped per entry.
+            device = registry.async_get_device(identifiers={identifier})
+        if device is None or device.sw_version == self.agent_version:
+            return
+        registry.async_update_device(device.id, sw_version=self.agent_version)
+
     def update_activity(self, payload: dict) -> None:
         self.last_seen = dt_util.utcnow()
         self.active_application = str(payload.get("application", ""))[:255]
         self.active_window = str(payload.get("window_title", ""))[:255]
         self.reported_username = str(payload.get("username", ""))[:128]
+        previous_version = self.agent_version
         self.agent_version = str(payload.get("agent_version", ""))[:64]
+        if self.agent_version != previous_version:
+            self._async_update_device_version()
         if "installed_apps" in payload:
             self.installed_apps = parse_installed_apps(payload)
         previous_ui_status = self.ui_status
@@ -236,30 +554,6 @@ class PcRuntime:
         self.ui_status = resolve_ui_status(previous_ui_status, payload)
         self.ui_error = resolve_ui_error(previous_ui_error, payload)
         self.ui_reported_at = self.last_seen
-        if payload.get("latitude") is not None and payload.get("longitude") is not None:
-            try:
-                latitude = float(payload["latitude"])
-                longitude = float(payload["longitude"])
-            except (TypeError, ValueError):
-                latitude = longitude = None
-            if (
-                latitude is not None
-                and longitude is not None
-                and -90.0 <= latitude <= 90.0
-                and -180.0 <= longitude <= 180.0
-            ):
-                self.latitude = latitude
-                self.longitude = longitude
-                try:
-                    self.gps_accuracy = int(float(payload.get("gps_accuracy", 0)))
-                except (TypeError, ValueError):
-                    self.gps_accuracy = None
-                try:
-                    self.location_age_seconds = int(float(payload.get("location_age_seconds", 0)))
-                except (TypeError, ValueError):
-                    self.location_age_seconds = None
-                self.location_provider = str(payload.get("location_provider", ""))[:32]
-                self.location_reported_at = self.last_seen
         if (
             self.ui_status != previous_ui_status
             and is_portal_error_status(self.ui_status)
@@ -317,6 +611,10 @@ class PcRuntime:
         if transition is None:
             return
         await self.async_save()
+        # Every entity re-reads its availability, so the telemetry entities go
+        # unavailable the moment the agent crosses the timeout, and come back
+        # when it checks in again.
+        self.notify()
         if transition == AGENT_STALE:
             self.hass.bus.async_fire(
                 EVENT_AGENT_STALE,
@@ -338,6 +636,32 @@ class PcRuntime:
                     "device_type": self.device_type,
                 },
             )
+
+
+def new_request_id() -> str:
+    """32 lowercase hex characters, safe to use in an entity attribute."""
+    return secrets.token_hex(16)
+
+
+def runtime_for_device(hass: HomeAssistant, device_id: str) -> PcRuntime | None:
+    """The runtime for one configured device, or None when it is not set up."""
+    return next(
+        (
+            item
+            for item in hass.data.get(DOMAIN, {}).values()
+            if getattr(item, "device_id", None) == device_id
+        ),
+        None,
+    )
+
+
+def _attempt(value) -> int:
+    """A stored attempt number, never below the first try."""
+    try:
+        attempt = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(attempt, 1)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:

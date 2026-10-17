@@ -40,9 +40,13 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
 | `points_balance` | integer \| null | Child's Taskmate balance, or null |
 | `wake_alarm` | object \| null | Alarm schedule; null leaves the agent's cache alone |
 | `allowed_apps` | string[] | Android allow-list; empty means "use the agent's built-in defaults" |
+| `challenge` | object \| null | Active chore challenge: `{"id", "phrase", "sent_at", "status", "submitted_at"}`, or null once a parent approves it |
+| `location_request` | object \| null | Pending on-demand fix: `{"id", "requested_at"}`, or null when nothing is pending |
+| `unblock_requests_pending` | integer | Apps this phone is waiting on a parent to allow |
+| `unblock_requests_limit` | integer | How many it may have waiting at once |
 | `family` | object | This child's other devices: `{"phone": peer\|null, "pc": peer\|null}` |
 
-A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application"}`, where `last_seen` is ISO-8601 or null. Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer.
+A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application", "challenge"}`, where `last_seen` is ISO-8601 or null and `challenge` is the same `{"id", "phrase", "sent_at", "status", "submitted_at"}` object the peer's own state poll carries (null when it has none). Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer. Challenges are phone-only, so a PC peer always reports `"challenge": null`; the key is present on both peers so the shape is uniform.
 
 Reading this endpoint refreshes the device's `last_seen`, so an agent may use it as a plain liveness check-in.
 
@@ -61,17 +65,88 @@ Reading this endpoint refreshes the device's `last_seen`, so an agent may use it
 }
 ```
 
-The Android agent adds optional fields to the same body:
+The Android agent adds one optional field to the same body:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `latitude`, `longitude` | number | Cached position, when one is available |
-| `gps_accuracy` | integer | Metres |
-| `location_age_seconds` | integer | Age of the cached fix |
-| `location_provider` | string | `network` or `gps` |
 | `installed_apps` | array | `[{"package", "label"}]`; sent only when the set changed |
 
+Position is **not** reported here: it is on demand (see below), so a heartbeat never carries one.
+
 **Response 200:** `{"ok": true}`
+
+### `POST /api/rowe_pc_blocker/{device_id}/location`
+
+Android only. A parent presses **Request location** in Home Assistant, the request rides the phone's next state poll in `location_request`, and the phone posts one fix back. The request expires after **10 minutes**, so a phone that was offline cannot answer later and have the answer look current.
+
+**Request** JSON object:
+
+```json
+{
+  "request_id": "0123456789abcdef0123456789abcdef",
+  "latitude": 51.37,
+  "longitude": -0.28,
+  "accuracy": 12.5,
+  "provider": "fused",
+  "fix_age_seconds": 3
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `request_id` | string | The `id` from `location_request` |
+| `latitude`, `longitude` | number | Required; latitude −90…90, longitude −180…180 |
+| `accuracy` | number | Metres, optional |
+| `provider` | string | `fused`, `gps`, `network`, … optional |
+| `fix_age_seconds` | integer | How old the fix already was when the phone sent it, optional |
+
+**Response 200:** `{"ok": true}`
+
+**Response 400:** `{"error": "…"}` — the body is not a JSON object, or the coordinates are missing or out of range. The request stays pending, so the phone may try again.
+
+**Response 404:** `{"error": "That location request has expired."}` — the id is not the current one, or the request has expired. A late answer cannot overwrite a newer request.
+
+A successful answer clears the pending request and stores the fix. `device_tracker.<device>_location` shows it: the state is unknown until the first fix arrives, and `location_age_seconds` (the phone's `fix_age_seconds` plus the time since the answer arrived) is what tells a parent how old the position is. `requested_at` is when the parent last asked, `reported_at` when the answer arrived, and `location_provider` what the phone named.
+
+### `POST /api/rowe_pc_blocker/{device_id}/notifications`
+
+Android only. The phone captures notifications and posts one dump a day, so a parent can see what arrived without opening the phone. Home Assistant keeps only the latest dump per device.
+
+**Request** JSON object, at most **256 KiB**:
+
+```json
+{
+  "date": "2026-10-17",
+  "count": 137,
+  "truncated": false,
+  "items": [
+    {
+      "package": "com.whatsapp",
+      "app": "WhatsApp",
+      "title": "Mum",
+      "text": "Tea is ready",
+      "posted_at": "2026-10-17T17:30:00+00:00"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `date` | string | The day the dump covers, `YYYY-MM-DD`. Required |
+| `count` | integer | How many notifications the phone captured that day |
+| `truncated` | boolean | True when the phone hit its own capture cap |
+| `items` | array | `[{"package", "app", "title", "text", "posted_at"}]`; the order does not matter, Home Assistant sorts by `posted_at` |
+
+**Response 200:** `{"ok": true}`
+
+**Response 400:** `{"error": "…"}` — the body is not a JSON object, or `date` is missing or not a `YYYY-MM-DD` date.
+
+**Response 413:** `{"error": "That notification dump is too large."}` — over 256 KiB.
+
+A dump for a day **older** than the stored one is answered **200** and ignored, so a late retry cannot overwrite a newer day. The same day may be re-sent, and a newer day replaces the stored one.
+
+`sensor.<device>_notifications` is the parent-facing view: the state is the stored day's `count`, with `date`, `truncated`, `received_at`, `apps` (`[{"package", "app", "count"}]`, most-used first, capped at 40) and `items` (the most recent, newest first, capped at 100 and by a 10 KiB attribute budget) attributes. The dump is trimmed to those caps when it is stored, so the runtime store stays small and the state attributes stay inside the recorder's 16 KiB limit. Notification titles and bodies are redacted from diagnostics.
 
 ### `POST /api/rowe_pc_blocker/{device_id}/extension`
 
@@ -205,6 +280,162 @@ These two paths take no device credentials — the phone has none yet.
 **Response 403:** `{"status": "rejected", "error": "A parent declined this setup."}`
 
 **Response 404:** `{"error": "That setup request has expired."}`
+
+## Asking a parent to allow an app (Android)
+
+A blocked phone shows the block screen; when the child taps an app that is not
+allowed, the phone asks a parent to allow it. The request waits for a parent on
+the dashboard and expires after **30 minutes**, like a setup request. There is
+no polling endpoint: the phone already polls `GET …/state` about once a minute,
+so the block screen clears itself once the package appears in `allowed_apps`.
+
+### `POST /api/rowe_pc_blocker/{device_id}/unblock_request`
+
+Device credentials required, like every other device endpoint.
+
+**Request:**
+
+```json
+{
+  "package": "com.roblox.client",
+  "label": "Roblox"
+}
+```
+
+`label` is what the parent sees on the dashboard; it is truncated to 128 characters.
+
+**Response 200** — the request is waiting for a parent:
+
+```json
+{
+  "ok": true,
+  "request_id": "0123456789abcdef0123456789abcdef",
+  "status": "pending"
+}
+```
+
+**Response 400** — `package` is not an Android package name: `{"error": "That is not an Android package name."}`
+
+**Response 409** — the app is already allowed, either by the parent's list or by the agent's built-in defaults: `{"error": "That app is already allowed on this phone."}`
+
+**Response 409** — a request for that app is already waiting: `{"error": "A parent already has a request for that app."}`
+
+**Response 429** — the phone already has **3** requests waiting on a parent: `{"error": "A parent is already looking at your requests."}`
+
+At most one pending request exists per device and package, and at most **3**
+per device at any time — the block screen's **Request another app** picker makes
+asking cheap, so the cap is what stops a child filling the dashboard. The phone
+reads `unblock_requests_pending` and `unblock_requests_limit` from the state
+payload and disables the picker before it hits the wall; a slot frees up as soon
+as a request is approved, rejected or expires.
+
+Approving appends the package to that device's allowlist (the same value the
+`text.<device>_allowed_apps` entity holds and the state payload sends) and
+removes the request; rejecting just removes it. The dashboard shows
+`sensor.<device>_unblock_requests` (state = count, with `requests`,
+`unblock_requests_pending` and `unblock_requests_limit` attributes) and a
+dynamic `button.rowe_pc_blocker_approve_unblock_<request_id>` /
+`button.rowe_pc_blocker_reject_unblock_<request_id>` pair per request.
+
+## Chore challenge (Android)
+
+A parent can lock a phone behind a chore: the phone shows a phrase, the child
+takes a photo and types the phrase back, and the phone hands it to a parent.
+The child waits from there — a parent approves the photo, and only then does
+the challenge leave the state payload and the phone unlock. The challenge
+travels on the state poll, so a new one reaches the phone within a minute and
+no push channel is needed.
+
+The challenge runs `none` → `pending` (sent, the child fills it in) →
+`submitted` (photo uploaded, waiting for a parent) → `approved` (a parent
+approved it), and back to `none` when a parent clears it.
+
+A `submitted` challenge **approves itself two hours after `submitted_at`** if
+nobody decides, so a child is never locked indefinitely. The check runs
+whenever the challenge is read — the state poll below and the challenge
+sensor — so no scheduler is involved, and the payload goes null on that same
+poll. A parent approving or rejecting before the deadline wins.
+
+The `challenge` object in the state payload is present while the state is
+`pending` or `submitted`, and **null** once it is `approved` or `none` — that
+null is how the phone knows the chore is done and it may unlock. It carries
+`{"id", "phrase", "sent_at", "status", "submitted_at", "auto_approve_at", "attempt"}`,
+where `status` is `pending` or `submitted`, `submitted_at` is ISO-8601 or null,
+`auto_approve_at` is `submitted_at + 2 hours` while `submitted` and null
+otherwise, and `attempt` is the 1-based number of the try the child is on — a
+rejected submission counts as an attempt, so the phone can say "attempt 2"
+instead of restarting the count silently.
+
+### `POST /api/rowe_pc_blocker/{device_id}/challenge/submit`
+
+Device credentials required, like every other device endpoint.
+
+**Request:** `{"id": "0123456789abcdef0123456789abcdef"}`
+
+The id is the one from the `challenge` object in the state payload.
+
+**Response 200** — the challenge is waiting for a parent:
+
+```json
+{
+  "ok": true,
+  "status": "submitted"
+}
+```
+
+**Response 404** — there is no challenge, this id is not the current one, or a parent has already approved it: `{"error": "That challenge is no longer active."}`
+
+**Response 409** — no photo has been uploaded for this challenge: `{"error": "Take the photo first."}`
+
+Submitting is idempotent: a retry with the current id is answered **200** and
+keeps the first submission time. The phone must keep the lock up until the
+`challenge` object goes null.
+
+### `POST /api/rowe_pc_blocker/{device_id}/challenge/evidence`
+
+Device credentials required. The body is the JPEG itself rather than JSON, so
+the phone can stream the camera output straight through.
+
+**Request:** raw JPEG bytes, `Content-Type: image/jpeg`
+
+**Response 200** — stored:
+
+```json
+{
+  "ok": true,
+  "expires_at": "2026-10-18T12:00:00+00:00"
+}
+```
+
+**Response 404** — there is no active challenge: `{"error": "That challenge is no longer active."}`
+
+**Response 413** — larger than 5 MiB: `{"error": "That photo is too large."}`
+
+**Response 415** — not `image/jpeg`: `{"error": "Send the photo as image/jpeg."}`
+
+Photos are stored at `<config>/rowe_pc_blocker_evidence/<device_id>/<challenge_id>.jpg`
+and deleted after **24 hours**, pruned on every upload and at integration setup,
+so a photo cannot outlive its window even if nothing new arrives. Clearing the
+challenge deletes its photo immediately.
+
+A parent looks at the photo through `image.<device>_challenge_evidence`, which
+Home Assistant serves through its own authenticated image proxy — the device key
+is never involved, and the entity has no image while nothing is stored.
+
+### Challenge services
+
+| Service | Target | Data | Effect |
+|---------|--------|------|--------|
+| `rowe_pc_blocker.send_challenge` | `sensor.<device>_challenge` | `phrase` (required, 1–200 characters, trimmed) | Starts a new challenge with a fresh id; the sensor becomes `pending` |
+| `rowe_pc_blocker.approve_challenge` | `sensor.<device>_challenge` | — | Approves a `submitted` challenge; the sensor becomes `approved` and the payload goes null, so the phone unlocks. Only needed to decide before the two-hour deadline |
+| `rowe_pc_blocker.reject_challenge` | `sensor.<device>_challenge` | — | Sends a `submitted` challenge back to the child and deletes its photo; the sensor returns to `pending` and `attempt` goes up by one |
+| `rowe_pc_blocker.clear_challenge` | `sensor.<device>_challenge` | — | Cancels the challenge, approved or not, and deletes its photo; the sensor returns to `none` |
+
+`sensor.<device>_challenge` is `none`, `pending`, `submitted`, or `approved`,
+with `phrase`, `sent_at`, `submitted_at`, `approved_at`, `auto_approve_at`,
+`attempt`, `evidence_at`, and `evidence_expires_at` attributes. Approving — by a parent or
+by the two-hour deadline — keeps the photo until the challenge is cleared, so a
+parent can still look at what was approved.
 
 ## Contract tests
 
