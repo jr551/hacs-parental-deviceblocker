@@ -46,6 +46,7 @@ from .evidence import (
     evidence_refusal,
 )
 from .family import family_peers
+from .notifications import MAX_DUMP_BYTES, dump_refusal, parse_dump
 from .pending import (
     async_create_request,
     async_create_unblock_request,
@@ -249,6 +250,40 @@ class PcActivityView(HomeAssistantView):
         except web.HTTPBadRequest as err:
             raise web.HTTPBadRequest(text="Expected a JSON object") from err
         runtime.update_activity(payload)
+        return self.json({"ok": True})
+
+
+class PcNotificationsView(HomeAssistantView):
+    """Accept the phone's daily notification dump.
+
+    The phone captures notifications and posts one dump a day; Home Assistant
+    keeps only the latest, so the sensor is a summary rather than a growing
+    log. A dump for a day older than the stored one is accepted and ignored,
+    so a late retry cannot overwrite a newer day.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/notifications"
+    name = "api:rowe_pc_blocker:notifications"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request, max_bytes=MAX_DUMP_BYTES)
+        except web.HTTPRequestEntityTooLarge:
+            return self.json(
+                {"error": "That notification dump is too large."}, status_code=413
+            )
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        refusal = dump_refusal(payload)
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        await runtime.async_store_notifications(
+            parse_dump(payload, dt_util.utcnow())
+        )
         return self.json({"ok": True})
 
 
@@ -764,6 +799,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     hass.http.register_view(PcParentOverrideView)
     hass.http.register_view(PcPointsHourView)
     hass.http.register_view(PcActivityView)
+    hass.http.register_view(PcNotificationsView)
     hass.http.register_view(PcExtensionView)
     hass.http.register_view(PcUnblockRequestView)
     hass.http.register_view(PcChallengeAcceptView)

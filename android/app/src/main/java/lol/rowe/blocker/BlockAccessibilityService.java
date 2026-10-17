@@ -16,9 +16,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class BlockAccessibilityService extends AccessibilityService {
     private static volatile BlockAccessibilityService activeInstance;
+    /** How long a capture may keep the camera allowed before the allowance lapses. */
+    static final long CAPTURE_ALLOWANCE_MS = 5 * 60 * 1000L;
 
     private final ScheduledExecutorService policyExecutor = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService activityExecutor = Executors.newSingleThreadScheduledExecutor();
+    /** Downloads and verifies an update; never the poll thread. */
+    private final ScheduledExecutorService updateExecutor = Executors.newSingleThreadScheduledExecutor();
+    /** Posts the day's notification dump; never the poll thread. */
+    private final ScheduledExecutorService notificationExecutor = Executors.newSingleThreadScheduledExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean pollRunning = new AtomicBoolean();
     private final AtomicBoolean pollScheduled = new AtomicBoolean();
@@ -26,6 +32,11 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private volatile String enforcementStatus = EnforcementStatus.MONITORING;
     private volatile String enforcementDetail = "";
     private volatile String foregroundPackage = "";
+    /** The verified update waiting to be installed, or null. */
+    private volatile AppUpdater.Pending pendingUpdate;
+    /** The package allowed while the challenge photo is being captured, or "". */
+    private volatile String capturePackage = "";
+    private volatile long captureUntil;
     /** Allow-listed package just opened from the block screen, if any. */
     private volatile String pendingAllowedPackage;
     private volatile long pendingAllowedAt;
@@ -47,6 +58,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         activeInstance = this;
         decision = new PolicyDecision(getPackageName());
+        refreshPendingUpdate();
         if (AppConfig.load(this).isConfigured()) {
             EnforcementWatchdogJobService.schedule(this);
             EnforcementWatchdogService.start(this);
@@ -84,29 +96,60 @@ public final class BlockAccessibilityService extends AccessibilityService {
         service.adoptAllowedLaunch(packageName);
     }
 
+    /**
+     * Allow the system camera while the challenge photo is being captured. The
+     * camera is not on the allow-list, so without this the lock screen would
+     * cover it mid-shot and the evidence could never be taken.
+     */
+    static void beginCapture(String packageName) {
+        BlockAccessibilityService service = activeInstance;
+        if (service == null || packageName == null || packageName.isEmpty()) {
+            return;
+        }
+        service.capturePackage = packageName.trim();
+        service.captureUntil = SystemClock.elapsedRealtime() + CAPTURE_ALLOWANCE_MS;
+        if (service.decision != null) {
+            service.decision.setCapturePackage(service.capturePackage);
+        }
+    }
+
+    /** The shot came back (or the lock went away): stop allowing the camera. */
+    static void endCapture() {
+        BlockAccessibilityService service = activeInstance;
+        if (service == null) {
+            return;
+        }
+        service.capturePackage = "";
+        if (service.decision != null) {
+            service.decision.setCapturePackage("");
+        }
+    }
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         CharSequence packageName = event.getPackageName();
         if (packageName == null || decision == null) {
             return;
         }
+        expireCapture();
         String eventPackage = packageName.toString();
         boolean windowStateChanged =
                 event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
         String title = eventTitle(event.getClassName());
         Policy policy = currentPolicy;
+        boolean kiosk = kioskActive(policy);
         if (windowStateChanged
                 && decision.isUninstallSurface(eventPackage, title)
                 && !ParentMaintenance.allows()) {
             foregroundPackage = eventPackage;
-            if (policy.shouldCaptureForeground() || policy.shouldWarnGrace()) {
+            if (kiosk || policy.shouldWarnGrace()) {
                 showBlockScreen(policy);
             } else {
                 showUninstallGuard();
             }
             return;
         }
-        if (!policy.shouldCaptureForeground()
+        if (!kiosk
                 && !policy.shouldWarnGrace()
                 && !eventPackage.equals(getPackageName())
                 && !decision.isUninstallSurface(eventPackage, title)) {
@@ -116,7 +159,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 ? -1L
                 : SystemClock.elapsedRealtime() - pendingAllowedAt;
         PolicyDecision.WindowUpdate update = decision.onForegroundEvent(
-                policy.shouldCaptureForeground(),
+                kiosk,
                 windowStateChanged,
                 foregroundPackage,
                 eventPackage,
@@ -168,6 +211,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
         reporter.start();
         policyExecutor.shutdownNow();
         activityExecutor.shutdownNow();
+        updateExecutor.shutdownNow();
+        notificationExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -198,13 +243,17 @@ public final class BlockAccessibilityService extends AccessibilityService {
             WakeAlarm.applyServer(this, policy.wakeAlarm);
             currentPolicy = policy;
             decision.setAllowedApps(policy.allowedApps);
+            String acceptedChallengeId = Challenge.acceptedId(this);
+            boolean challengePending = policy.challengePending(acceptedChallengeId);
+            AppUpdater.challengeActive = challengePending;
+            refreshPendingUpdate();
             publishStatus(
                     policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
                     "",
                     false);
             MainActivity.applyPolicySnapshot(policy);
             reportLocationIfDue();
-            if (decision.shouldShowBlockScreen(policy.shouldCaptureForeground(), foregroundPackage)) {
+            if (decision.shouldShowBlockScreen(kioskActive(policy), foregroundPackage)) {
                 showBlockScreen(policy);
             } else if (policy.shouldWarnGrace()) {
                 // Re-show the grace warning (countdown + extension button) on
@@ -213,9 +262,13 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 // enforcement turns it into a hard block.
                 showBlockScreen(policy);
             }
-            // After the block screen, so the challenge lock is the screen the
-            // child has to clear first.
-            ChallengeActivity.sync(this, policy);
+            // A challenge must never be interrupted by an update, and the
+            // download must never hold up the poll.
+            if (!challengePending) {
+                updateExecutor.execute(this::checkForUpdate);
+            }
+            // A midnight the phone slept through is caught up here.
+            notificationExecutor.execute(() -> NotificationDump.flushIfDue(this));
         } catch (Exception exception) {
             String detail = exception.getMessage();
             failOpen(
@@ -225,6 +278,47 @@ public final class BlockAccessibilityService extends AccessibilityService {
                             : detail);
         } finally {
             pollRunning.set(false);
+        }
+    }
+
+    /** Check the release off the poll thread, then raise the update screen at once. */
+    private void checkForUpdate() {
+        AppUpdater.check(this);
+        mainHandler.post(() -> {
+            refreshPendingUpdate();
+            if (kioskActive(currentPolicy)) {
+                showBlockScreen(currentPolicy);
+            }
+        });
+    }
+
+    private void refreshPendingUpdate() {
+        pendingUpdate = AppUpdater.pending(this);
+    }
+
+    /**
+     * True when a lock screen (a parent block, an unanswered challenge or a
+     * verified update) must cover disallowed apps. All three go through the
+     * same enforcement path; only the screen differs.
+     */
+    private boolean kioskActive(Policy policy) {
+        String acceptedChallengeId = Challenge.acceptedId(this);
+        return policy.isLocked(acceptedChallengeId)
+                || updateScreenPending(policy, acceptedChallengeId);
+    }
+
+    private boolean updateScreenPending(Policy policy, String acceptedChallengeId) {
+        return UpdateGate.shouldShowUpdateScreen(
+                pendingUpdate != null,
+                policy.challengePending(acceptedChallengeId),
+                policy.isExtensionActive(),
+                LocalOverride.isActive(this));
+    }
+
+    /** Drop the camera allowance when a capture never came back. */
+    private void expireCapture() {
+        if (!capturePackage.isEmpty() && SystemClock.elapsedRealtime() > captureUntil) {
+            endCapture();
         }
     }
 
@@ -273,10 +367,15 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     private void showBlockScreen(Policy policy) {
+        // The system installer prompt must stay on top of the lock screen.
+        if (UpdateGate.installInProgress) {
+            return;
+        }
+        String acceptedChallengeId = Challenge.acceptedId(this);
+        boolean kiosk = policy.isLocked(acceptedChallengeId)
+                || updateScreenPending(policy, acceptedChallengeId);
         // Never resume the block activity over an app the holder is allowed to use.
-        if (policy.shouldCaptureForeground()
-                && decision != null
-                && decision.isAllowed(true, foregroundPackage)) {
+        if (kiosk && decision != null && decision.isAllowed(true, foregroundPackage)) {
             return;
         }
         long now = SystemClock.elapsedRealtime();
@@ -298,10 +397,12 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 .putExtra(MainActivity.EXTRA_BLOCKED_PACKAGE, blockedPackageForScreen())
                 .putStringArrayListExtra(
                         MainActivity.EXTRA_ALLOWED_APPS, new ArrayList<>(policy.allowedApps));
+        if (policy.challengePending(acceptedChallengeId)) {
+            intent.putExtra(MainActivity.EXTRA_CHALLENGE_ID, policy.challenge.id)
+                    .putExtra(MainActivity.EXTRA_CHALLENGE_PHRASE, policy.challenge.phrase);
+        }
         mainHandler.post(() -> {
-            if (policy.shouldCaptureForeground()
-                    && decision != null
-                    && decision.isAllowed(true, foregroundPackage)) {
+            if (kiosk && decision != null && decision.isAllowed(true, foregroundPackage)) {
                 return;
             }
             startActivity(intent);
@@ -333,8 +434,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
 
     private void failOpen(String status, String detail) {
         currentPolicy = Policy.UNBLOCKED;
+        AppUpdater.challengeActive = false;
         MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
-        ChallengeActivity.sync(this, Policy.UNBLOCKED);
         publishStatus(status, detail == null ? "" : detail, true);
     }
 

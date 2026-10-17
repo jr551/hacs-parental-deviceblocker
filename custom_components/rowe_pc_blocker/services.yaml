@@ -1,0 +1,28 @@
+# Services the integration registers. Home Assistant reads this to describe
+# them in the UI and the service developer tools.
+send_challenge:
+  name: Send chore challenge
+  description: >-
+    Lock the phone until the child types the phrase back and sends a photo as
+    evidence. The phone picks the challenge up on its next state poll.
+  target:
+    entity:
+      integration: rowe_pc_blocker
+      domain: sensor
+  fields:
+    phrase:
+      name: Phrase
+      description: The text the child must type back, for example "I have brushed my teeth".
+      required: true
+      example: I have brushed my teeth
+      selector:
+        text:
+
+clear_challenge:
+  name: Clear chore challenge
+  description: >-
+    Cancel the active challenge, accepted or not, and delete its photo evidence.
+  target:
+    entity:
+      integration: rowe_pc_blocker
+      domain: sensor

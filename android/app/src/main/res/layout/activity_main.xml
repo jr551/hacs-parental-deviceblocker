@@ -142,6 +142,29 @@
                 android:text="Allow alarms"
                 android:visibility="gone" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="Notifications"
+                android:textColor="@color/white"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/notificationAccessStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/muted"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/notificationAccessButton"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="8dp"
+                android:text="Allow notification access" />
+
             <Button
                 android:id="@+id/changePinButton"
                 android:layout_width="match_parent"
@@ -173,6 +196,13 @@
         android:gravity="center"
         android:orientation="vertical"
         android:padding="28dp">
+
+        <LinearLayout
+            android:id="@+id/blockCopyPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="vertical">
 
         <TextView
             android:id="@+id/blockTitle"
@@ -256,6 +286,22 @@
             android:layout_height="64dp"
             android:layout_marginTop="12dp"
             android:text="Buy 1 hour for 200 points" />
+        </LinearLayout>
+
+        <lol.rowe.blocker.ChallengePanel
+            android:id="@+id/challengePanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/installUpdateButton"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="24dp"
+            android:text="Install update"
+            android:visibility="gone" />
 
         <Button
             android:id="@+id/parentOverrideButton"

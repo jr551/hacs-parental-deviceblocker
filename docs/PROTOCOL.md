@@ -43,7 +43,7 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
 | `challenge` | object \| null | Active chore challenge: `{"id", "phrase", "sent_at"}`, or null when there is none |
 | `family` | object | This child's other devices: `{"phone": peer\|null, "pc": peer\|null}` |
 
-A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application"}`, where `last_seen` is ISO-8601 or null. Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer.
+A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application", "challenge"}`, where `last_seen` is ISO-8601 or null and `challenge` is the same `{"id", "phrase", "sent_at"}` object the peer's own state poll carries (null when it has none). Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer. Challenges are phone-only, so a PC peer always reports `"challenge": null`; the key is present on both peers so the shape is uniform.
 
 Reading this endpoint refreshes the device's `last_seen`, so an agent may use it as a plain liveness check-in.
 
@@ -73,6 +73,46 @@ The Android agent adds optional fields to the same body:
 | `installed_apps` | array | `[{"package", "label"}]`; sent only when the set changed |
 
 **Response 200:** `{"ok": true}`
+
+### `POST /api/rowe_pc_blocker/{device_id}/notifications`
+
+Android only. The phone captures notifications and posts one dump a day, so a parent can see what arrived without opening the phone. Home Assistant keeps only the latest dump per device.
+
+**Request** JSON object, at most **256 KiB**:
+
+```json
+{
+  "date": "2026-10-17",
+  "count": 137,
+  "truncated": false,
+  "items": [
+    {
+      "package": "com.whatsapp",
+      "app": "WhatsApp",
+      "title": "Mum",
+      "text": "Tea is ready",
+      "posted_at": "2026-10-17T17:30:00+00:00"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `date` | string | The day the dump covers, `YYYY-MM-DD`. Required |
+| `count` | integer | How many notifications the phone captured that day |
+| `truncated` | boolean | True when the phone hit its own capture cap |
+| `items` | array | `[{"package", "app", "title", "text", "posted_at"}]`; the order does not matter, Home Assistant sorts by `posted_at` |
+
+**Response 200:** `{"ok": true}`
+
+**Response 400:** `{"error": "…"}` — the body is not a JSON object, or `date` is missing or not a `YYYY-MM-DD` date.
+
+**Response 413:** `{"error": "That notification dump is too large."}` — over 256 KiB.
+
+A dump for a day **older** than the stored one is answered **200** and ignored, so a late retry cannot overwrite a newer day. The same day may be re-sent, and a newer day replaces the stored one.
+
+`sensor.<device>_notifications` is the parent-facing view: the state is the stored day's `count`, with `date`, `truncated`, `received_at`, `apps` (`[{"package", "app", "count"}]`, most-used first, capped at 40) and `items` (the most recent, newest first, capped at 100 and by a 10 KiB attribute budget) attributes. The dump is trimmed to those caps when it is stored, so the runtime store stays small and the state attributes stay inside the recorder's 16 KiB limit. Notification titles and bodies are redacted from diagnostics.
 
 ### `POST /api/rowe_pc_blocker/{device_id}/extension`
 

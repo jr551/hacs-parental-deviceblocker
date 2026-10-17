@@ -3,27 +3,25 @@ package lol.rowe.blocker;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
 import android.media.MediaPlayer;
 import android.net.Uri;
-import android.os.Build;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
+import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.View;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
@@ -32,14 +30,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
- * The chore challenge lock: the phone stays locked until the child types the
- * phrase back and sends a photo as evidence. Raised on every policy poll while
- * the challenge is unanswered, and taken down once it is accepted or a parent
- * override is running.
+ * The chore-challenge lock: the phrase, the answer field, the photo evidence
+ * and the Accept button. It lives inside the block screen, so an unanswered
+ * challenge is enforced by the same path as a parent block and cannot be
+ * dismissed on its own.
  */
-public final class ChallengeActivity extends Activity {
-    static final String EXTRA_CHALLENGE_ID = "challenge_id";
-    static final String EXTRA_CHALLENGE_PHRASE = "challenge_phrase";
+public final class ChallengePanel extends LinearLayout {
     /** How often the lock beeps while it is up. */
     static final long BEEP_INTERVAL_MS = 25_000L;
     /** How long each beep lasts. */
@@ -48,14 +44,18 @@ public final class ChallengeActivity extends Activity {
     private static final int THUMBNAIL_EDGE = 512;
     private static final int REQUEST_CAPTURE = 0x43484C;
 
-    private static volatile ChallengeActivity activeInstance;
-    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    /** Told when the child answers the challenge, so the lock can be taken down. */
+    interface Listener {
+        void onChallengeAccepted();
+    }
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-    private final Runnable beepTask = () -> beep();
+    private final Runnable beepTask = this::beep;
+    private Listener listener;
     private String challengeId = "";
     private String phrase = "";
+    private TextView phraseView;
     private EditText answer;
     private Button accept;
     private Button takePhoto;
@@ -70,125 +70,127 @@ public final class ChallengeActivity extends Activity {
     /** A message that outranks the step hints until the child changes something. */
     private String message = "";
 
+    public ChallengePanel(Context context, AttributeSet attributes) {
+        super(context, attributes);
+        build();
+    }
+
+    void setListener(Listener listener) {
+        this.listener = listener;
+    }
+
     /**
-     * Show the lock when the policy carries an unanswered challenge, and take it
-     * down when the challenge is answered or a parent override is running. The
-     * block screen is untouched: this is an extra lock, not a replacement.
-     * Safe to call from any thread.
+     * Show the challenge. Whatever the child has already typed and shot stays
+     * put when the same challenge is shown again on the next poll.
      */
-    static void sync(Context context, Policy policy) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            syncNow(context, policy);
+    void show(Challenge challenge) {
+        if (challenge == null) {
+            hide();
             return;
         }
-        MAIN.post(() -> syncNow(context, policy));
-    }
-
-    private static void syncNow(Context context, Policy policy) {
-        Challenge challenge = policy.challenge;
-        boolean needed = challenge != null
-                && Challenge.needsAnswer(challenge.id, Challenge.acceptedId(context))
-                && !policy.isExtensionActive()
-                && !LocalOverride.isActive(context);
-        ChallengeActivity activity = activeInstance;
-        if (!needed) {
-            if (activity != null) {
-                activity.finish();
-            }
-            return;
+        if (!challengeId.equals(challenge.id)) {
+            challengeId = challenge.id;
+            phrase = challenge.phrase;
+            phraseView.setText(phrase);
+            answer.setText("");
+            clearPhoto();
+            message = "";
+            updateAcceptState();
+            beep();
         }
-        if (activity != null) {
-            if (activity.challengeId.equals(challenge.id)) {
-                return;
-            }
-            // A new challenge replaced the one on screen.
-            activity.finish();
-        }
-        Intent intent = new Intent(context, ChallengeActivity.class)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                .putExtra(EXTRA_CHALLENGE_ID, challenge.id)
-                .putExtra(EXTRA_CHALLENGE_PHRASE, challenge.phrase);
-        context.startActivity(intent);
+        setVisibility(VISIBLE);
     }
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        if (Build.VERSION.SDK_INT >= 27) {
-            setShowWhenLocked(true);
-            setTurnScreenOn(true);
-        }
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED);
-        challengeId = text(getIntent().getStringExtra(EXTRA_CHALLENGE_ID));
-        phrase = text(getIntent().getStringExtra(EXTRA_CHALLENGE_PHRASE));
-        buildLayout();
-        activeInstance = this;
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        activeInstance = this;
-        beep();
-    }
-
-    @Override
-    protected void onPause() {
-        mainHandler.removeCallbacks(beepTask);
+    /** Take the lock down: the challenge was answered, or a parent override is running. */
+    void hide() {
+        setVisibility(GONE);
         stopBeep();
-        super.onPause();
+        endCapture();
     }
 
-    @Override
-    protected void onDestroy() {
-        if (activeInstance == this) {
-            activeInstance = null;
+    /** Beep again when the lock comes back to the front. */
+    void onResume() {
+        if (getVisibility() == VISIBLE) {
+            beep();
         }
-        mainHandler.removeCallbacks(beepTask);
+    }
+
+    void onPause() {
         stopBeep();
+    }
+
+    /** The block screen is going away for good. */
+    void release() {
+        stopBeep();
+        endCapture();
         executor.shutdownNow();
-        super.onDestroy();
     }
 
-    private void buildLayout() {
+    /** @return true when the result belonged to the challenge camera. */
+    boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != REQUEST_CAPTURE) {
+            return false;
+        }
+        endCapture();
+        File captured = pendingPhotoFile;
+        pendingPhotoFile = null;
+        if (resultCode != Activity.RESULT_OK || captured == null || !captured.exists()
+                || captured.length() == 0) {
+            if (captured != null) {
+                captured.delete();
+            }
+            if (hasPhoto()) {
+                // The child backed out of the camera; the earlier photo stands.
+                updateAcceptState();
+            } else {
+                showMessage("No photo was taken.");
+            }
+            return true;
+        }
+        if (photoFile != null && !photoFile.equals(captured)) {
+            photoFile.delete();
+        }
+        photoFile = captured;
+        message = "";
+        showThumbnail();
+        updateAcceptState();
+        return true;
+    }
+
+    private void build() {
+        setOrientation(VERTICAL);
+        setGravity(Gravity.CENTER_HORIZONTAL);
         float density = getResources().getDisplayMetrics().density;
         int padding = Math.round(24 * density);
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(padding, padding, padding, padding);
-        layout.setBackgroundColor(0xFF111827);
 
-        TextView title = new TextView(this);
+        TextView title = new TextView(getContext());
         title.setText("Chore challenge");
-        title.setTextColor(0xFFFFFFFF);
+        title.setTextColor(getContext().getColor(R.color.white));
         title.setTextSize(30);
         title.setGravity(Gravity.CENTER);
-        layout.addView(title);
+        addView(title);
 
-        TextView instruction = new TextView(this);
+        TextView instruction = new TextView(getContext());
         instruction.setText("Type this back to unlock this phone:");
-        instruction.setTextColor(0xFF9CA3AF);
+        instruction.setTextColor(getContext().getColor(R.color.muted));
         instruction.setTextSize(16);
         instruction.setGravity(Gravity.CENTER);
         instruction.setPadding(0, padding / 2, 0, 0);
-        layout.addView(instruction);
+        addView(instruction);
 
-        TextView phraseView = new TextView(this);
-        phraseView.setText(phrase);
-        phraseView.setTextColor(0xFFFFFFFF);
+        phraseView = new TextView(getContext());
+        phraseView.setTextColor(getContext().getColor(R.color.white));
         phraseView.setTextSize(24);
         phraseView.setTypeface(Typeface.DEFAULT_BOLD);
         phraseView.setGravity(Gravity.CENTER);
         phraseView.setPadding(0, padding / 2, 0, padding / 2);
-        layout.addView(phraseView);
+        addView(phraseView);
 
-        answer = new EditText(this);
+        answer = new EditText(getContext());
         answer.setHint("Type the phrase here");
         answer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        answer.setTextColor(0xFFFFFFFF);
-        answer.setHintTextColor(0xFF9CA3AF);
+        answer.setTextColor(getContext().getColor(R.color.white));
+        answer.setHintTextColor(getContext().getColor(R.color.muted));
         answer.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence text, int start, int count, int after) {
@@ -204,40 +206,37 @@ public final class ChallengeActivity extends Activity {
                 updateAcceptState();
             }
         });
-        layout.addView(answer);
+        addView(answer);
 
-        takePhoto = new Button(this);
+        takePhoto = new Button(getContext());
         takePhoto.setText("Take photo");
         takePhoto.setOnClickListener(view -> takePhoto());
-        layout.addView(takePhoto, buttonParams(density));
+        addView(takePhoto, buttonParams(density));
 
-        thumbnail = new ImageView(this);
+        thumbnail = new ImageView(getContext());
         thumbnail.setAdjustViewBounds(true);
-        thumbnail.setVisibility(View.GONE);
-        layout.addView(thumbnail);
+        thumbnail.setVisibility(GONE);
+        addView(thumbnail);
 
-        retake = new Button(this);
+        retake = new Button(getContext());
         retake.setText("Retake");
-        retake.setVisibility(View.GONE);
+        retake.setVisibility(GONE);
         retake.setOnClickListener(view -> takePhoto());
-        layout.addView(retake, buttonParams(density));
+        addView(retake, buttonParams(density));
 
-        status = new TextView(this);
-        status.setTextColor(0xFF9CA3AF);
+        status = new TextView(getContext());
+        status.setTextColor(getContext().getColor(R.color.muted));
         status.setTextSize(16);
         status.setGravity(Gravity.CENTER);
         status.setPadding(0, padding / 2, 0, padding / 2);
-        layout.addView(status);
+        addView(status);
 
-        accept = new Button(this);
+        accept = new Button(getContext());
         accept.setText("Accept");
         accept.setEnabled(false);
         accept.setOnClickListener(view -> accept());
-        layout.addView(accept, buttonParams(density));
+        addView(accept, buttonParams(density));
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(layout);
-        setContentView(scroll);
         updateAcceptState();
     }
 
@@ -272,75 +271,47 @@ public final class ChallengeActivity extends Activity {
         return photoFile != null && photoFile.exists() && photoFile.length() > 0;
     }
 
+    private void clearPhoto() {
+        if (photoFile != null) {
+            photoFile.delete();
+            photoFile = null;
+        }
+        thumbnail.setImageDrawable(null);
+        thumbnail.setVisibility(GONE);
+        retake.setVisibility(GONE);
+        takePhoto.setVisibility(VISIBLE);
+    }
+
     private void takePhoto() {
+        Activity activity = activity();
+        if (activity == null) {
+            return;
+        }
         try {
-            File directory = ChallengeFileProvider.directory(this);
+            File directory = ChallengeFileProvider.directory(getContext());
             if (!directory.exists() && !directory.mkdirs()) {
                 showMessage("Could not prepare the camera.");
                 return;
             }
             File file = new File(directory, "evidence-" + System.currentTimeMillis() + ".jpg");
-            Uri uri = ChallengeFileProvider.uriFor(this, file);
+            Uri uri = ChallengeFileProvider.uriFor(getContext(), file);
             Intent capture = new Intent(MediaStore.ACTION_IMAGE_CAPTURE)
                     .putExtra(MediaStore.EXTRA_OUTPUT, uri)
                     .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            if (capture.resolveActivity(getPackageManager()) == null) {
+            ResolveInfo camera = getContext().getPackageManager().resolveActivity(capture, 0);
+            if (camera == null || camera.activityInfo == null) {
                 showMessage("No camera app is available.");
                 return;
             }
+            // The camera is not on the allow-list, so the lock screen would
+            // cover it mid-shot. Allow it until the shot comes back.
+            BlockAccessibilityService.beginCapture(camera.activityInfo.packageName);
             pendingPhotoFile = file;
             message = "";
-            startActivityForResult(capture, REQUEST_CAPTURE);
+            activity.startActivityForResult(capture, REQUEST_CAPTURE);
         } catch (Exception exception) {
             showMessage("Could not open the camera.");
         }
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_CAPTURE) {
-            return;
-        }
-        File captured = pendingPhotoFile;
-        pendingPhotoFile = null;
-        if (resultCode != RESULT_OK || captured == null || !captured.exists()
-                || captured.length() == 0) {
-            if (captured != null) {
-                captured.delete();
-            }
-            if (hasPhoto()) {
-                // The child backed out of the camera; the earlier photo stands.
-                updateAcceptState();
-            } else {
-                showMessage("No photo was taken.");
-            }
-            return;
-        }
-        if (photoFile != null && !photoFile.equals(captured)) {
-            photoFile.delete();
-        }
-        photoFile = captured;
-        message = "";
-        showThumbnail();
-        updateAcceptState();
-    }
-
-    private void showThumbnail() {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(photoFile.getAbsolutePath(), bounds);
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, THUMBNAIL_EDGE);
-        Bitmap bitmap = BitmapFactory.decodeFile(photoFile.getAbsolutePath(), options);
-        if (bitmap == null) {
-            thumbnail.setVisibility(View.GONE);
-            return;
-        }
-        thumbnail.setImageBitmap(bitmap);
-        thumbnail.setVisibility(View.VISIBLE);
-        retake.setVisibility(View.VISIBLE);
-        takePhoto.setVisibility(View.GONE);
     }
 
     private void accept() {
@@ -363,7 +334,7 @@ public final class ChallengeActivity extends Activity {
             }
             if (jpeg != null) {
                 try {
-                    HomeAssistantClient client = new HomeAssistantClient(AppConfig.load(this));
+                    HomeAssistantClient client = new HomeAssistantClient(AppConfig.load(getContext()));
                     Challenge.Outcome evidence = client.uploadChallengeEvidence(jpeg);
                     if (!evidence.accepted) {
                         failure = evidence.message;
@@ -379,13 +350,13 @@ public final class ChallengeActivity extends Activity {
             final boolean done = accepted;
             final String text = failure;
             mainHandler.post(() -> {
-                if (isFinishing() || isDestroyed()) {
-                    return;
-                }
                 uploading = false;
                 if (done) {
-                    Challenge.rememberAccepted(this, id);
-                    finish();
+                    Challenge.rememberAccepted(getContext(), id);
+                    Listener target = listener;
+                    if (target != null) {
+                        target.onChallengeAccepted();
+                    }
                     return;
                 }
                 message = text;
@@ -438,6 +409,23 @@ public final class ChallengeActivity extends Activity {
         return sample;
     }
 
+    private void showThumbnail() {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(photoFile.getAbsolutePath(), bounds);
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, THUMBNAIL_EDGE);
+        Bitmap bitmap = BitmapFactory.decodeFile(photoFile.getAbsolutePath(), options);
+        if (bitmap == null) {
+            thumbnail.setVisibility(GONE);
+            return;
+        }
+        thumbnail.setImageBitmap(bitmap);
+        thumbnail.setVisibility(VISIBLE);
+        retake.setVisibility(VISIBLE);
+        takePhoto.setVisibility(GONE);
+    }
+
     private void showMessage(String text) {
         message = text;
         updateAcceptState();
@@ -445,14 +433,14 @@ public final class ChallengeActivity extends Activity {
 
     /** Beep on appearance and every {@link #BEEP_INTERVAL_MS} while the lock is up. */
     private void beep() {
-        AlarmAudio.unmuteAlarmStream(this);
+        AlarmAudio.unmuteAlarmStream(getContext());
         stopBeep();
         Uri tone = AlarmAudio.alarmTone();
         if (tone != null) {
             try {
                 MediaPlayer created = new MediaPlayer();
                 created.setAudioAttributes(AlarmAudio.alarmAttributes());
-                created.setDataSource(this, tone);
+                created.setDataSource(getContext(), tone);
                 created.prepare();
                 created.start();
                 beepPlayer = created;
@@ -465,13 +453,20 @@ public final class ChallengeActivity extends Activity {
     }
 
     private void stopBeep() {
+        mainHandler.removeCallbacks(beepTask);
         if (beepPlayer != null) {
             beepPlayer.release();
             beepPlayer = null;
         }
     }
 
-    private static String text(String value) {
-        return value == null ? "" : value.trim();
+    private void endCapture() {
+        BlockAccessibilityService.endCapture();
+    }
+
+    /** The block screen this panel lives in. */
+    private Activity activity() {
+        Context context = getContext();
+        return context instanceof Activity ? (Activity) context : null;
     }
 }

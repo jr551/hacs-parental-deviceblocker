@@ -35,6 +35,7 @@ PROVISION = _load_module(
 POST_VIEWS = frozenset(
     {
         "PcActivityView",
+        "PcNotificationsView",
         "PcExtensionView",
         "PcUnblockRequestView",
         "PcChallengeAcceptView",
@@ -73,6 +74,16 @@ class ProtocolSurfaceTests(unittest.TestCase):
 
     def test_state_response_fixture_matches_the_documented_keys(self) -> None:
         self.assertEqual(set(_fixture("state_response.json")), PROTOCOL.STATE_RESPONSE_KEYS)
+
+    def test_the_family_fixture_matches_the_documented_shape(self) -> None:
+        family = _fixture("state_response.json")["family"]
+        self.assertEqual(set(family), PROTOCOL.FAMILY_KEYS)
+        self.assertEqual(set(family["phone"]), PROTOCOL.FAMILY_PEER_KEYS)
+        self.assertEqual(
+            set(family["phone"]["challenge"]), PROTOCOL.CHALLENGE_PAYLOAD_KEYS
+        )
+        # A child with one phone has no PC peer, and the key is still there.
+        self.assertIsNone(family["pc"])
 
     def test_activity_request_fixture_matches_the_documented_keys(self) -> None:
         self.assertEqual(
@@ -119,6 +130,13 @@ class ProtocolSurfaceTests(unittest.TestCase):
         self.assertEqual(set(body), PROTOCOL.UNBLOCK_PENDING_KEYS)
         self.assertEqual(body["request_id"], "b" * 32)
         self.assertEqual(body["status"], PROVISION.STATUS_PENDING)
+
+    def test_the_notification_dump_fixture_matches_the_documented_keys(self) -> None:
+        dump = _fixture("notifications_request.json")
+        self.assertEqual(set(dump), PROTOCOL.NOTIFICATION_REQUEST_KEYS)
+        self.assertTrue(dump["items"])
+        for item in dump["items"]:
+            self.assertEqual(set(item), PROTOCOL.NOTIFICATION_ITEM_KEYS)
 
     def test_the_challenge_shapes_are_the_documented_ones(self) -> None:
         self.assertEqual(

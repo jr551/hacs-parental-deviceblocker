@@ -173,6 +173,23 @@ final class Policy {
         return blocked;
     }
 
+    /**
+     * True when the challenge lock is in force: this policy carries a challenge
+     * the child has not answered, and no parent override is running. The
+     * challenge is a block with a different lock screen, so it is enforced by
+     * the same path as {@link #blocked}.
+     */
+    boolean challengePending(String acceptedChallengeId) {
+        return challenge != null
+                && Challenge.needsAnswer(challenge.id, acceptedChallengeId)
+                && !isExtensionActive();
+    }
+
+    /** True when the phone must be locked: a parent block, or an unanswered challenge. */
+    boolean isLocked(String acceptedChallengeId) {
+        return shouldCaptureForeground() || challengePending(acceptedChallengeId);
+    }
+
     boolean shouldWarnGrace() {
         return blockRequested
                 && !blocked

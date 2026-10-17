@@ -238,4 +238,52 @@ public class PolicyDecisionTest {
         assertFalse(decision.shouldShowBlockScreen(true, "com.roblox.client"));
         assertTrue(decision.shouldShowBlockScreen(true, PolicyDecision.WHATSAPP));
     }
+
+    @Test
+    public void aChallengeBlocksDisallowedAppsAndLeavesAllowedOnesUsable() {
+        Policy policy = challengePolicy(null);
+        boolean locked = policy.isLocked("");
+
+        assertTrue(locked);
+        assertTrue(decision.shouldShowBlockScreen(locked, "com.android.chrome"));
+        assertTrue(decision.shouldShowBlockScreen(locked, "com.sec.android.app.launcher"));
+        assertFalse(decision.shouldShowBlockScreen(locked, PolicyDecision.WHATSAPP));
+        assertFalse(decision.shouldShowBlockScreen(locked, PolicyDecision.SAMSUNG_CAMERA));
+    }
+
+    @Test
+    public void anAcceptedChallengeDoesNotBlock() {
+        Policy policy = challengePolicy(null);
+        boolean locked = policy.isLocked("abc123");
+
+        assertFalse(locked);
+        assertFalse(decision.shouldShowBlockScreen(locked, "com.android.chrome"));
+    }
+
+    @Test
+    public void aParentOverrideSuppressesTheChallengeBlock() {
+        Policy policy = challengePolicy("2099-01-01T00:05:00Z");
+        boolean locked = policy.isLocked("");
+
+        assertFalse(locked);
+        assertFalse(decision.shouldShowBlockScreen(locked, "com.android.chrome"));
+    }
+
+    @Test
+    public void theCapturePackageIsAllowedWhileTheShotIsTaken() {
+        decision.setCapturePackage("com.android.camera");
+
+        assertFalse(decision.shouldShowBlockScreen(true, "com.android.camera"));
+        assertTrue(decision.shouldShowBlockScreen(true, "com.android.chrome"));
+
+        decision.setCapturePackage("");
+        assertTrue(decision.shouldShowBlockScreen(true, "com.android.camera"));
+    }
+
+    private static Policy challengePolicy(String extensionUntil) {
+        return new Policy(
+                false, false, "Paused", false, null, extensionUntil,
+                null, 0, null, Collections.emptyList(), null, null,
+                new Challenge("abc123", "I have brushed my teeth", null));
+    }
 }

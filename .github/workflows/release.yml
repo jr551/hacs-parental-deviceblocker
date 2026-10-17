@@ -85,13 +85,19 @@ jobs:
       - name: Extract APK
         run: |
           set -euo pipefail
-          version="${{ steps.version.outputs.value }}"
+          # The APK carries its own version, and that is the name the in-app
+          # updater matches on; the tag version is the Home Assistant
+          # integration's. The .sha256 sibling is what the updater verifies the
+          # download against before it will install it.
+          version="$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' android/app/build.gradle | head -1)"
+          test -n "$version"
           mkdir -p artifacts
           cid="$(docker create pdb-android-release)"
           apk_dir="/workspace/app/build/outputs/apk/release"
           for name in app-release.apk app-release-unsigned.apk; do
-            if docker cp "$cid:$apk_dir/$name" "artifacts/parental-device-blocker-android-${version}.apk" 2>/dev/null; then
+            if docker cp "$cid:$apk_dir/$name" "artifacts/ParentalDeviceBlocker-${version}.apk" 2>/dev/null; then
               docker rm "$cid"
+              (cd artifacts && sha256sum "ParentalDeviceBlocker-${version}.apk" > "ParentalDeviceBlocker-${version}.apk.sha256")
               exit 0
             fi
           done
@@ -101,7 +107,7 @@ jobs:
       - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
         with:
           name: android-apk
-          path: artifacts/parental-device-blocker-android-*.apk
+          path: artifacts/ParentalDeviceBlocker-*.apk*
 
   windows:
     name: Windows installer

@@ -80,6 +80,60 @@ class FakeRegistryEntry:
         self.entity_id = entity_id
 
 
+class FakeDeviceEntry:
+    """A device registry entry, as the lookups return it."""
+
+    def __init__(
+        self,
+        device_id: str,
+        identifiers: set,
+        config_entry_id: str = "entry-1",
+        sw_version: str | None = None,
+    ) -> None:
+        self.id = device_id
+        self.identifiers = identifiers
+        self.config_entry_id = config_entry_id
+        self.sw_version = sw_version
+
+
+class FakeDeviceRegistry:
+    """The device registry calls the integration makes."""
+
+    def __init__(self) -> None:
+        self.devices: dict[str, FakeDeviceEntry] = {}
+        self.updates: list[tuple[str, dict]] = []
+
+    def add(
+        self,
+        device_id: str,
+        identifiers: set,
+        config_entry_id: str = "entry-1",
+        sw_version: str | None = None,
+    ) -> FakeDeviceEntry:
+        entry = FakeDeviceEntry(device_id, identifiers, config_entry_id, sw_version)
+        self.devices[device_id] = entry
+        return entry
+
+    def async_get_device_by_identifier(self, identifier, config_entry_id):
+        for entry in self.devices.values():
+            if identifier in entry.identifiers and entry.config_entry_id == config_entry_id:
+                return entry
+        return None
+
+    def async_get_device(self, identifiers=None, connections=None):
+        for entry in self.devices.values():
+            if identifiers and set(identifiers) & set(entry.identifiers):
+                return entry
+        return None
+
+    def async_update_device(self, device_id: str, **changes) -> None:
+        self.updates.append((device_id, changes))
+        entry = self.devices.get(device_id)
+        if entry is not None:
+            for key, value in changes.items():
+                setattr(entry, key, value)
+
+
 class FakeEntityRegistry:
     def __init__(self) -> None:
         self.removed: list[str] = []
@@ -155,10 +209,17 @@ class FakeConfig:
 class FakeConfigEntry:
     """A configured device, as ``pending.provision_entries`` reads it."""
 
-    def __init__(self, data: dict, entry_id: str = "entry", options: dict | None = None) -> None:
+    def __init__(
+        self,
+        data: dict,
+        entry_id: str = "entry",
+        options: dict | None = None,
+        title: str = "Casey's phone",
+    ) -> None:
         self.data = data
         self.entry_id = entry_id
         self.options = options or {}
+        self.title = title
         self.version = 2
         self.on_unload: list = []
 
@@ -196,8 +257,10 @@ class FakeHass:
         self.dispatcher: dict[str, list] = {}
         self.intervals: list = []
         self.entity_registry = FakeEntityRegistry()
+        self.device_registry = FakeDeviceRegistry()
         self.config_entries = FakeConfigEntries()
         self.services = FakeServices(self)
+        self.notifications: list = []
         self.config = FakeConfig(config_dir or tempfile.mkdtemp(prefix="rowe_test_"))
         self.is_stopping = False
         self.tasks: list = []
@@ -276,6 +339,14 @@ class Entity:
         return self._attr_device_info
 
     @property
+    def device_class(self):
+        return self._attr_device_class
+
+    @property
+    def entity_category(self):
+        return self._attr_entity_category
+
+    @property
     def available(self) -> bool:
         return True
 
@@ -294,7 +365,16 @@ class RestoreEntity(Entity):
 
 
 class SensorEntity(Entity):
-    pass
+    _attr_options = None
+    _attr_state_class = None
+
+    @property
+    def options(self):
+        return self._attr_options
+
+    @property
+    def state_class(self):
+        return self._attr_state_class
 
 
 class TextEntity(Entity):
@@ -307,6 +387,54 @@ class ButtonEntity(Entity):
 
 class BinarySensorEntity(Entity):
     pass
+
+
+class SwitchEntity(Entity):
+    pass
+
+
+class TrackerEntity(Entity):
+    pass
+
+
+class SourceType:
+    GPS = "gps"
+
+
+class EntityCategory:
+    CONFIG = "config"
+    DIAGNOSTIC = "diagnostic"
+
+
+class SensorDeviceClass:
+    ENUM = "enum"
+
+
+class SensorStateClass:
+    MEASUREMENT = "measurement"
+
+
+class SwitchDeviceClass:
+    SWITCH = "switch"
+
+
+def async_redact_data(data, to_redact):
+    """Redact the named keys, as Home Assistant's diagnostics helper does."""
+    if isinstance(data, dict):
+        return {
+            key: "**REDACTED**" if key in to_redact else async_redact_data(value, to_redact)
+            for key, value in data.items()
+        }
+    if isinstance(data, list):
+        return [async_redact_data(item, to_redact) for item in data]
+    return data
+
+
+def async_create_notification(hass, message, title=None, notification_id=None) -> None:
+    """Record a persistent notification instead of showing one."""
+    hass.notifications.append(
+        {"message": message, "title": title, "notification_id": notification_id}
+    )
 
 
 class ImageEntity(Entity):
@@ -422,6 +550,125 @@ def async_track_time_interval(hass, action, interval):
     return unsubscribe
 
 
+class FakeResponse:
+    """What ``HomeAssistantView.json`` returns in these tests."""
+
+    def __init__(self, data, status: int = 200) -> None:
+        self.data = data
+        self.status = status
+
+
+class HomeAssistantView:
+    """``HomeAssistantView`` stub: enough to instantiate and answer.
+
+    The real class turns ``json()`` into an aiohttp response; here the payload
+    and status are kept so a test can read them back.
+    """
+
+    url = ""
+    name = ""
+    requires_auth = True
+
+    def json(self, data, status_code: int = 200) -> FakeResponse:
+        return FakeResponse(data, status_code)
+
+
+class FakeRequest:
+    """A request as an API view handler receives it."""
+
+    def __init__(
+        self,
+        hass,
+        *,
+        body: bytes = b"",
+        headers: dict | None = None,
+        remote: str = "203.0.113.10",
+        device_id: str = "casey-phone",
+    ) -> None:
+        self.app = {"hass": hass}
+        self.headers = dict(headers or {})
+        self.remote = remote
+        self.match_info = {"device_id": device_id}
+        self.content_length = len(body)
+        self._body = body
+
+    @property
+    def content(self):
+        body = self._body
+
+        class _Content:
+            async def read(self, limit: int) -> bytes:
+                return body[:limit]
+
+        return _Content()
+
+
+def _install_aiohttp() -> None:
+    """Install a minimal aiohttp stand-in when aiohttp is not installed.
+
+    ``api.py`` needs only the view base class and the HTTP error types its
+    handlers raise. A stand-in another test module already installed is filled
+    in rather than replaced, so import order cannot matter; a real aiohttp is
+    left alone.
+    """
+    web = sys.modules.get("aiohttp.web")
+    if web is None:
+        try:
+            from aiohttp import web  # noqa: F401
+        except ImportError:
+            web = None
+    if web is None:
+        aiohttp_module = types.ModuleType("aiohttp")
+        web = types.ModuleType("aiohttp.web")
+        aiohttp_module.web = web
+        sys.modules["aiohttp"] = aiohttp_module
+        sys.modules["aiohttp.web"] = web
+    elif getattr(web, "__file__", None):
+        # The real package: its error classes are the ones to raise.
+        return
+    # The error classes are replaced even when another test module installed
+    # its own: they are raised with keyword arguments here, and a stand-in that
+    # rejects those would fail at the raise instead of at the assertion.
+    for name, value in _AIOHTTP_WEB_ATTRS.items():
+        setattr(web, name, value)
+
+
+class _StubHTTPError(Exception):
+    """Minimal stand-in for an aiohttp HTTP error response.
+
+    The real classes take ``text=`` and the like, so the stub swallows any
+    keyword arguments rather than failing on the raise itself.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args)
+        self.kwargs = kwargs
+
+
+class _StubHTTPBadRequest(_StubHTTPError):
+    pass
+
+
+class _StubHTTPUnauthorized(_StubHTTPError):
+    pass
+
+
+class _StubHTTPForbidden(_StubHTTPError):
+    pass
+
+
+class _StubHTTPRequestEntityTooLarge(_StubHTTPError):
+    pass
+
+
+_AIOHTTP_WEB_ATTRS = {
+    "HTTPBadRequest": _StubHTTPBadRequest,
+    "HTTPUnauthorized": _StubHTTPUnauthorized,
+    "HTTPForbidden": _StubHTTPForbidden,
+    "HTTPRequestEntityTooLarge": _StubHTTPRequestEntityTooLarge,
+}
+
+
 def _module(name: str, **attributes) -> types.ModuleType:
     module = types.ModuleType(name)
     for key, value in attributes.items():
@@ -434,6 +681,7 @@ def install() -> None:
     """Install the stubs once per test process."""
     if getattr(sys.modules.get("homeassistant"), "_rowe_stub", False):
         return
+    _install_aiohttp()
     homeassistant = _module("homeassistant")
     homeassistant._rowe_stub = True
     _module(
@@ -455,9 +703,18 @@ def install() -> None:
         ServiceValidationError=ServiceValidationError,
     )
     _module("homeassistant.data_entry_flow", FlowResultType=FlowResultType)
+    _module(
+        "homeassistant.const",
+        EntityCategory=EntityCategory,
+    )
+    _module("homeassistant.config_entries", ConfigEntry=FakeConfigEntry)
     _module("homeassistant.helpers")
     _module("homeassistant.helpers.entity", Entity=Entity)
-    _module("homeassistant.helpers.device_registry", DeviceInfo=DeviceInfo)
+    _module(
+        "homeassistant.helpers.device_registry",
+        DeviceInfo=DeviceInfo,
+        async_get=lambda hass: hass.device_registry,
+    )
     _module("homeassistant.helpers.restore_state", RestoreEntity=RestoreEntity)
     _module(
         "homeassistant.helpers.dispatcher",
@@ -471,10 +728,37 @@ def install() -> None:
         async_get=lambda hass: hass.entity_registry,
     )
     _module("homeassistant.components")
-    _module("homeassistant.components.sensor", SensorEntity=SensorEntity)
+    _module(
+        "homeassistant.components.http",
+        HomeAssistantView=HomeAssistantView,
+    )
+    _module(
+        "homeassistant.components.sensor",
+        SensorEntity=SensorEntity,
+        SensorDeviceClass=SensorDeviceClass,
+        SensorStateClass=SensorStateClass,
+    )
     _module("homeassistant.components.text", TextEntity=TextEntity)
     _module("homeassistant.components.button", ButtonEntity=ButtonEntity)
     _module("homeassistant.components.image", ImageEntity=ImageEntity)
+    _module(
+        "homeassistant.components.switch",
+        SwitchEntity=SwitchEntity,
+        SwitchDeviceClass=SwitchDeviceClass,
+    )
+    _module(
+        "homeassistant.components.device_tracker",
+        TrackerEntity=TrackerEntity,
+        SourceType=SourceType,
+    )
+    _module(
+        "homeassistant.components.diagnostics",
+        async_redact_data=async_redact_data,
+    )
+    _module(
+        "homeassistant.components.persistent_notification",
+        async_create=async_create_notification,
+    )
     _module(
         "homeassistant.components.binary_sensor",
         BinarySensorEntity=BinarySensorEntity,

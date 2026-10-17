@@ -46,6 +46,8 @@ final class PolicyDecision {
     private final String ownPackage;
     /** Home Assistant's allow-list, or the built-in defaults when it sends none. */
     private volatile Set<String> allowedApps = ALLOWED_APPS;
+    /** Allowed while the challenge photo is being captured, or "". */
+    private volatile String capturePackage = "";
 
     PolicyDecision(String ownPackage) {
         this.ownPackage = ownPackage;
@@ -85,7 +87,17 @@ final class PolicyDecision {
         }
         return packageName.equals(ownPackage)
                 || allowedApps.contains(packageName)
-                || CORE_SYSTEM_PACKAGES.contains(packageName);
+                || CORE_SYSTEM_PACKAGES.contains(packageName)
+                || packageName.equals(capturePackage);
+    }
+
+    /**
+     * Allow one package while the challenge photo is being captured. The system
+     * camera is not on the allow-list, and the lock screen must not cover it
+     * mid-shot; the allowance is dropped as soon as the shot comes back.
+     */
+    void setCapturePackage(String packageName) {
+        capturePackage = packageName == null ? "" : packageName.trim();
     }
 
     boolean shouldShowBlockScreen(boolean blocked, String packageName) {

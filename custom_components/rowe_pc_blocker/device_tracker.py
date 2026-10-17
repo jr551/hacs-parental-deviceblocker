@@ -5,12 +5,16 @@ already caused the system to calculate. So this entity is deliberately
 best-effort: it stays unknown until something on the phone produces a fix, and
 its `location_age_seconds` attribute says how stale the position is. Treat it as
 "roughly where the phone was", never as live tracking.
+
+It is agent telemetry, so it goes unavailable while the phone is not checking
+in: the age attribute is only meaningful for a fix the agent is still
+refreshing, and a position from an offline phone must not read as live.
 """
 
 from homeassistant.components.device_tracker import SourceType, TrackerEntity
 
 from .const import DEVICE_TYPE_ANDROID, DOMAIN
-from .entity import ParentalDeviceEntity
+from .entity import AgentTelemetryEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
@@ -21,7 +25,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     async_add_entities([PassiveDeviceTracker(runtime)])
 
 
-class PassiveDeviceTracker(ParentalDeviceEntity, TrackerEntity):
+class PassiveDeviceTracker(AgentTelemetryEntity, TrackerEntity):
     _attr_name = "Passive location"
     _attr_icon = "mdi:map-marker-outline"
 

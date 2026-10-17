@@ -22,6 +22,7 @@ public sealed class HomeAssistantClient(HttpClient httpClient, IOptions<BlockerO
         JsonElement root = document.RootElement;
         return new BlockState(
             root.GetProperty("blocked").GetBoolean(),
+            ReadBoolean(root, "block_requested"),
             root.GetProperty("message").GetString() ?? string.Empty,
             configuration.ChildLocalUsername,
             ParseFamily(root));
@@ -51,7 +52,23 @@ public sealed class HomeAssistantClient(HttpClient httpClient, IOptions<BlockerO
             ReadString(peer, "message"),
             ReadBoolean(peer, "agent_online"),
             ReadTimestamp(peer, "last_seen"),
-            ReadString(peer, "active_application"));
+            ReadString(peer, "active_application"),
+            ParseChallenge(peer));
+    }
+
+    /// <summary>
+    /// Reads the peer's active chore challenge. A missing key, an explicit
+    /// null, or a challenge without an id all mean "no challenge", so a
+    /// malformed payload can never fail the state poll that drives blocking.
+    /// </summary>
+    private static FamilyChallenge? ParseChallenge(JsonElement peer)
+    {
+        if (!peer.TryGetProperty("challenge", out JsonElement challenge) || challenge.ValueKind != JsonValueKind.Object)
+            return null;
+        string id = ReadString(challenge, "id");
+        if (id.Length == 0)
+            return null;
+        return new FamilyChallenge(id, ReadString(challenge, "phrase"), ReadTimestamp(challenge, "sent_at"));
     }
 
     private static string ReadString(JsonElement element, string name) =>
@@ -74,7 +91,7 @@ public sealed class HomeAssistantClient(HttpClient httpClient, IOptions<BlockerO
             : null;
 }
 
-public sealed record BlockState(bool IsBlocked, string Message, string WindowsUsername, FamilyState Family);
+public sealed record BlockState(bool IsBlocked, bool BlockRequested, string Message, string WindowsUsername, FamilyState Family);
 
 /// <summary>Status of the child's other devices, as reported by Home Assistant.</summary>
 public sealed record FamilyState(FamilyPeerState? Phone, FamilyPeerState? Pc)
@@ -90,4 +107,8 @@ public sealed record FamilyPeerState(
     string Message,
     bool AgentOnline,
     DateTimeOffset? LastSeen,
-    string ActiveApplication);
+    string ActiveApplication,
+    FamilyChallenge? Challenge);
+
+/// <summary>An active chore challenge on a peer device, or null when there is none.</summary>
+public sealed record FamilyChallenge(string Id, string Phrase, DateTimeOffset? SentAt);

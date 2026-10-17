@@ -2,6 +2,8 @@ package lol.rowe.blocker;
 
 import org.junit.Test;
 
+import java.util.Collections;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -92,5 +94,57 @@ public class PolicyTest {
 
         assertFalse(Policy.enforced(blocked, false, true).blocked);
         assertTrue(Policy.enforced(blocked, false, false).blocked);
+    }
+
+    @Test
+    public void anUnansweredChallengeLocksThePhoneLikeABlock() {
+        Policy policy = challengePolicy(null);
+
+        assertFalse(policy.blocked);
+        assertTrue(policy.challengePending(""));
+        assertTrue(policy.isLocked(""));
+    }
+
+    @Test
+    public void anAcceptedChallengeDoesNotLock() {
+        Policy policy = challengePolicy(null);
+
+        assertFalse(policy.challengePending("abc123"));
+        assertFalse(policy.isLocked("abc123"));
+    }
+
+    @Test
+    public void aParentOverrideSuppressesTheChallenge() {
+        Policy policy = challengePolicy("2099-01-01T00:05:00Z");
+
+        assertTrue(policy.isExtensionActive());
+        assertFalse(policy.challengePending(""));
+        assertFalse(policy.isLocked(""));
+    }
+
+    @Test
+    public void aBlockStillLocksWhileTheChallengeIsAnswered() {
+        Policy policy = new Policy(
+                true, true, "Paused", false, null, null,
+                null, 0, null, Collections.emptyList(), null, null,
+                new Challenge("abc123", "I have brushed my teeth", null));
+
+        assertFalse(policy.challengePending("abc123"));
+        assertTrue(policy.isLocked("abc123"));
+    }
+
+    @Test
+    public void aPolicyWithoutAChallengeNeverLocks() {
+        Policy policy = new Policy(false, false, "Available", false, null, null);
+
+        assertFalse(policy.challengePending(""));
+        assertFalse(policy.isLocked(""));
+    }
+
+    private static Policy challengePolicy(String extensionUntil) {
+        return new Policy(
+                false, false, "Paused", false, null, extensionUntil,
+                null, 0, null, Collections.emptyList(), null, null,
+                new Challenge("abc123", "I have brushed my teeth", null));
     }
 }

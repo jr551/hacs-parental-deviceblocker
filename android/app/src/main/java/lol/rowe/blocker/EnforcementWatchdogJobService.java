@@ -33,12 +33,16 @@ public final class EnforcementWatchdogJobService extends JobService {
         new Thread(() -> {
             try {
                 EnforcementReporter.checkIn(this);
+                AppUpdater.check(this);
+                // Backstop for a midnight the phone slept through with the
+                // accessibility service down; the poll is the usual catch-up.
+                NotificationDump.flushIfDue(this);
             } catch (Throwable ignored) {
-                // A failed check-in must not skip jobFinished, or the periodic
-                // job would never be rescheduled.
+                // A failed pass must not skip jobFinished, or the periodic job
+                // would never be rescheduled.
+            } finally {
+                jobFinished(params, false);
             }
-            AppUpdater.check(this);
-            jobFinished(params, false);
         }).start();
         return true;
     }

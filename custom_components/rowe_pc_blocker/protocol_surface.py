@@ -8,6 +8,7 @@ AUTH_QUERY_PARAM = "key"  # portal HTML only
 API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/state"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/activity"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/notifications"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/extension"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/unblock_request"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/accept"},
@@ -39,6 +40,8 @@ STATE_RESPONSE_KEYS = frozenset(
     }
 )
 
+FAMILY_KEYS = frozenset({"phone", "pc"})
+
 FAMILY_PEER_KEYS = frozenset(
     {
         "device_id",
@@ -48,6 +51,7 @@ FAMILY_PEER_KEYS = frozenset(
         "agent_online",
         "last_seen",
         "active_application",
+        "challenge",
     }
 )
 
@@ -64,6 +68,10 @@ ACTIVITY_REQUEST_KEYS = frozenset(
 )
 
 INSTALLED_APP_KEYS = frozenset({"package", "label"})
+
+NOTIFICATION_REQUEST_KEYS = frozenset({"date", "count", "truncated", "items"})
+
+NOTIFICATION_ITEM_KEYS = frozenset({"package", "app", "title", "text", "posted_at"})
 
 EXTENSION_RESPONSE_KEYS = frozenset(
     {"granted", "extension_until", "extension_available_at"}
@@ -85,7 +93,8 @@ CHALLENGE_PAYLOAD_KEYS = frozenset({"id", "phrase", "sent_at"})
 
 CHALLENGE_EVIDENCE_KEYS = frozenset({"ok", "expires_at"})
 
-ACTIVITY_OK_BODY = {"ok": True}
+# The success body of every write endpoint that has nothing else to say.
+OK_BODY = {"ok": True}
 
 PARENT_OVERRIDE_REQUEST_KEYS = frozenset({"pin"})
 

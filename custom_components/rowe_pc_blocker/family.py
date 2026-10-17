@@ -21,7 +21,12 @@ PC = "pc"
 
 
 def peer_payload(runtime, now: datetime, timeout_seconds: int) -> dict:
-    """One peer's status as the agent sees it."""
+    """One peer's status as the agent sees it.
+
+    ``challenge`` is the same payload the device's own state poll carries, so
+    the two cannot drift. Challenges are phone-only, so a PC peer always
+    reports null; the key is present on both peers to keep the shape uniform.
+    """
 
     return {
         "device_id": runtime.device_id,
@@ -31,6 +36,7 @@ def peer_payload(runtime, now: datetime, timeout_seconds: int) -> dict:
         "agent_online": agent_is_online(runtime.last_seen, now, timeout_seconds),
         "last_seen": runtime.last_seen.isoformat() if runtime.last_seen else None,
         "active_application": runtime.active_application,
+        "challenge": runtime.challenge_payload,
     }
 
 

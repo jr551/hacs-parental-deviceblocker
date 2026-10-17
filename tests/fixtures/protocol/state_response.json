@@ -12,7 +12,20 @@
   "allowed_apps": [],
   "challenge": null,
   "family": {
-    "phone": null,
+    "phone": {
+      "device_id": "child-phone",
+      "device_type": "android",
+      "blocked": true,
+      "message": "This device has been paused by a parent.",
+      "agent_online": true,
+      "last_seen": "2026-10-17T11:59:30+00:00",
+      "active_application": "com.whatsapp",
+      "challenge": {
+        "id": "0123456789abcdef0123456789abcdef",
+        "phrase": "I have brushed my teeth",
+        "sent_at": "2026-10-17T11:58:00+00:00"
+      }
+    },
     "pc": null
   }
 }

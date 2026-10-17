@@ -220,17 +220,24 @@ def browser_origin_allowed(request: web.Request) -> bool:
     return False
 
 
-async def read_json_object(request: web.Request) -> dict[str, Any]:
-    if request.content_length is not None and request.content_length > MAX_JSON_BYTES:
+async def read_json_object(
+    request: web.Request, max_bytes: int = MAX_JSON_BYTES
+) -> dict[str, Any]:
+    """Read one JSON object body, refusing anything over ``max_bytes``.
+
+    The default cap suits the small control bodies; the notification dump is
+    the one endpoint that needs a larger one.
+    """
+    if request.content_length is not None and request.content_length > max_bytes:
         raise web.HTTPRequestEntityTooLarge(
-            MAX_JSON_BYTES, request.content_length
+            max_bytes, request.content_length
         )
     try:
-        raw = await request.content.read(MAX_JSON_BYTES + 1)
+        raw = await request.content.read(max_bytes + 1)
     except ValueError as err:
         raise web.HTTPBadRequest(text="Expected a JSON object") from err
-    if len(raw) > MAX_JSON_BYTES:
-        raise web.HTTPRequestEntityTooLarge(MAX_JSON_BYTES, len(raw))
+    if len(raw) > max_bytes:
+        raise web.HTTPRequestEntityTooLarge(max_bytes, len(raw))
     if not raw:
         return {}
     try:

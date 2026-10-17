@@ -510,6 +510,34 @@ final class HomeAssistantClient {
         }
     }
 
+    /**
+     * POST /api/rowe_pc_blocker/{device}/notifications. The body is the day's
+     * dump, already serialized by {@link NotificationLog#payload}.
+     */
+    void postNotifications(String payload) throws Exception {
+        HttpURLConnection connection = open("notifications", "POST");
+        try {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) {
+                InputStream stream = connection.getErrorStream();
+                String body = stream == null ? "" : readAll(stream);
+                String detail = errorText(body);
+                throw new IOException(detail.isEmpty()
+                        ? "Home Assistant returned " + status
+                        : "Home Assistant returned " + status + ": " + detail);
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
+
     private HttpURLConnection open(String endpoint, String method) throws Exception {
         String id = URLEncoder.encode(config.deviceId, StandardCharsets.UTF_8.name());
         URI uri = URI.create(config.homeAssistantUrl + "/api/rowe_pc_blocker/" + id + "/" + endpoint);

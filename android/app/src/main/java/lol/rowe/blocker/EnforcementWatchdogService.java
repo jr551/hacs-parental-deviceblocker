@@ -22,7 +22,13 @@ import java.util.concurrent.TimeUnit;
  */
 public final class EnforcementWatchdogService extends Service {
     private static final int NOTIFICATION_ID = 7042;
-    private static final String CHANNEL_ID = "enforcement_watchdog";
+    /**
+     * The neutral channel. Android keeps an existing channel's name and
+     * importance once it is created, so the old, revealing channel is deleted
+     * and this one is created under a new id.
+     */
+    private static final String CHANNEL_ID = "device_services";
+    private static final String LEGACY_CHANNEL_ID = "enforcement_watchdog";
     /**
      * A freshly started watchdog proves liveness within a minute instead of
      * staying silent for a full hour. The hourly cadence is unchanged, so this
@@ -96,15 +102,25 @@ public final class EnforcementWatchdogService extends Service {
         return null;
     }
 
+    /**
+     * The foreground notification Android requires. It is deliberately
+     * anonymous: a child who opens the shade must not learn from it that the
+     * phone is supervised, and a parent finds the app by its launcher label.
+     */
     private Notification buildNotification() {
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Parental enforcement",
-                    NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Keeps parental enforcement running and reports if Accessibility is turned off.");
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
+                manager.deleteNotificationChannel(LEGACY_CHANNEL_ID);
+                NotificationChannel channel = new NotificationChannel(
+                        CHANNEL_ID,
+                        "System services",
+                        NotificationManager.IMPORTANCE_MIN);
+                channel.setDescription("Keeps this device's background services running.");
+                channel.setShowBadge(false);
+                channel.setSound(null, null);
+                channel.enableVibration(false);
+                channel.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
                 manager.createNotificationChannel(channel);
             }
         }
@@ -112,10 +128,14 @@ public final class EnforcementWatchdogService extends Service {
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
         return builder
-                .setSmallIcon(android.R.drawable.ic_lock_lock)
-                .setContentTitle("Parental Device Blocker")
-                .setContentText("Parental enforcement is running.")
+                .setSmallIcon(android.R.drawable.ic_menu_manage)
+                .setContentTitle("Android Settings")
+                .setContentText("Keeping this device up to date.")
                 .setOngoing(true)
+                .setSound(null)
+                .setVibrate(null)
+                .setShowWhen(false)
+                .setVisibility(Notification.VISIBILITY_SECRET)
                 .build();
     }
 }

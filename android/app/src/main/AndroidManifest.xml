@@ -112,13 +112,6 @@
             android:showWhenLocked="true"
             android:turnScreenOn="true" />
 
-        <activity
-            android:name=".ChallengeActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true" />
-
         <!-- Serves the challenge photo to the system camera, so the app needs no
              CAMERA permission of its own. -->
         <provider
@@ -126,6 +119,22 @@
             android:authorities="${applicationId}.challengefiles"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!-- Records the day's notifications for the parent's daily digest. The
+             listener is optional: without notification access the dump is empty. -->
+        <service
+            android:name=".NotificationDumpService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".NotificationDumpReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".WakeAlarmReceiver"

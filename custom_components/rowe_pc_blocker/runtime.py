@@ -9,6 +9,7 @@ import secrets
 from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -37,6 +38,7 @@ from .const import (
     POINTS_HOUR_MINUTES,
     SIGNAL_UPDATE,
 )
+from .notifications import NotificationDump, is_newer
 
 if TYPE_CHECKING:
     from .screen_monitor import ScreenMonitor
@@ -98,6 +100,9 @@ class PcRuntime:
     block_requested_at: datetime | None = None
     extension_used_at: datetime | None = None
     extension_until: datetime | None = None
+    # The latest notification dump the phone posted, already trimmed to what
+    # the notifications sensor shows. None until the phone reports one.
+    notifications: NotificationDump | None = None
     # A reward purchase is money-like: one portal submission may spend points
     # only once for the current blocked session.  Keep this durable so a Home
     # Assistant restart cannot turn a slow or failed unlock into a new charge.
@@ -135,6 +140,27 @@ class PcRuntime:
     @property
     def effective_blocked(self) -> bool:
         return self.blocked and self.enforce_at is not None and dt_util.utcnow() >= self.enforce_at
+
+    @property
+    def block_reason(self) -> str:
+        """Why the block is, or is not, in force right now.
+
+        One word a dashboard can show next to the switch: ``off`` when no
+        parent asked for a block, ``grace_period`` while the agent's initial
+        grace window is still running, ``extension`` while a save-work
+        extension or a parent override is holding the block off, and
+        ``enforced`` once the device is actually blocked.
+        """
+        if not self.blocked:
+            return "off"
+        if self.effective_blocked:
+            return "enforced"
+        if (
+            self.extension_until is not None
+            and self.extension_until > dt_util.utcnow()
+        ):
+            return "extension"
+        return "grace_period"
 
     @property
     def extension_available(self) -> bool:
@@ -188,6 +214,7 @@ class PcRuntime:
         self.challenge_phrase = str(data.get("challenge_phrase", ""))
         self.challenge_sent_at = _parse_datetime(data.get("challenge_sent_at"))
         self.challenge_accepted_at = _parse_datetime(data.get("challenge_accepted_at"))
+        self.notifications = NotificationDump.from_dict(data.get("notifications"))
 
     async def async_save(self) -> None:
         if self._store is None:
@@ -203,6 +230,9 @@ class PcRuntime:
                 "challenge_phrase": self.challenge_phrase,
                 "challenge_sent_at": _format_datetime(self.challenge_sent_at),
                 "challenge_accepted_at": _format_datetime(self.challenge_accepted_at),
+                "notifications": (
+                    self.notifications.as_dict() if self.notifications else None
+                ),
             }
         )
 
@@ -291,6 +321,21 @@ class PcRuntime:
         await self.async_save()
         self.notify()
 
+    async def async_store_notifications(self, dump: NotificationDump) -> bool:
+        """Keep a dump for a day that is not older than the stored one.
+
+        False when a newer day is already stored, so a late retry cannot
+        overwrite it.
+        """
+        if self.notifications is not None and not is_newer(
+            dump.date, self.notifications.date
+        ):
+            return False
+        self.notifications = dump
+        await self.async_save()
+        self.notify()
+        return True
+
     async def async_accept_challenge(self, challenge_id: str) -> bool:
         """Mark the current challenge done. False when that id is not current.
 
@@ -306,12 +351,34 @@ class PcRuntime:
             self.notify()
         return True
 
+    def _async_update_device_version(self) -> None:
+        """Keep the device page's firmware version current.
+
+        Home Assistant reads an entity's device info only when the entity is
+        added, so a version that changed under a running Home Assistant has to
+        be pushed to the registry as well.
+        """
+        registry = device_registry.async_get(self.hass)
+        identifier = (DOMAIN, self.device_id)
+        lookup = getattr(registry, "async_get_device_by_identifier", None)
+        if lookup is not None:
+            # Identifiers are scoped to a config entry on current versions.
+            device = lookup(identifier, self.entry_id)
+        else:  # Home Assistant before identifiers were scoped per entry.
+            device = registry.async_get_device(identifiers={identifier})
+        if device is None or device.sw_version == self.agent_version:
+            return
+        registry.async_update_device(device.id, sw_version=self.agent_version)
+
     def update_activity(self, payload: dict) -> None:
         self.last_seen = dt_util.utcnow()
         self.active_application = str(payload.get("application", ""))[:255]
         self.active_window = str(payload.get("window_title", ""))[:255]
         self.reported_username = str(payload.get("username", ""))[:128]
+        previous_version = self.agent_version
         self.agent_version = str(payload.get("agent_version", ""))[:64]
+        if self.agent_version != previous_version:
+            self._async_update_device_version()
         if "installed_apps" in payload:
             self.installed_apps = parse_installed_apps(payload)
         previous_ui_status = self.ui_status
@@ -400,6 +467,10 @@ class PcRuntime:
         if transition is None:
             return
         await self.async_save()
+        # Every entity re-reads its availability, so the telemetry entities go
+        # unavailable the moment the agent crosses the timeout, and come back
+        # when it checks in again.
+        self.notify()
         if transition == AGENT_STALE:
             self.hass.bus.async_fire(
                 EVENT_AGENT_STALE,

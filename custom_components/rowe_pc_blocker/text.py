@@ -23,6 +23,12 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
 
 
 class PcMessageText(ParentalDeviceEntity, TextEntity, RestoreEntity):
+    """The message the block screen shows the child.
+
+    A parent control, so it stays available and settable while the device's
+    agent is offline.
+    """
+
     _attr_name = "Block message"
     _attr_icon = "mdi:message-alert"
     _attr_native_max = 255
@@ -51,7 +57,8 @@ class AllowedAppsText(ParentalDeviceEntity, TextEntity, RestoreEntity):
 
     Comma-separated Android package names. An empty list means the phone falls
     back to its built-in Calls/WhatsApp/Maps set, so clearing the field is a
-    safe way to undo an edit.
+    safe way to undo an edit. A parent control, so it stays available and
+    settable while the phone's agent is offline.
     """
 
     _attr_name = "Allowed apps"

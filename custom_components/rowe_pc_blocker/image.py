@@ -4,6 +4,10 @@ Parent-facing: the image platform serves it through Home Assistant's own
 authenticated image proxy, so the device key the phone uses is never involved.
 The file itself is temporary; ``evidence.py`` owns where it lives and when it
 is deleted.
+
+The photo is stored by Home Assistant rather than reported by the agent, so the
+entity stays available while the phone is offline and simply has no image when
+nothing is stored.
 """
 
 from __future__ import annotations
