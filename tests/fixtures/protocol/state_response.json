@@ -12,8 +12,11 @@
   "allowed_apps": [],
   "challenge": null,
   "location_request": null,
+  "notification_request": null,
   "unblock_requests_pending": 0,
   "unblock_requests_limit": 3,
+  "unblock_request_allowed_today": true,
+  "unblock_request_next_at": null,
   "family": {
     "phone": {
       "device_id": "child-phone",

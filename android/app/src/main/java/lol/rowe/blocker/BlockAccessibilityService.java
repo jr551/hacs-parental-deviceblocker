@@ -225,6 +225,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
                     false);
             MainActivity.applyPolicySnapshot(policy);
             answerLocationRequest(policy);
+            answerNotificationRequest(policy);
             if (decision.shouldShowBlockScreen(kioskActive(policy), foregroundPackage)) {
                 showBlockScreen(policy);
             } else if (policy.shouldWarnGrace()) {
@@ -344,6 +345,21 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 locationFetchRunning.set(false);
             }
         });
+    }
+
+    /**
+     * Answer a parent's on-demand notification request. The day's buffer is
+     * already collected as each notification arrives, so answering is only an
+     * upload. The request id is recorded by {@link NotificationDump} once Home
+     * Assistant has it, so a failed upload leaves the request pending for the
+     * next poll rather than spent.
+     */
+    private void answerNotificationRequest(Policy policy) {
+        Policy.NotificationRequest request = policy.notificationRequest;
+        if (request == null || !NotificationDump.requestPending(this, request.id)) {
+            return;
+        }
+        NotificationDump.answerNow(this, request.id);
     }
 
     private void reportActivityIfNeeded(String packageName, String title) {

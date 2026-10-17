@@ -9,6 +9,7 @@ from .apps import (
     normalize_allowed_apps,
     parse_allowed_apps,
 )
+from .challenge import MAX_CHALLENGE_PHRASE_LENGTH
 from .const import DEVICE_TYPE_ANDROID, DOMAIN
 from .entity import ParentalDeviceEntity
 
@@ -19,6 +20,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     # A PC has no app list to allow; the phone reads this one on its state poll.
     if runtime.device_type == DEVICE_TYPE_ANDROID:
         entities.append(AllowedAppsText(runtime))
+        entities.append(NewChallengeText(runtime))
     async_add_entities(entities)
 
 
@@ -88,3 +90,36 @@ class AllowedAppsText(ParentalDeviceEntity, TextEntity, RestoreEntity):
         # is refused instead of silently dropping an app the parent allowed.
         self.runtime.allowed_apps = normalize_allowed_apps(value)
         self.runtime.notify()
+
+
+
+class NewChallengeText(ParentalDeviceEntity, TextEntity):
+    """Start a chore challenge by typing its phrase.
+
+    The same thing as calling ``rowe_pc_blocker.send_challenge``, but from the
+    place a parent is already looking. The phone locks on its next state poll
+    and stays locked until a parent accepts the submitted photo.
+
+    The field always reads empty: it is a trigger, not a stored setting, and a
+    value that lingered would read as a challenge that is still running.
+    """
+
+    _attr_name = "New challenge"
+    _attr_icon = "mdi:lock-question"
+    _attr_native_max = MAX_CHALLENGE_PHRASE_LENGTH
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_new_challenge"
+
+    @property
+    def native_value(self) -> str:
+        return ""
+
+    async def async_set_value(self, value: str) -> None:
+        phrase = (value or "").strip()
+        if not phrase:
+            # Clearing the box is how the dashboard resets it; it is not a way
+            # to cancel a challenge.
+            return
+        await self.runtime.async_send_challenge(phrase[:MAX_CHALLENGE_PHRASE_LENGTH])

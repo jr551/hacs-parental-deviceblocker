@@ -329,41 +329,50 @@ class InstalledAppsSensor(AgentTelemetryEntity, SensorEntity):
 class UnblockRequestsSensor(ParentalDeviceEntity, SensorEntity):
     """The apps this phone has asked a parent to allow.
 
-    The phone polls its state every minute, so an approved app clears the block
-    screen by itself; this sensor is how a parent sees what is waiting. It is
-    Home Assistant state rather than agent telemetry, so it stays available
-    while the phone is offline.
+    The state names what the child asked for rather than counting it, because
+    "Roblox" tells a parent at a glance what the request is for while "1" does
+    not. ``none`` when nothing is waiting. The phone polls its state every
+    minute, so an approved app clears the block screen by itself; this sensor
+    is how a parent sees what is waiting. It is Home Assistant state rather
+    than agent telemetry, so it stays available while the phone is offline.
     """
 
     _attr_name = "Unblock requests"
     _attr_icon = "mdi:lock-open-alert"
-    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, runtime) -> None:
         super().__init__(runtime)
         self._attr_unique_id = f"{runtime.device_id}_unblock_requests"
 
     @property
-    def native_value(self) -> int:
-        return len(unblock_requests(self.hass, self.runtime.device_id))
+    def native_value(self) -> str:
+        labels = [
+            request.label or request.package
+            for request in unblock_requests(self.hass, self.runtime.device_id)
+        ]
+        return ", ".join(labels) if labels else "none"
 
     @property
     def extra_state_attributes(self) -> dict:
         requests = unblock_requests(self.hass, self.runtime.device_id)
+        next_at = self.runtime.unblock_request_next_at
         return {
-            # The state is the count; the limit is what the phone's picker
-            # reads from the state payload to disable itself in time.
-            "unblock_requests_pending": len(requests),
-            "unblock_requests_limit": MAX_PENDING_UNBLOCK_REQUESTS,
             "requests": [
                 {
-                    "request_id": request.request_id,
                     "package": request.package,
                     "label": request.label,
                     "requested_at": request.requested_at.isoformat(),
                 }
                 for request in requests
             ],
+            # The limit is what the phone's picker reads from the state
+            # payload; the daily gate is the rule that actually stops a child
+            # asking again until tomorrow.
+            "pending": len(requests),
+            "limit": MAX_PENDING_UNBLOCK_REQUESTS,
+            "allowed_today": self.runtime.unblock_request_allowed_today,
+            "next_allowed_at": next_at.isoformat() if next_at else None,
+            "requested_today": not self.runtime.unblock_request_allowed_today,
         }
 
     async def async_added_to_hass(self) -> None:

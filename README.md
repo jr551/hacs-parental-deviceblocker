@@ -56,7 +56,7 @@ Build with .NET 8 or `./scripts/build-release.sh 0.10.0`. Install with `deploy/w
 
 The service updates itself from the public GitHub release: at most once an hour it compares its own file version with the newest published release and, when a newer `ParentalDeviceBlocker-<version>-win-x64-setup.exe` (or `-win-x64.zip`) exists, downloads it into `%ProgramData%\RowePcBlocker\updates\`, verifies it against the release's `SHA256SUMS`, and only then runs the installer — or, when only the zip is published, the archive's `Upgrade-Installed-RowePcBlocker.ps1`. It refuses to update while the PC is blocked or a block is requested, and any failure is logged and retried on the next hourly check. Nothing is offered until the release is published.
 
-The child-facing overlay also reports the phone. When the phone has an active chore challenge the PC says so full screen, names the child, and lets them keep working for five minutes before the notice becomes a hard kiosk; when the phone has not checked in for a day the PC freezes with **Parental control cannot be verified. Please see a parent.** A parent override suppresses both, and both clear as soon as the phone answers or checks in again.
+The child-facing overlay also reports the phone. When the phone has an active chore challenge the PC says so full screen, names the child, and lets them keep working for five minutes before the notice becomes a hard kiosk; when the phone has not checked in for a day the PC shows **Phone app tamper detected** and shuts itself down fifteen minutes later. A parent override suppresses both, and both clear as soon as the phone answers or checks in again.
 
 Wire protocol (unchanged): [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 

@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 # One dump is a day of one phone's notifications. The cap keeps a runaway
 # capture from filling the config directory.
 MAX_DUMP_BYTES = 256 * 1024
+
+# A parent's request is only useful while they are still waiting for it. The
+# same ten minutes the location request uses: long enough for a phone that
+# polls once a minute, short enough that a phone which was offline cannot
+# answer an hour later and have the dump look like a fresh ask.
+NOTIFICATION_REQUEST_TTL_SECONDS = 10 * 60
 
 # What the sensor shows. The count cap is the documented one; the byte budget
 # is what actually keeps the state attributes inside the recorder's limit,
@@ -140,6 +146,41 @@ def parse_posted_at(value) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def notification_request_is_live(
+    requested_at: datetime | None,
+    now: datetime,
+    ttl_seconds: int = NOTIFICATION_REQUEST_TTL_SECONDS,
+) -> bool:
+    """True while a notification request is still worth answering."""
+    if requested_at is None:
+        return False
+    return now - requested_at < timedelta(seconds=ttl_seconds)
+
+
+def notification_answer_refusal(
+    payload: dict,
+    request_id: str,
+    requested_at: datetime | None,
+    now: datetime,
+) -> tuple[int, dict] | None:
+    """Why this dump cannot answer the live request, or None when it can.
+
+    A dump that names no request is the nightly flush rather than an answer,
+    so it is accepted whatever the request state is. A dump that names one
+    must name the live request: an answer for a request a parent has replaced,
+    or one that has expired, is a 404, so a late answer can never clear a
+    request a parent is still waiting on.
+    """
+    supplied = str(payload.get("request_id", "")).strip()
+    if not supplied:
+        return None
+    if not request_id or supplied != request_id:
+        return 404, {"error": "That notification request has expired."}
+    if not notification_request_is_live(requested_at, now):
+        return 404, {"error": "That notification request has expired."}
+    return None
 
 
 def dump_refusal(payload: dict) -> tuple[int, dict] | None:

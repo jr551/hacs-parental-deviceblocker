@@ -6,7 +6,14 @@
 
 - **A parent answers a submitted challenge from the device page.** Accept and Send back buttons sit next to the evidence photo instead of leaving `approve_challenge` / `reject_challenge` as service calls only. `button.<device>_approve_challenge` and `button.<device>_reject_challenge` are available exactly while a submission is waiting, and the same rule drives a conditional card on the dashboard.
 - **The wake alarm is a set of controls, not an options form.** `switch.<device>_wake_alarm`, `time.<device>_wake_alarm_time`, `select.<device>_wake_alarm_days` (Every day / Weekdays / Weekends / Custom, with the real list in a `days` attribute) and `number.<device>_wake_alarm_volume` set the alarm from the device page or a dashboard. They write runtime state, so moving a slider never reloads the integration, and the change reaches the phone on its next state poll. An alarm configured through the options flow still seeds the controls, and a value set by an entity wins afterwards.
+- **Type a chore and the phone locks.** `text.<device>_new_challenge` starts a challenge from the device page or a dashboard: type the phrase, press enter, and the phone is locked behind it on its next state poll. The box always reads empty because it is a trigger, not a stored setting.
 - **A location request that is still waiting says so.** `device_tracker.<device>_location` carries `request_pending` and `request_age_seconds`, so a request the phone has not answered reads as outstanding rather than as a button that did nothing.
+
+### Changed
+
+- **Asking for an app is the bottom picker only.** The block screen no longer carries a **Request unblock** button next to the app the child was blocked on: it let the child fire a request at whatever happened to open, and the picker at the bottom of the same screen already lists every app they can ask about. The picker sends the same request.
+- **A phone that stops checking in now costs the PC.** After 24 hours of silence from a phone that had been seen at least once, the PC takes over the screen with **Phone app tamper detected** — a phone that has gone quiet for a day looks exactly like the app having been removed or disabled — names the child, and counts down. After 15 minutes it shuts the PC down. The countdown is measured from the phone's own `last_seen`, so restarting the agent or the PC buys no extra time, and a phone that checks in before the grace expires clears the notice with nothing to undo.
+- **The pause screen and the chore screen no longer look alike.** A parent's pause is a cool navy and the chore challenge is a saturated violet, so a child can tell at a glance whether they were paused or are being asked to do a job.
 
 ### Fixed
 

@@ -540,6 +540,15 @@ class _DtUtil:
         return datetime.now(timezone.utc)
 
     @staticmethod
+    def now() -> datetime:
+        """Local time, as Home Assistant's configured timezone would give it.
+
+        The stubs run on the test host, so the host's timezone stands in for
+        ``hass.config.time_zone``.
+        """
+        return datetime.now().astimezone()
+
+    @staticmethod
     def utc_from_timestamp(timestamp: float) -> datetime:
         return datetime.fromtimestamp(timestamp, timezone.utc)
 
@@ -742,6 +751,7 @@ def install() -> None:
     _module(
         "homeassistant.util.dt",
         utcnow=_DtUtil.utcnow,
+        now=_DtUtil.now,
         utc_from_timestamp=_DtUtil.utc_from_timestamp,
         parse_datetime=_DtUtil.parse_datetime,
     )
