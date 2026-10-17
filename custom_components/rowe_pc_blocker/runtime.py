@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
+import secrets
 from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
@@ -39,6 +40,13 @@ from .const import (
 
 if TYPE_CHECKING:
     from .screen_monitor import ScreenMonitor
+
+# The three states the challenge sensor reports. ``accepted`` stays until a
+# parent clears the challenge or sends a new one, so the dashboard can show
+# that the child did the chore.
+CHALLENGE_NONE = "none"
+CHALLENGE_PENDING = "pending"
+CHALLENGE_ACCEPTED = "accepted"
 
 
 @dataclass(slots=True)
@@ -80,6 +88,13 @@ class PcRuntime:
     # phone last reported. Both are empty for a PC.
     allowed_apps: str = ""
     installed_apps: list[dict] = field(default_factory=list)
+    # A chore challenge: the phone stays locked until the child types the
+    # phrase back. ``challenge_id`` is empty when there is no challenge, and
+    # ``challenge_accepted_at`` is set once the child has answered it.
+    challenge_id: str = ""
+    challenge_phrase: str = ""
+    challenge_sent_at: datetime | None = None
+    challenge_accepted_at: datetime | None = None
     block_requested_at: datetime | None = None
     extension_used_at: datetime | None = None
     extension_until: datetime | None = None
@@ -133,6 +148,32 @@ class PcRuntime:
             return None
         return self.extension_used_at + timedelta(seconds=EXTENSION_COOLDOWN_SECONDS)
 
+    @property
+    def challenge_state(self) -> str:
+        """``none``, ``pending``, or ``accepted`` for the dashboard sensor."""
+        if not self.challenge_id:
+            return CHALLENGE_NONE
+        if self.challenge_accepted_at is not None:
+            return CHALLENGE_ACCEPTED
+        return CHALLENGE_PENDING
+
+    @property
+    def challenge_payload(self) -> dict | None:
+        """The challenge the phone reads on its state poll, or None."""
+        if not self.challenge_id:
+            return None
+        return {
+            "id": self.challenge_id,
+            "phrase": self.challenge_phrase,
+            "sent_at": (
+                self.challenge_sent_at.isoformat() if self.challenge_sent_at else None
+            ),
+        }
+
+    def challenge_is_current(self, challenge_id: str) -> bool:
+        """True when this id is the challenge the phone should be answering."""
+        return bool(self.challenge_id) and challenge_id == self.challenge_id
+
     async def async_load(self) -> None:
         self._store = Store(self.hass, 1, f"{__package__}.{self.device_id}")
         data = await self._store.async_load() or {}
@@ -143,6 +184,10 @@ class PcRuntime:
             str(value) for value in data.get("portal_reward_claims", []) if str(value)
         }
         self.agent_stale = bool(data.get("agent_stale", False))
+        self.challenge_id = str(data.get("challenge_id", ""))
+        self.challenge_phrase = str(data.get("challenge_phrase", ""))
+        self.challenge_sent_at = _parse_datetime(data.get("challenge_sent_at"))
+        self.challenge_accepted_at = _parse_datetime(data.get("challenge_accepted_at"))
 
     async def async_save(self) -> None:
         if self._store is None:
@@ -154,6 +199,10 @@ class PcRuntime:
                 "extension_until": _format_datetime(self.extension_until),
                 "portal_reward_claims": sorted(self.portal_reward_claims),
                 "agent_stale": self.agent_stale,
+                "challenge_id": self.challenge_id,
+                "challenge_phrase": self.challenge_phrase,
+                "challenge_sent_at": _format_datetime(self.challenge_sent_at),
+                "challenge_accepted_at": _format_datetime(self.challenge_accepted_at),
             }
         )
 
@@ -223,6 +272,39 @@ class PcRuntime:
         await self.async_save()
         self.notify()
         return self.extension_until
+
+    async def async_send_challenge(self, phrase: str) -> None:
+        """Start a new challenge. The phone shows it on its next state poll."""
+        self.challenge_id = new_challenge_id()
+        self.challenge_phrase = phrase
+        self.challenge_sent_at = dt_util.utcnow()
+        self.challenge_accepted_at = None
+        await self.async_save()
+        self.notify()
+
+    async def async_clear_challenge(self) -> None:
+        """Cancel the challenge, accepted or not."""
+        self.challenge_id = ""
+        self.challenge_phrase = ""
+        self.challenge_sent_at = None
+        self.challenge_accepted_at = None
+        await self.async_save()
+        self.notify()
+
+    async def async_accept_challenge(self, challenge_id: str) -> bool:
+        """Mark the current challenge done. False when that id is not current.
+
+        An accepted challenge stays visible until a parent clears it or sends a
+        new one, so a retry after a dropped response is answered the same way
+        and the first acceptance time is kept.
+        """
+        if not self.challenge_is_current(challenge_id):
+            return False
+        if self.challenge_accepted_at is None:
+            self.challenge_accepted_at = dt_util.utcnow()
+            await self.async_save()
+            self.notify()
+        return True
 
     def update_activity(self, payload: dict) -> None:
         self.last_seen = dt_util.utcnow()
@@ -339,6 +421,11 @@ class PcRuntime:
                     "device_type": self.device_type,
                 },
             )
+
+
+def new_challenge_id() -> str:
+    """32 lowercase hex characters, safe to use in an entity attribute."""
+    return secrets.token_hex(16)
 
 
 def runtime_for_device(hass: HomeAssistant, device_id: str) -> PcRuntime | None:

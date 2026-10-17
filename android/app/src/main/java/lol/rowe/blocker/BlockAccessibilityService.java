@@ -191,7 +191,10 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 failOpen(EnforcementStatus.NOT_CONFIGURED, "Home Assistant is not configured.");
                 return;
             }
-            Policy policy = new HomeAssistantClient(config).getPolicy();
+            Policy policy = Policy.enforced(
+                    new HomeAssistantClient(config).getPolicy(),
+                    false,
+                    LocalOverride.isActive(this));
             WakeAlarm.applyServer(this, policy.wakeAlarm);
             currentPolicy = policy;
             decision.setAllowedApps(policy.allowedApps);
@@ -210,6 +213,9 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 // enforcement turns it into a hard block.
                 showBlockScreen(policy);
             }
+            // After the block screen, so the challenge lock is the screen the
+            // child has to clear first.
+            ChallengeActivity.sync(this, policy);
         } catch (Exception exception) {
             String detail = exception.getMessage();
             failOpen(
@@ -328,6 +334,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private void failOpen(String status, String detail) {
         currentPolicy = Policy.UNBLOCKED;
         MainActivity.applyPolicySnapshot(Policy.UNBLOCKED);
+        ChallengeActivity.sync(this, Policy.UNBLOCKED);
         publishStatus(status, detail == null ? "" : detail, true);
     }
 

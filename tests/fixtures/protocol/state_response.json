@@ -10,6 +10,7 @@
   "extension_available_at": null,
   "extension_until": null,
   "allowed_apps": [],
+  "challenge": null,
   "family": {
     "phone": null,
     "pc": null

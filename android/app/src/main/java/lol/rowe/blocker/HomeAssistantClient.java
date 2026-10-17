@@ -216,7 +216,8 @@ final class HomeAssistantClient {
                     readWakeAlarm(body),
                     readStringList(body, "allowed_apps"),
                     readFamilyPeer(body, "phone"),
-                    readFamilyPeer(body, "pc"));
+                    readFamilyPeer(body, "pc"),
+                    readChallenge(body));
         } finally {
             connection.disconnect();
         }
@@ -290,14 +291,34 @@ final class HomeAssistantClient {
         }
     }
 
+    /** What Home Assistant said about a parent override. */
+    static final class OverrideOutcome {
+        /** True when Home Assistant accepted the PIN and granted the hour. */
+        final boolean granted;
+        /** A message for the block screen. */
+        final String message;
+
+        private OverrideOutcome(boolean granted, String message) {
+            this.granted = granted;
+            this.message = message == null ? "" : message;
+        }
+
+        static OverrideOutcome granted(String message) {
+            return new OverrideOutcome(true, message);
+        }
+
+        static OverrideOutcome refused(String message) {
+            return new OverrideOutcome(false, message);
+        }
+    }
+
     /**
      * Ask Home Assistant for a parent-PIN override. Home Assistant verifies the
      * PIN, counts attempts, and applies the lockout, so this method only relays
-     * the outcome; it never decides whether the PIN was right.
-     *
-     * @return a message suitable for showing on the block screen.
+     * the outcome; it never decides whether the PIN was right. A refusal is the
+     * caller's cue to fall back to the phone's own parent PIN.
      */
-    String requestParentOverride(String pin) throws Exception {
+    OverrideOutcome requestParentOverride(String pin) throws Exception {
         HttpURLConnection connection = open("parent_override", "POST");
         try {
             connection.setDoOutput(true);
@@ -312,17 +333,68 @@ final class HomeAssistantClient {
             InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
             String body = stream == null ? "" : readAll(stream);
             if (status == 200) {
-                return "Override accepted. Waiting for the device to unlock.";
+                return OverrideOutcome.granted("Override accepted. Waiting for the device to unlock.");
             }
-            try {
-                String error = optionalString(new JSONObject(body), "error");
-                if (error != null && !error.isEmpty()) {
-                    return error;
-                }
-            } catch (Exception ignored) {
-                // Fall through to the generic message below.
+            String error = errorText(body);
+            return OverrideOutcome.refused(error.isEmpty()
+                    ? "Home Assistant refused the override (" + status + ")."
+                    : error);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /**
+     * POST /api/rowe_pc_blocker/{device_id}/challenge/evidence. The photo is the
+     * raw JPEG body; Home Assistant stores it as the child's evidence.
+     */
+    Challenge.Outcome uploadChallengeEvidence(byte[] jpeg) throws Exception {
+        HttpURLConnection connection = open("challenge/evidence", "POST");
+        try {
+            connection.setReadTimeout(20_000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "image/jpeg");
+            connection.setFixedLengthStreamingMode(jpeg.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(jpeg);
             }
-            return "Home Assistant refused the override (" + status + ").";
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            String body = stream == null ? "" : readAll(stream);
+            if (status == 200) {
+                return Challenge.Outcome.accepted("Photo sent.");
+            }
+            String error = errorText(body);
+            return Challenge.Outcome.failed(error.isEmpty()
+                    ? "Home Assistant refused the photo (" + status + ")."
+                    : error);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /** POST /api/rowe_pc_blocker/{device_id}/challenge/accept. */
+    Challenge.Outcome acceptChallenge(String challengeId) throws Exception {
+        HttpURLConnection connection = open("challenge/accept", "POST");
+        try {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            byte[] bytes = new JSONObject().put("id", challengeId).toString()
+                    .getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            String body = stream == null ? "" : readAll(stream);
+            if (status == 200) {
+                return Challenge.Outcome.accepted("Challenge accepted.");
+            }
+            String error = errorText(body);
+            return Challenge.Outcome.failed(error.isEmpty()
+                    ? "Home Assistant refused the answer (" + status + ")."
+                    : error);
         } finally {
             connection.disconnect();
         }
@@ -496,6 +568,20 @@ final class HomeAssistantClient {
             }
         }
         return values;
+    }
+
+    /** The active chore challenge, or null when there is none. */
+    private static Challenge readChallenge(JSONObject body) {
+        JSONObject challenge = body.optJSONObject("challenge");
+        if (challenge == null) {
+            return null;
+        }
+        String id = challenge.optString("id", "").trim();
+        String phrase = challenge.optString("phrase", "").trim();
+        if (id.isEmpty() || phrase.isEmpty()) {
+            return null;
+        }
+        return new Challenge(id, phrase, optionalString(challenge, "sent_at"));
     }
 
     /** The child's other device; null when Home Assistant did not send one. */

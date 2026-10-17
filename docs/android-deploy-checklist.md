@@ -48,6 +48,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 - [ ] Turn **off** Developer options and USB debugging. A release build cannot be configured with `adb run-as`.
 - [ ] Within about a minute, Home Assistant shows Agent online and foreground app updates while unblocked. Enforcement status reads `monitoring`.
 - [ ] Supervised block: block screen appears, WhatsApp works, Google Maps works, the dialler works, and Back/Home do not dismiss a hard block.
+- [ ] Chore challenge: set one from Home Assistant, then confirm the phone locks with the phrase, refuses **Accept** until the phrase matches and a photo is taken, and unlocks once it is accepted. The lock beeps on appearance and about every 25 seconds while it is up.
 - [ ] Secure Folder / Dual Messenger clones are not the apps the allow-list launches. Test them if anyone uses them.
 - [ ] Fail-open proof: airplane mode or stop Home Assistant during a block. The phone unlocks. Enforcement status becomes `fail_open` when the phone can still reach Home Assistant; otherwise Agent online turns off and you treat the phone as unblocked with no fresh status. The `rowe_pc_blocker_enforcement_degraded` event fires only when Home Assistant receives a status report while a block was requested.
 - [ ] Turn Accessibility off briefly. Enforcement status becomes `accessibility_disabled` while the watchdog is alive. Turn it back on before leaving the phone.
@@ -58,6 +59,7 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 
 - [ ] Record both local PINs and both Home Assistant override PINs where the children cannot read them.
 - [ ] Emergency unlock paths: turn the Home Assistant block switch off, use the parent override on the block screen, or disable Accessibility / uninstall. Uninstall is still possible. Do not describe this build as uninstall-proof.
+- [ ] If Home Assistant refuses the parent override (no override PIN configured there, or locked out) or cannot be reached, the phone falls back to its own local configuration PIN and grants an hour locally. The same attempt counter and 15-minute lockout apply, so a wrong PIN still unlocks nothing.
 - [ ] If the network is unreliable, do not use the phone block as the only bedtime control. Keep the PC and socket automations that already exist.
 - [ ] Example alert: `deploy/home-assistant/rowe_pc_blocker_android_enforcement.yaml`. Replace the placeholder entity ids before use.
 

@@ -5,6 +5,7 @@
 ### Added
 
 - **Ask a parent to allow one app.** A blocked phone can now ask for a single app to be allowed instead of a parent editing the whole list: `POST /api/rowe_pc_blocker/{device_id}/unblock_request` records the request, `sensor.<device>_unblock_requests` shows what is waiting, and a dynamic `button.rowe_pc_blocker_approve_unblock_<request_id>` / `button.rowe_pc_blocker_reject_unblock_<request_id>` pair answers it. Approving appends the package to that phone's allowlist, so the block screen clears itself on the next state poll. Requests expire after 30 minutes and a second request for the same app is refused while one is waiting.
+- **Chore challenge.** A parent can lock a phone behind a chore with `rowe_pc_blocker.send_challenge` (targeting `sensor.<device>_challenge`): the phone shows the phrase, the child takes a photo and types it back, and `POST …/challenge/accept` unlocks it. The photo arrives on `POST …/challenge/evidence`, is stored under `<config>/rowe_pc_blocker_evidence/` for 24 hours, and is shown to the parent through `image.<device>_challenge_evidence`. `rowe_pc_blocker.clear_challenge` cancels the challenge and deletes its photo.
 
 ## 0.11.0
 

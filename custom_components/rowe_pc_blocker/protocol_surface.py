@@ -10,6 +10,8 @@ API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/activity"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/extension"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/unblock_request"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/accept"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/evidence"},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal", "query_key_ok": True},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal/data"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/portal/action"},
@@ -32,6 +34,7 @@ STATE_RESPONSE_KEYS = frozenset(
         "extension_available_at",
         "extension_until",
         "allowed_apps",
+        "challenge",
         "family",
     }
 )
@@ -75,6 +78,12 @@ PROVISION_APPROVED_KEYS = frozenset({"status", "device_id", "api_key", "child_na
 UNBLOCK_REQUEST_KEYS = frozenset({"package", "label"})
 
 UNBLOCK_PENDING_KEYS = frozenset({"ok", "request_id", "status"})
+
+CHALLENGE_REQUEST_KEYS = frozenset({"id"})
+
+CHALLENGE_PAYLOAD_KEYS = frozenset({"id", "phrase", "sent_at"})
+
+CHALLENGE_EVIDENCE_KEYS = frozenset({"ok", "expires_at"})
 
 ACTIVITY_OK_BODY = {"ok": True}
 

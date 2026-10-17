@@ -39,6 +39,12 @@ from .const import (
     PARENT_PIN_MAX_ATTEMPTS,
 )
 from .apps import DEFAULT_ALLOWED_APPS, parse_allowed_apps
+from .challenge import challenge_accept_refusal
+from .evidence import (
+    MAX_EVIDENCE_BYTES,
+    async_save_evidence,
+    evidence_refusal,
+)
 from .family import family_peers
 from .pending import (
     async_create_request,
@@ -217,6 +223,7 @@ class PcStateView(HomeAssistantView):
                 "wake_alarm": _wake_alarm(request.app["hass"], runtime),
                 "allowed_apps": parse_allowed_apps(runtime.allowed_apps)
                 or list(DEFAULT_ALLOWED_APPS),
+                "challenge": runtime.challenge_payload,
                 "family": family_peers(
                     runtime,
                     _runtimes(hass),
@@ -300,6 +307,71 @@ class PcUnblockRequestView(HomeAssistantView):
             str(payload.get("label", "")),
         )
         return self.json(body, status_code=status_code)
+
+
+class PcChallengeAcceptView(HomeAssistantView):
+    """Let a phone report that the child typed the challenge phrase back.
+
+    The photo comes first: a challenge is only accepted once evidence for it is
+    stored, so a child cannot clear the lock by typing the phrase alone.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/challenge/accept"
+    name = "api:rowe_pc_blocker:challenge_accept"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        challenge_id = str(payload.get("id", ""))[:64]
+        refusal = challenge_accept_refusal(hass, runtime, challenge_id)
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        await runtime.async_accept_challenge(challenge_id)
+        return self.json({"ok": True})
+
+
+class PcChallengeEvidenceView(HomeAssistantView):
+    """Accept the photo a child took for the active challenge.
+
+    The body is the JPEG itself rather than JSON, so the phone can stream the
+    camera output straight through.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/challenge/evidence"
+    name = "api:rowe_pc_blocker:challenge_evidence"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        # Read the id once: a parent sending a new challenge while the body is
+        # still arriving must not have this photo filed under it.
+        challenge_id = runtime.challenge_id
+        if not challenge_id:
+            return self.json(
+                {"error": "That challenge is no longer active."}, status_code=404
+            )
+        content_type = request.headers.get("Content-Type", "")
+        refusal = evidence_refusal(content_type, request.content_length)
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        data = await request.content.read(MAX_EVIDENCE_BYTES + 1)
+        refusal = evidence_refusal(content_type, len(data))
+        if refusal is not None:
+            status_code, body = refusal
+            return self.json(body, status_code=status_code)
+        expires_at = await async_save_evidence(
+            hass, runtime.device_id, challenge_id, data
+        )
+        runtime.notify()
+        return self.json({"ok": True, "expires_at": expires_at.isoformat()})
 
 
 class PcPortalView(HomeAssistantView):
@@ -694,6 +766,8 @@ def async_register_api(hass: HomeAssistant) -> None:
     hass.http.register_view(PcActivityView)
     hass.http.register_view(PcExtensionView)
     hass.http.register_view(PcUnblockRequestView)
+    hass.http.register_view(PcChallengeAcceptView)
+    hass.http.register_view(PcChallengeEvidenceView)
     hass.http.register_view(PcPortalView)
     hass.http.register_view(PcPortalDataView)
     hass.http.register_view(PcPortalActionView)

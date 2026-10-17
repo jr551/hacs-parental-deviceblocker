@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import re
 import sys
+import tempfile
 import types
 import unicodedata
 from datetime import datetime, timezone
@@ -70,12 +72,84 @@ class FakeBus:
         return [data for name, data in self.events if name == event_type]
 
 
+class FakeRegistryEntry:
+    """An entity registry entry, as ``entity_registry.async_get`` returns it."""
+
+    def __init__(self, unique_id: str, entity_id: str = "") -> None:
+        self.unique_id = unique_id
+        self.entity_id = entity_id
+
+
 class FakeEntityRegistry:
     def __init__(self) -> None:
         self.removed: list[str] = []
+        self.entities: dict[str, FakeRegistryEntry] = {}
+
+    def add(self, entity_id: str, unique_id: str) -> None:
+        """Register an entity the way Home Assistant's registry would."""
+        self.entities[entity_id] = FakeRegistryEntry(unique_id, entity_id)
+
+    def async_get(self, entity_id: str) -> FakeRegistryEntry | None:
+        return self.entities.get(entity_id)
 
     def async_remove(self, entity_id: str) -> None:
         self.removed.append(entity_id)
+
+
+class ServiceCall:
+    """A service call, as a handler receives it."""
+
+    def __init__(self, hass, domain: str, service: str, data: dict) -> None:
+        self.hass = hass
+        self.domain = domain
+        self.service = service
+        self.data = data
+
+
+class FakeServices:
+    """Registers service handlers and calls them the way Home Assistant does.
+
+    A call merges its target into the data and validates the result against the
+    registered schema, which is what makes ``target.entity_id`` reach a handler.
+    """
+
+    def __init__(self, hass) -> None:
+        self.hass = hass
+        self.registered: dict[tuple[str, str], tuple] = {}
+
+    def async_register(self, domain, service, handler, schema=None, **kwargs) -> None:
+        self.registered[(domain, service)] = (handler, schema)
+
+    async def async_call(
+        self,
+        domain,
+        service,
+        service_data=None,
+        blocking=False,
+        context=None,
+        target=None,
+        return_response=False,
+    ):
+        handler, schema = self.registered[(domain, service)]
+        data = dict(service_data or {})
+        if target:
+            data.update(target)
+        if schema is not None:
+            data = schema(data)
+        result = handler(ServiceCall(self.hass, domain, service, data))
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+
+class FakeConfig:
+    """``hass.config``: only the config directory path is used."""
+
+    def __init__(self, config_dir: str) -> None:
+        self.config_dir = config_dir
+
+    def path(self, *parts) -> str:
+        return str(Path(self.config_dir).joinpath(*parts))
 
 
 class FakeConfigEntry:
@@ -115,7 +189,7 @@ class FakeConfigEntries:
 class FakeHass:
     """The parts of ``HomeAssistant`` the integration touches in tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, config_dir: str | None = None) -> None:
         self.data: dict = {}
         self.bus = FakeBus()
         self.storage: dict = {}
@@ -123,12 +197,18 @@ class FakeHass:
         self.intervals: list = []
         self.entity_registry = FakeEntityRegistry()
         self.config_entries = FakeConfigEntries()
+        self.services = FakeServices(self)
+        self.config = FakeConfig(config_dir or tempfile.mkdtemp(prefix="rowe_test_"))
         self.is_stopping = False
         self.tasks: list = []
 
     def async_create_task(self, coro):
         self.tasks.append(coro)
         return coro
+
+    async def async_add_executor_job(self, target, *args):
+        """Run blocking work inline; tests have no executor."""
+        return target(*args)
 
     async def async_drain(self) -> None:
         """Run the tasks the integration scheduled."""
@@ -229,6 +309,32 @@ class BinarySensorEntity(Entity):
     pass
 
 
+class ImageEntity(Entity):
+    """``ImageEntity`` stub: keeps the access tokens its image URL is built from."""
+
+    _attr_content_type = "image/jpeg"
+    _attr_image_last_updated = None
+
+    def __init__(self, hass=None, verify_ssl: bool = False) -> None:
+        self.hass = hass
+        self.access_tokens: list[str] = []
+        self.async_update_token()
+
+    def async_update_token(self) -> None:
+        self.access_tokens.append("test-token")
+
+    @property
+    def content_type(self) -> str:
+        return self._attr_content_type
+
+    @property
+    def image_last_updated(self):
+        return self._attr_image_last_updated
+
+    async def async_image(self):
+        return None
+
+
 class BinarySensorDeviceClass:
     CONNECTIVITY = "connectivity"
 
@@ -258,6 +364,10 @@ class _DtUtil:
         return datetime.now(timezone.utc)
 
     @staticmethod
+    def utc_from_timestamp(timestamp: float) -> datetime:
+        return datetime.fromtimestamp(timestamp, timezone.utc)
+
+    @staticmethod
     def parse_datetime(value: str | None):
         return datetime.fromisoformat(value) if value else None
 
@@ -267,8 +377,21 @@ def utcnow() -> datetime:
     return _DtUtil.utcnow()
 
 
+def utc_from_timestamp(timestamp: float) -> datetime:
+    """The same conversion the integration sees through ``dt_util``."""
+    return _DtUtil.utc_from_timestamp(timestamp)
+
+
 class FlowResultType:
     CREATE_ENTRY = "create_entry"
+
+
+class HomeAssistantError(Exception):
+    """Base class for Home Assistant errors."""
+
+
+class ServiceValidationError(HomeAssistantError):
+    """A service was called with invalid data."""
 
 
 def callback(func):
@@ -313,12 +436,23 @@ def install() -> None:
         return
     homeassistant = _module("homeassistant")
     homeassistant._rowe_stub = True
-    _module("homeassistant.core", HomeAssistant=type("HomeAssistant", (), {}), callback=callback)
+    _module(
+        "homeassistant.core",
+        HomeAssistant=type("HomeAssistant", (), {}),
+        ServiceCall=ServiceCall,
+        callback=callback,
+    )
     _module("homeassistant.util")
     _module(
         "homeassistant.util.dt",
         utcnow=_DtUtil.utcnow,
+        utc_from_timestamp=_DtUtil.utc_from_timestamp,
         parse_datetime=_DtUtil.parse_datetime,
+    )
+    _module(
+        "homeassistant.exceptions",
+        HomeAssistantError=HomeAssistantError,
+        ServiceValidationError=ServiceValidationError,
     )
     _module("homeassistant.data_entry_flow", FlowResultType=FlowResultType)
     _module("homeassistant.helpers")
@@ -340,6 +474,7 @@ def install() -> None:
     _module("homeassistant.components.sensor", SensorEntity=SensorEntity)
     _module("homeassistant.components.text", TextEntity=TextEntity)
     _module("homeassistant.components.button", ButtonEntity=ButtonEntity)
+    _module("homeassistant.components.image", ImageEntity=ImageEntity)
     _module(
         "homeassistant.components.binary_sensor",
         BinarySensorEntity=BinarySensorEntity,

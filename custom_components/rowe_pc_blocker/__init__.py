@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
 from .api import _portal_context, async_register_api
+from .challenge import MAX_CHALLENGE_PHRASE_LENGTH, async_register_services
 from .const import (
     CONF_API_KEY,
     CONF_DEVICE_ID,
@@ -20,10 +21,22 @@ from .const import (
     DEVICE_TYPE_WINDOWS,
     PLATFORMS,
 )
+from .evidence import async_prune_evidence
 from .migration import ENTRY_VERSION, migrate_options
 from .pending import async_load_pending, release_pending_entities
 from .runtime import PcRuntime
 from .screen_monitor import ScreenMonitor
+
+SEND_CHALLENGE_SCHEMA = vol.Schema(
+    {
+        vol.Required("phrase"): vol.All(
+            cv.string, vol.Length(min=1, max=MAX_CHALLENGE_PHRASE_LENGTH)
+        ),
+        vol.Required("entity_id"): cv.entity_ids,
+    }
+)
+
+CLEAR_CHALLENGE_SCHEMA = vol.Schema({vol.Required("entity_id"): cv.entity_ids})
 
 DEVICE_SCHEMA = vol.Schema(
     {
@@ -58,6 +71,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up API routes."""
     async_register_api(hass)
+    async_register_services(hass, SEND_CHALLENGE_SCHEMA, CLEAR_CHALLENGE_SCHEMA)
     for device in config.get(DOMAIN, {}).get(CONF_DEVICES, []):
         hass.async_create_task(
             hass.config_entries.flow.async_init(
@@ -72,7 +86,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up one PC."""
     async_register_api(hass)
+    async_register_services(hass, SEND_CHALLENGE_SCHEMA, CLEAR_CHALLENGE_SCHEMA)
     await async_load_pending(hass)
+    # A photo that outlived its window must go even if nothing new arrives.
+    await async_prune_evidence(hass)
     runtime = PcRuntime(
         hass=hass,
         entry_id=entry.entry_id,

@@ -346,7 +346,10 @@ public final class MainActivity extends Activity {
     /**
      * Parent-facing escape hatch on the block screen: entering the PIN asks Home
      * Assistant for one extra hour. Home Assistant does the verification and
-     * attempt limiting so this phone cannot be tricked into granting time.
+     * attempt limiting so this phone cannot be tricked into granting time. When
+     * Home Assistant refuses or cannot be reached, the phone's own parent PIN
+     * grants the hour locally instead, so a parent is never left with no way to
+     * give time at the device.
      */
     private void promptForParentOverride() {
         if (isFinishing() || pinDialogShowing) {
@@ -365,20 +368,61 @@ public final class MainActivity extends Activity {
                     String pin = input.getText().toString().trim();
                     blockCountdown.setText("Checking PIN…");
                     executor.execute(() -> {
-                        String message;
+                        HomeAssistantClient.OverrideOutcome outcome = null;
                         try {
-                            message = new HomeAssistantClient(AppConfig.load(MainActivity.this))
+                            outcome = new HomeAssistantClient(AppConfig.load(MainActivity.this))
                                     .requestParentOverride(pin);
                         } catch (Exception exception) {
-                            message = "Could not reach Home Assistant.";
+                            // Unreachable: the local PIN is the only way to grant time.
                         }
-                        final String result = message;
-                        mainHandler.post(() -> blockCountdown.setText(result));
+                        final HomeAssistantClient.OverrideOutcome result = outcome;
+                        mainHandler.post(() -> {
+                            if (isFinishing() || isDestroyed()) {
+                                return;
+                            }
+                            if (result != null && result.granted) {
+                                blockCountdown.setText(result.message);
+                                return;
+                            }
+                            blockCountdown.setText(localOverrideFallback(pin));
+                            if (LocalOverride.isActive(this)) {
+                                applyPolicy(Policy.UNBLOCKED);
+                            }
+                        });
                     });
                 })
                 .setNegativeButton("Cancel", (dialog, which) -> pinDialogShowing = false)
                 .setOnDismissListener(dialog -> pinDialogShowing = false)
                 .show();
+    }
+
+    /**
+     * Home Assistant refused the override or could not be reached, so the
+     * phone's own parent PIN decides. The attempt counter and lockout are the
+     * same ones the setup screen uses, so this adds no new way to guess the PIN.
+     *
+     * @return a message suitable for showing on the block screen.
+     */
+    private String localOverrideFallback(String pin) {
+        long now = System.currentTimeMillis();
+        long remaining = ParentPin.remainingMillis(pinLockoutUntil, now);
+        if (remaining > 0L) {
+            return "Too many wrong PINs. Try again in "
+                    + ParentPin.wholeMinutesRemaining(remaining) + " minute(s).";
+        }
+        if (ParentPin.verify(this, pin)) {
+            pinFailures = 0;
+            pinLockoutUntil = 0L;
+            savePinFailures();
+            LocalOverride.grantFor(this, LocalOverride.DURATION_MS);
+            return "Unlocked for 1 hour on this phone.";
+        }
+        pinFailures++;
+        if (pinFailures >= ParentPin.MAX_ATTEMPTS) {
+            pinLockoutUntil = ParentPin.lockoutDeadline(pinFailures, now);
+        }
+        savePinFailures();
+        return "Incorrect PIN.";
     }
 
     private void unlockSetup() {
@@ -507,13 +551,17 @@ public final class MainActivity extends Activity {
                         "Home Assistant is not configured. Blocking is disabled."));
                 return;
             }
-            Policy policy = new HomeAssistantClient(config).getPolicy();
+            Policy policy = Policy.enforced(
+                    new HomeAssistantClient(config).getPolicy(),
+                    false,
+                    LocalOverride.isActive(this));
             mainHandler.post(() -> {
                 EnforcementNote.record(
                         this,
                         policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
                         "");
                 applyPolicy(policy);
+                ChallengeActivity.sync(this, policy);
             });
         } catch (Exception exception) {
             String detail = exception.getMessage();
@@ -538,6 +586,7 @@ public final class MainActivity extends Activity {
     private void failOpen(String status, String message) {
         EnforcementNote.record(this, status, message);
         applyPolicy(Policy.UNBLOCKED);
+        ChallengeActivity.sync(this, Policy.UNBLOCKED);
         if (!isFinishing() && setupUnlocked) {
             statusText.setText(EnforcementStatus.parentText(status, message));
         }
@@ -830,7 +879,12 @@ public final class MainActivity extends Activity {
         allowedApps.removeAllViews();
         float density = getResources().getDisplayMetrics().density;
         int iconSize = Math.round(56 * density);
-        int cellWidth = Math.round(84 * density);
+        int margin = Math.round(6 * density);
+        View parent = (View) allowedApps.getParent();
+        int available = getResources().getDisplayMetrics().widthPixels
+                - parent.getPaddingLeft() - parent.getPaddingRight();
+        AllowedApps.Grid grid = AllowedApps.grid(available, Math.round(84 * density), margin);
+        allowedApps.setColumnCount(grid.columns);
         for (AllowedApps.Shortcut shortcut
                 : AllowedApps.installed(getPackageManager(), currentPolicy.allowedApps)) {
             LinearLayout cell = new LinearLayout(this);
@@ -844,12 +898,16 @@ public final class MainActivity extends Activity {
             label.setTextColor(getColor(R.color.white));
             label.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
             label.setTextSize(12);
+            // A long label wraps inside the cell and is cut off after two lines,
+            // so it can never widen the grid or push the note off the screen.
+            label.setMaxLines(2);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             cell.addView(label);
             cell.setOnClickListener(view -> launchPackage(
                     shortcut.packageName, shortcut.label + " is not installed."));
             GridLayout.LayoutParams params = new GridLayout.LayoutParams();
-            params.width = cellWidth;
-            params.setMargins(Math.round(6 * density), Math.round(8 * density), Math.round(6 * density), 0);
+            params.width = grid.cellWidth;
+            params.setMargins(margin, Math.round(8 * density), margin, 0);
             allowedApps.addView(cell, params);
         }
     }
@@ -905,6 +963,7 @@ public final class MainActivity extends Activity {
                 0,
                 null,
                 intent.getStringArrayListExtra(EXTRA_ALLOWED_APPS),
+                null,
                 null,
                 null);
     }

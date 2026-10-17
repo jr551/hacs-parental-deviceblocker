@@ -37,6 +37,8 @@ POST_VIEWS = frozenset(
         "PcActivityView",
         "PcExtensionView",
         "PcUnblockRequestView",
+        "PcChallengeAcceptView",
+        "PcChallengeEvidenceView",
         "PcPortalActionView",
         "PcParentOverrideView",
         "PcPointsHourView",
@@ -117,6 +119,14 @@ class ProtocolSurfaceTests(unittest.TestCase):
         self.assertEqual(set(body), PROTOCOL.UNBLOCK_PENDING_KEYS)
         self.assertEqual(body["request_id"], "b" * 32)
         self.assertEqual(body["status"], PROVISION.STATUS_PENDING)
+
+    def test_the_challenge_shapes_are_the_documented_ones(self) -> None:
+        self.assertEqual(
+            set(_fixture("challenge_accept.json")), PROTOCOL.CHALLENGE_REQUEST_KEYS
+        )
+        self.assertEqual(
+            set(_fixture("challenge_evidence.json")), PROTOCOL.CHALLENGE_EVIDENCE_KEYS
+        )
 
 
 if __name__ == "__main__":

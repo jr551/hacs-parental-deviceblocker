@@ -1,7 +1,15 @@
 """Constants for Parental Device Blocker."""
 
 DOMAIN = "rowe_pc_blocker"
-PLATFORMS = ["binary_sensor", "button", "device_tracker", "sensor", "switch", "text"]
+PLATFORMS = [
+    "binary_sensor",
+    "button",
+    "device_tracker",
+    "image",
+    "sensor",
+    "switch",
+    "text",
+]
 
 CONF_DEVICE_ID = "device_id"
 CONF_DEVICE_NAME = "device_name"

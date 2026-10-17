@@ -40,6 +40,7 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
 | `points_balance` | integer \| null | Child's Taskmate balance, or null |
 | `wake_alarm` | object \| null | Alarm schedule; null leaves the agent's cache alone |
 | `allowed_apps` | string[] | Android allow-list; empty means "use the agent's built-in defaults" |
+| `challenge` | object \| null | Active chore challenge: `{"id", "phrase", "sent_at"}`, or null when there is none |
 | `family` | object | This child's other devices: `{"phone": peer\|null, "pc": peer\|null}` |
 
 A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application"}`, where `last_seen` is ISO-8601 or null. Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer.
@@ -252,6 +253,73 @@ removes it. The dashboard shows `sensor.<device>_unblock_requests` (state = coun
 with a `requests` attribute) and a dynamic
 `button.rowe_pc_blocker_approve_unblock_<request_id>` /
 `button.rowe_pc_blocker_reject_unblock_<request_id>` pair per request.
+
+## Chore challenge (Android)
+
+A parent can lock a phone behind a chore: the phone shows a phrase, the child
+takes a photo and types the phrase back, and the phone unlocks. The challenge
+travels on the state poll, so a new one reaches the phone within a minute and
+no push channel is needed.
+
+### `POST /api/rowe_pc_blocker/{device_id}/challenge/accept`
+
+Device credentials required, like every other device endpoint.
+
+**Request:** `{"id": "0123456789abcdef0123456789abcdef"}`
+
+The id is the one from the `challenge` object in the state payload.
+
+**Response 200** — the challenge is done: `{"ok": true}`
+
+**Response 404** — there is no challenge, or this id is not the current one: `{"error": "That challenge is no longer active."}`
+
+**Response 409** — no photo has been uploaded for this challenge: `{"error": "Take the photo first."}`
+
+Accepting is idempotent: a retry with the current id is answered **200** and
+keeps the first acceptance time. The challenge stays in the state payload until
+a parent clears it or sends a new one, so the dashboard can show that the chore
+was done.
+
+### `POST /api/rowe_pc_blocker/{device_id}/challenge/evidence`
+
+Device credentials required. The body is the JPEG itself rather than JSON, so
+the phone can stream the camera output straight through.
+
+**Request:** raw JPEG bytes, `Content-Type: image/jpeg`
+
+**Response 200** — stored:
+
+```json
+{
+  "ok": true,
+  "expires_at": "2026-10-18T12:00:00+00:00"
+}
+```
+
+**Response 404** — there is no active challenge: `{"error": "That challenge is no longer active."}`
+
+**Response 413** — larger than 5 MiB: `{"error": "That photo is too large."}`
+
+**Response 415** — not `image/jpeg`: `{"error": "Send the photo as image/jpeg."}`
+
+Photos are stored at `<config>/rowe_pc_blocker_evidence/<device_id>/<challenge_id>.jpg`
+and deleted after **24 hours**, pruned on every upload and at integration setup,
+so a photo cannot outlive its window even if nothing new arrives. Clearing the
+challenge deletes its photo immediately.
+
+A parent looks at the photo through `image.<device>_challenge_evidence`, which
+Home Assistant serves through its own authenticated image proxy — the device key
+is never involved, and the entity has no image while nothing is stored.
+
+### Challenge services
+
+| Service | Target | Data | Effect |
+|---------|--------|------|--------|
+| `rowe_pc_blocker.send_challenge` | `sensor.<device>_challenge` | `phrase` (required, 1–200 characters, trimmed) | Starts a new challenge with a fresh id; the sensor becomes `pending` |
+| `rowe_pc_blocker.clear_challenge` | `sensor.<device>_challenge` | — | Cancels the challenge and deletes its photo; the sensor returns to `none` |
+
+`sensor.<device>_challenge` is `none`, `pending`, or `accepted`, with `phrase`,
+`sent_at`, `accepted_at`, `evidence_at`, and `evidence_expires_at` attributes.
 
 ## Contract tests
 

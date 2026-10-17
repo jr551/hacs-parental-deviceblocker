@@ -71,4 +71,26 @@ public class PolicyTest {
         assertTrue(policy.blocked);
         assertTrue(policy.shouldCaptureForeground());
     }
+
+    @Test
+    public void aFailedPollLeavesTheDeviceUnblocked() {
+        Policy blocked = new Policy(
+                true, true, "Paused", false,
+                "2000-01-01T00:00:00Z", null);
+
+        Policy failed = Policy.enforced(blocked, true, false);
+        assertFalse(failed.blocked);
+        assertFalse(failed.shouldCaptureForeground());
+        assertFalse(Policy.enforced(null, false, false).blocked);
+    }
+
+    @Test
+    public void aLocalOverrideWinsOverABlockedPolicy() {
+        Policy blocked = new Policy(
+                true, true, "Paused", false,
+                "2000-01-01T00:00:00Z", null);
+
+        assertFalse(Policy.enforced(blocked, false, true).blocked);
+        assertTrue(Policy.enforced(blocked, false, false).blocked);
+    }
 }

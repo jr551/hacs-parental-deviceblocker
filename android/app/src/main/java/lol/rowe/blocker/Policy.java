@@ -57,6 +57,8 @@ final class Policy {
     final List<String> allowedApps;
     final FamilyPeer familyPhone;
     final FamilyPeer familyPc;
+    /** The active chore challenge, or null when there is none. */
+    final Challenge challenge;
 
     Policy(
             boolean blocked,
@@ -111,6 +113,7 @@ final class Policy {
                 wakeAlarm,
                 Collections.emptyList(),
                 null,
+                null,
                 null);
     }
 
@@ -126,7 +129,8 @@ final class Policy {
             WakeSchedule.Update wakeAlarm,
             List<String> allowedApps,
             FamilyPeer familyPhone,
-            FamilyPeer familyPc) {
+            FamilyPeer familyPc,
+            Challenge challenge) {
         this.blocked = blocked;
         this.blockRequested = blockRequested;
         this.message = message == null || message.trim().isEmpty()
@@ -143,6 +147,19 @@ final class Policy {
                 : Collections.unmodifiableList(allowedApps);
         this.familyPhone = familyPhone;
         this.familyPc = familyPc;
+        this.challenge = challenge;
+    }
+
+    /**
+     * The policy the phone enforces. A poll that failed and a parent's local
+     * override both mean "unblocked": the phone must never stay blocked on a
+     * policy it could not verify, and a parent's decision wins over the server.
+     */
+    static Policy enforced(Policy fromServer, boolean pollFailed, boolean localOverrideActive) {
+        if (pollFailed || localOverrideActive || fromServer == null) {
+            return UNBLOCKED;
+        }
+        return fromServer;
     }
 
     boolean isExtensionActive() {

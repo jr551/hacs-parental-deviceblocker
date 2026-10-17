@@ -2,9 +2,11 @@
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.util import dt as dt_util
 
 from .const import DEVICE_TYPE_ANDROID, DOMAIN, SIGNAL_PENDING
 from .entity import ParentalDeviceEntity
+from .evidence import evidence_expires_at, evidence_file
 from .pending import awaiting_requests, claim_pending_entities, unblock_requests
 
 
@@ -23,6 +25,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     if runtime.device_type == DEVICE_TYPE_ANDROID:
         entities.append(InstalledAppsSensor(runtime))
         entities.append(UnblockRequestsSensor(runtime))
+        entities.append(ChallengeSensor(runtime))
     async_add_entities(entities)
     # The pending-setups sensor is integration-wide, so only the entry that
     # owns the pending entities creates it.
@@ -297,6 +300,53 @@ class UnblockRequestsSensor(ParentalDeviceEntity, SensorEntity):
                 self.hass, SIGNAL_PENDING, self.async_write_ha_state
             )
         )
+
+
+class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
+    """The chore challenge this phone must answer before it unlocks.
+
+    ``none`` until a parent sends a phrase, ``pending`` while the child still
+    has to type it back, and ``accepted`` once they have. The evidence
+    attributes come from the stored photo, so they survive a restart.
+    """
+
+    _attr_name = "Challenge"
+    _attr_icon = "mdi:form-textbox"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_challenge"
+
+    @property
+    def native_value(self) -> str:
+        return self.runtime.challenge_state
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        path = evidence_file(
+            self.hass, self.runtime.device_id, self.runtime.challenge_id
+        )
+        return {
+            "phrase": self.runtime.challenge_phrase or None,
+            "sent_at": (
+                self.runtime.challenge_sent_at.isoformat()
+                if self.runtime.challenge_sent_at
+                else None
+            ),
+            "accepted_at": (
+                self.runtime.challenge_accepted_at.isoformat()
+                if self.runtime.challenge_accepted_at
+                else None
+            ),
+            "evidence_at": (
+                dt_util.utc_from_timestamp(path.stat().st_mtime).isoformat()
+                if path is not None
+                else None
+            ),
+            "evidence_expires_at": (
+                evidence_expires_at(path).isoformat() if path is not None else None
+            ),
+        }
 
 
 class PendingSetupsSensor(SensorEntity):

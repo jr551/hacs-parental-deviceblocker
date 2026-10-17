@@ -12,6 +12,8 @@ import java.util.Locale;
 
 final class WakeAlarm {
     static final String ACTION_RING = "lol.rowe.blocker.action.WAKE_ALARM";
+    /** How long "Snooze 5 min" waits before ringing again. */
+    static final long SNOOZE_MILLIS = 5 * 60 * 1000L;
     private static final String PREFS = "wake_alarm";
     private static final int REQUEST = 0x57414B;
 
@@ -103,6 +105,27 @@ final class WakeAlarm {
             return;
         }
         AlarmManager.AlarmClockInfo info = new AlarmManager.AlarmClockInfo(trigger, pending);
+        try {
+            alarms.setAlarmClock(info, pending);
+        } catch (SecurityException ignored) {
+            // Exact alarms need the parent to allow them in system settings.
+        }
+    }
+
+    /**
+     * Ring again after a snooze. The alarm is scheduled through the same
+     * pending intent as the daily alarm, so it survives this activity being
+     * destroyed; the next ring restores the parent's schedule.
+     */
+    static void snooze(Context context, long delayMillis) {
+        AlarmManager alarms = context.getSystemService(AlarmManager.class);
+        if (alarms == null) {
+            return;
+        }
+        PendingIntent pending = pending(context);
+        alarms.cancel(pending);
+        AlarmManager.AlarmClockInfo info = new AlarmManager.AlarmClockInfo(
+                System.currentTimeMillis() + Math.max(0L, delayMillis), pending);
         try {
             alarms.setAlarmClock(info, pending);
         } catch (SecurityException ignored) {

@@ -26,6 +26,10 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- The challenge lock launches the system camera to capture evidence. -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
         <package android:name="com.whatsapp" />
         <package android:name="com.google.android.apps.maps" />
         <package android:name="com.google.android.apps.classroom" />
@@ -107,6 +111,21 @@
             android:exported="false"
             android:showWhenLocked="true"
             android:turnScreenOn="true" />
+
+        <activity
+            android:name=".ChallengeActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+
+        <!-- Serves the challenge photo to the system camera, so the app needs no
+             CAMERA permission of its own. -->
+        <provider
+            android:name=".ChallengeFileProvider"
+            android:authorities="${applicationId}.challengefiles"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <receiver
             android:name=".WakeAlarmReceiver"
