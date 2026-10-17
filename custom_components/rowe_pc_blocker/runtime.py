@@ -121,6 +121,9 @@ class PcRuntime:
     challenge_sent_at: datetime | None = None
     challenge_submitted_at: datetime | None = None
     challenge_approved_at: datetime | None = None
+    # Which try the child is on. A rejection counts as an attempt, so the
+    # phone can tell them "attempt 2 of 3" instead of starting over silently.
+    challenge_attempt: int = 1
     block_requested_at: datetime | None = None
     extension_used_at: datetime | None = None
     extension_until: datetime | None = None
@@ -252,6 +255,7 @@ class PcRuntime:
                 if self.challenge_auto_approve_at
                 else None
             ),
+            "attempt": self.challenge_attempt,
         }
 
     def challenge_is_current(self, challenge_id: str) -> bool:
@@ -273,6 +277,7 @@ class PcRuntime:
         self.challenge_sent_at = _parse_datetime(data.get("challenge_sent_at"))
         self.challenge_submitted_at = _parse_datetime(data.get("challenge_submitted_at"))
         self.challenge_approved_at = _parse_datetime(data.get("challenge_approved_at"))
+        self.challenge_attempt = _attempt(data.get("challenge_attempt"))
         self.notifications = NotificationDump.from_dict(data.get("notifications"))
         self.location_request_id = str(data.get("location_request_id", ""))
         self.location_requested_at = _parse_datetime(data.get("location_requested_at"))
@@ -292,6 +297,7 @@ class PcRuntime:
                 "challenge_sent_at": _format_datetime(self.challenge_sent_at),
                 "challenge_submitted_at": _format_datetime(self.challenge_submitted_at),
                 "challenge_approved_at": _format_datetime(self.challenge_approved_at),
+                "challenge_attempt": self.challenge_attempt,
                 "notifications": (
                     self.notifications.as_dict() if self.notifications else None
                 ),
@@ -376,6 +382,7 @@ class PcRuntime:
         self.challenge_sent_at = dt_util.utcnow()
         self.challenge_submitted_at = None
         self.challenge_approved_at = None
+        self.challenge_attempt = 1
         await self.async_save()
         self.notify()
 
@@ -498,11 +505,16 @@ class PcRuntime:
         return True
 
     async def async_reject_challenge(self) -> bool:
-        """Send a submitted challenge back to the child. False when nothing is waiting."""
+        """Send a submitted challenge back to the child. False when nothing is waiting.
+
+        The rejection counts as an attempt, so the child's next try is the next
+        number rather than a silent restart.
+        """
         if not self.challenge_id or self.challenge_submitted_at is None:
             return False
         self.challenge_submitted_at = None
         self.challenge_approved_at = None
+        self.challenge_attempt += 1
         await self.async_save()
         self.notify()
         return True
@@ -641,6 +653,15 @@ def runtime_for_device(hass: HomeAssistant, device_id: str) -> PcRuntime | None:
         ),
         None,
     )
+
+
+def _attempt(value) -> int:
+    """A stored attempt number, never below the first try."""
+    try:
+        attempt = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(attempt, 1)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
