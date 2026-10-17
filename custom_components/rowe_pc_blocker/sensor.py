@@ -443,6 +443,7 @@ class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
                 if self.runtime.challenge_auto_approve_at
                 else None
             ),
+            "attempt": self.runtime.challenge_attempt if self.runtime.challenge_id else None,
             "evidence_at": (
                 dt_util.utc_from_timestamp(path.stat().st_mtime).isoformat()
                 if path is not None

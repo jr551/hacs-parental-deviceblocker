@@ -178,6 +178,50 @@ class ChallengeRuntimeTests(ChallengeTestCase):
         # Nothing is waiting any more, so a second reject is a no-op.
         self.assertFalse(await self.runtime.async_reject_challenge())
 
+    async def test_a_rejection_counts_as_an_attempt(self) -> None:
+        await self._send()
+        self.assertEqual(self.runtime.challenge_attempt, 1)
+        self.assertEqual(self.runtime.challenge_payload["attempt"], 1)
+
+        for expected in (2, 3):
+            await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+            self.assertTrue(await self.runtime.async_reject_challenge())
+            self.assertEqual(self.runtime.challenge_attempt, expected)
+            self.assertEqual(self.runtime.challenge_payload["attempt"], expected)
+
+        # A new challenge starts the count over, and approving or clearing
+        # leaves the finished challenge's count alone.
+        await self.runtime.async_approve_challenge()
+        self.assertEqual(self.runtime.challenge_attempt, 3)
+        await self.runtime.async_clear_challenge()
+        self.assertEqual(self.runtime.challenge_attempt, 3)
+        await self._send("A fresh chore")
+        self.assertEqual(self.runtime.challenge_attempt, 1)
+
+    async def test_the_attempt_survives_a_restart(self) -> None:
+        await self.runtime.async_load()
+        await self._send()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        await self.runtime.async_reject_challenge()
+
+        restarted = RUNTIME.PcRuntime(
+            hass=self.hass,
+            entry_id="entry-1",
+            device_id=PHONE,
+            device_name="Casey's phone",
+            windows_username="Casey",
+            api_key="existing-key",
+            device_type=CONST.DEVICE_TYPE_ANDROID,
+        )
+        await restarted.async_load()
+        self.assertEqual(restarted.challenge_attempt, 2)
+        self.assertEqual(restarted.challenge_payload["attempt"], 2)
+
+        # A stored value that is not a number falls back to the first try.
+        self.assertEqual(RUNTIME._attempt("nonsense"), 1)
+        self.assertEqual(RUNTIME._attempt(0), 1)
+        self.assertEqual(RUNTIME._attempt(4), 4)
+
     async def test_clearing_returns_to_none(self) -> None:
         await self._send()
         await self.runtime.async_submit_challenge(self.runtime.challenge_id)
@@ -610,6 +654,7 @@ class ChallengeEntityTests(ChallengeTestCase):
                 "submitted_at": None,
                 "approved_at": None,
                 "auto_approve_at": None,
+                "attempt": None,
                 "evidence_at": None,
                 "evidence_expires_at": None,
             },
@@ -618,6 +663,11 @@ class ChallengeEntityTests(ChallengeTestCase):
         await self._send()
         self.assertEqual(sensor.native_value, "pending")
         self.assertEqual(sensor.extra_state_attributes["phrase"], "I will tidy my room")
+        self.assertEqual(sensor.extra_state_attributes["attempt"], 1)
+        self.assertEqual(
+            sensor.extra_state_attributes["attempt"],
+            self.runtime.challenge_payload["attempt"],
+        )
         self.assertEqual(
             sensor.extra_state_attributes["sent_at"],
             self.runtime.challenge_sent_at.isoformat(),

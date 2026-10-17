@@ -359,10 +359,12 @@ poll. A parent approving or rejecting before the deadline wins.
 The `challenge` object in the state payload is present while the state is
 `pending` or `submitted`, and **null** once it is `approved` or `none` — that
 null is how the phone knows the chore is done and it may unlock. It carries
-`{"id", "phrase", "sent_at", "status", "submitted_at", "auto_approve_at"}`,
+`{"id", "phrase", "sent_at", "status", "submitted_at", "auto_approve_at", "attempt"}`,
 where `status` is `pending` or `submitted`, `submitted_at` is ISO-8601 or null,
-and `auto_approve_at` is `submitted_at + 2 hours` while `submitted` and null
-otherwise.
+`auto_approve_at` is `submitted_at + 2 hours` while `submitted` and null
+otherwise, and `attempt` is the 1-based number of the try the child is on — a
+rejected submission counts as an attempt, so the phone can say "attempt 2"
+instead of restarting the count silently.
 
 ### `POST /api/rowe_pc_blocker/{device_id}/challenge/submit`
 
@@ -426,12 +428,12 @@ is never involved, and the entity has no image while nothing is stored.
 |---------|--------|------|--------|
 | `rowe_pc_blocker.send_challenge` | `sensor.<device>_challenge` | `phrase` (required, 1–200 characters, trimmed) | Starts a new challenge with a fresh id; the sensor becomes `pending` |
 | `rowe_pc_blocker.approve_challenge` | `sensor.<device>_challenge` | — | Approves a `submitted` challenge; the sensor becomes `approved` and the payload goes null, so the phone unlocks. Only needed to decide before the two-hour deadline |
-| `rowe_pc_blocker.reject_challenge` | `sensor.<device>_challenge` | — | Sends a `submitted` challenge back to the child and deletes its photo; the sensor returns to `pending` |
+| `rowe_pc_blocker.reject_challenge` | `sensor.<device>_challenge` | — | Sends a `submitted` challenge back to the child and deletes its photo; the sensor returns to `pending` and `attempt` goes up by one |
 | `rowe_pc_blocker.clear_challenge` | `sensor.<device>_challenge` | — | Cancels the challenge, approved or not, and deletes its photo; the sensor returns to `none` |
 
 `sensor.<device>_challenge` is `none`, `pending`, `submitted`, or `approved`,
 with `phrase`, `sent_at`, `submitted_at`, `approved_at`, `auto_approve_at`,
-`evidence_at`, and `evidence_expires_at` attributes. Approving — by a parent or
+`attempt`, `evidence_at`, and `evidence_expires_at` attributes. Approving — by a parent or
 by the two-hour deadline — keeps the photo until the challenge is cleared, so a
 parent can still look at what was approved.
 
