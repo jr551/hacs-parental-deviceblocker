@@ -1,10 +1,12 @@
-"""The chore challenge: a phrase the child types back before the phone unlocks.
+"""The chore challenge: a phrase and a photo a parent approves.
 
 A parent sends a phrase from the dashboard; the phone shows it, the child takes
-a photo and types the phrase back, and the phone unlocks. The phrase and its
-state live on ``PcRuntime`` so they survive a Home Assistant restart; this
-module owns the two services that set and clear it, and the rules for what a
-parent may type.
+a photo and types the phrase back, and the phone submits it. The child waits
+from there: a parent approves the photo, and only then does the challenge leave
+the phone's state payload and the phone unlock. The phrase and its state live
+on ``PcRuntime`` so they survive a Home Assistant restart; this module owns the
+services that send, approve, reject and clear a challenge, and the rules for
+what a parent may type.
 """
 
 from __future__ import annotations
@@ -23,23 +25,29 @@ MAX_CHALLENGE_PHRASE_LENGTH = 200
 CHALLENGE_SUFFIX = "_challenge"
 
 SERVICE_SEND = "send_challenge"
+SERVICE_APPROVE = "approve_challenge"
+SERVICE_REJECT = "reject_challenge"
 SERVICE_CLEAR = "clear_challenge"
 
 
-def async_register_services(hass: HomeAssistant, send_schema, clear_schema) -> None:
+def async_register_services(hass: HomeAssistant, send_schema, target_schema) -> None:
     """Register the challenge services once.
 
     The schemas come from the integration setup, which is where voluptuous is
-    imported, so this module stays loadable without it.
+    imported, so this module stays loadable without it. ``send_schema`` carries
+    the phrase; ``target_schema`` is the entity-id-only schema the approve,
+    reject and clear services share.
     """
     if hass.data.setdefault(DOMAIN, {}).get("_services_registered"):
         return
-    hass.services.async_register(
-        DOMAIN, SERVICE_SEND, async_send_challenge, schema=send_schema
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_CLEAR, async_clear_challenge, schema=clear_schema
-    )
+    for service, handler in (
+        (SERVICE_SEND, async_send_challenge),
+        (SERVICE_APPROVE, async_approve_challenge),
+        (SERVICE_REJECT, async_reject_challenge),
+        (SERVICE_CLEAR, async_clear_challenge),
+    ):
+        schema = send_schema if service == SERVICE_SEND else target_schema
+        hass.services.async_register(DOMAIN, service, handler, schema=schema)
     hass.data[DOMAIN]["_services_registered"] = True
 
 
@@ -74,15 +82,19 @@ def challenge_phrase(value) -> str:
     return phrase
 
 
-def challenge_accept_refusal(
+def challenge_submit_refusal(
     hass: HomeAssistant, runtime: PcRuntime, challenge_id: str
 ) -> tuple[int, dict] | None:
-    """Why this challenge cannot be accepted, or None when it can.
+    """Why this challenge cannot be submitted, or None when it can.
 
-    The photo comes first: a child cannot clear the lock by typing the phrase
-    alone, so an accepted challenge always has evidence behind it.
+    The photo comes first: a child cannot hand the challenge to a parent by
+    typing the phrase alone, so a submitted challenge always has evidence
+    behind it. An approved challenge is no longer active — the phone has
+    already been told to unlock.
     """
     if not runtime.challenge_is_current(challenge_id):
+        return 404, {"error": "That challenge is no longer active."}
+    if runtime.challenge_approved_at is not None:
         return 404, {"error": "That challenge is no longer active."}
     if evidence_file(hass, runtime.device_id, runtime.challenge_id) is None:
         return 409, {"error": "Take the photo first."}
@@ -107,6 +119,23 @@ async def async_send_challenge(call: ServiceCall) -> None:
     for entity_id in challenge_targets(call):
         runtime = challenge_runtime(call.hass, entity_id)
         await runtime.async_send_challenge(phrase)
+
+
+async def async_approve_challenge(call: ServiceCall) -> None:
+    """Approve a submitted challenge so the phone unlocks."""
+    for entity_id in challenge_targets(call):
+        runtime = challenge_runtime(call.hass, entity_id)
+        await runtime.async_approve_challenge()
+
+
+async def async_reject_challenge(call: ServiceCall) -> None:
+    """Send a submitted challenge back to the child, evidence deleted."""
+    for entity_id in challenge_targets(call):
+        runtime = challenge_runtime(call.hass, entity_id)
+        if await runtime.async_reject_challenge():
+            await async_delete_evidence(
+                call.hass, runtime.device_id, runtime.challenge_id
+            )
 
 
 async def async_clear_challenge(call: ServiceCall) -> None:

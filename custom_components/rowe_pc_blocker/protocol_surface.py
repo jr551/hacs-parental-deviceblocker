@@ -12,7 +12,7 @@ API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/location"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/extension"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/unblock_request"},
-    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/accept"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/submit"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/challenge/evidence"},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal", "query_key_ok": True},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal/data"},
@@ -97,7 +97,11 @@ UNBLOCK_PENDING_KEYS = frozenset({"ok", "request_id", "status"})
 
 CHALLENGE_REQUEST_KEYS = frozenset({"id"})
 
-CHALLENGE_PAYLOAD_KEYS = frozenset({"id", "phrase", "sent_at"})
+CHALLENGE_PAYLOAD_KEYS = frozenset(
+    {"id", "phrase", "sent_at", "status", "submitted_at"}
+)
+
+CHALLENGE_SUBMIT_RESPONSE_KEYS = frozenset({"ok", "status"})
 
 CHALLENGE_EVIDENCE_KEYS = frozenset({"ok", "expires_at"})
 

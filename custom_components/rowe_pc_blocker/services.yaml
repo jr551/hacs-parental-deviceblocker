@@ -4,7 +4,8 @@ send_challenge:
   name: Send chore challenge
   description: >-
     Lock the phone until the child types the phrase back and sends a photo as
-    evidence. The phone picks the challenge up on its next state poll.
+    evidence. The phone picks the challenge up on its next state poll, and the
+    child waits for a parent to approve the photo before it unlocks.
   target:
     entity:
       integration: rowe_pc_blocker
@@ -18,10 +19,32 @@ send_challenge:
       selector:
         text:
 
+approve_challenge:
+  name: Approve chore challenge
+  description: >-
+    Approve the photo a child submitted. The challenge leaves the phone's state
+    payload, so the phone unlocks on its next poll. The sensor becomes
+    approved.
+  target:
+    entity:
+      integration: rowe_pc_blocker
+      domain: sensor
+
+reject_challenge:
+  name: Reject chore challenge
+  description: >-
+    Send a submitted challenge back to the child and delete its photo, so the
+    chore can be done again. The sensor returns to pending.
+  target:
+    entity:
+      integration: rowe_pc_blocker
+      domain: sensor
+
 clear_challenge:
   name: Clear chore challenge
   description: >-
-    Cancel the active challenge, accepted or not, and delete its photo evidence.
+    Cancel the active challenge, approved or not, and delete its photo
+    evidence.
   target:
     entity:
       integration: rowe_pc_blocker

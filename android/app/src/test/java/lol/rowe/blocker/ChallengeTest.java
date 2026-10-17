@@ -2,6 +2,7 @@ package lol.rowe.blocker;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -46,6 +47,14 @@ public class ChallengeTest {
         assertFalse(Challenge.needsAnswer("abc123", "abc123"));
         assertFalse(Challenge.needsAnswer("", ""));
         assertFalse(Challenge.needsAnswer(null, "abc123"));
+    }
+
+    @Test
+    public void theHighlightedStepFollowsTheChildsProgress() {
+        assertEquals(Challenge.STEP_PHRASE, Challenge.step(false, false));
+        assertEquals(Challenge.STEP_PHRASE, Challenge.step(false, true));
+        assertEquals(Challenge.STEP_PHOTO, Challenge.step(true, false));
+        assertEquals(Challenge.STEP_SEND, Challenge.step(true, true));
     }
 
     @Test

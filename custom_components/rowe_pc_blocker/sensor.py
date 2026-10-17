@@ -32,7 +32,7 @@ from .pending import awaiting_requests, claim_pending_entities, unblock_requests
 # The states the challenge sensor reports, and the concern levels the screen
 # monitor reports. Both are enum sensors, so Home Assistant needs the full set
 # up front.
-CHALLENGE_STATES = ["none", "pending", "accepted"]
+CHALLENGE_STATES = ["none", "pending", "submitted", "approved"]
 RISK_LEVELS = ["none", "low", "moderate", "high", "critical"]
 
 
@@ -370,10 +370,11 @@ class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
     """The chore challenge this phone must answer before it unlocks.
 
     ``none`` until a parent sends a phrase, ``pending`` while the child still
-    has to type it back, and ``accepted`` once they have. The evidence
-    attributes come from the stored photo, so they survive a restart. Like the
-    unblock requests, this is Home Assistant state and stays available while
-    the phone is offline.
+    has to type it back, ``submitted`` once the photo is in and a parent has
+    not decided, and ``approved`` once they have. The evidence attributes come
+    from the stored photo, so they survive a restart. Like the unblock
+    requests, this is Home Assistant state and stays available while the phone
+    is offline.
     """
 
     _attr_name = "Challenge"
@@ -401,9 +402,14 @@ class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
                 if self.runtime.challenge_sent_at
                 else None
             ),
-            "accepted_at": (
-                self.runtime.challenge_accepted_at.isoformat()
-                if self.runtime.challenge_accepted_at
+            "submitted_at": (
+                self.runtime.challenge_submitted_at.isoformat()
+                if self.runtime.challenge_submitted_at
+                else None
+            ),
+            "approved_at": (
+                self.runtime.challenge_approved_at.isoformat()
+                if self.runtime.challenge_approved_at
                 else None
             ),
             "evidence_at": (

@@ -39,7 +39,7 @@ from .const import (
     PARENT_PIN_MAX_ATTEMPTS,
 )
 from .apps import DEFAULT_ALLOWED_APPS, parse_allowed_apps
-from .challenge import challenge_accept_refusal
+from .challenge import challenge_submit_refusal
 from .evidence import (
     MAX_EVIDENCE_BYTES,
     async_save_evidence,
@@ -381,15 +381,17 @@ class PcUnblockRequestView(HomeAssistantView):
         return self.json(body, status_code=status_code)
 
 
-class PcChallengeAcceptView(HomeAssistantView):
-    """Let a phone report that the child typed the challenge phrase back.
+class PcChallengeSubmitView(HomeAssistantView):
+    """Let a phone hand a challenge to a parent.
 
-    The photo comes first: a challenge is only accepted once evidence for it is
-    stored, so a child cannot clear the lock by typing the phrase alone.
+    The photo comes first: a challenge is only submitted once evidence for it
+    is stored, so a child cannot hand it over by typing the phrase alone. The
+    phone then waits — a parent approves it, and only then does the challenge
+    leave the state payload and the phone unlock.
     """
 
-    url = "/api/rowe_pc_blocker/{device_id}/challenge/accept"
-    name = "api:rowe_pc_blocker:challenge_accept"
+    url = "/api/rowe_pc_blocker/{device_id}/challenge/submit"
+    name = "api:rowe_pc_blocker:challenge_submit"
     requires_auth = False
 
     async def post(self, request: web.Request, device_id: str) -> web.Response:
@@ -400,12 +402,12 @@ class PcChallengeAcceptView(HomeAssistantView):
         except web.HTTPBadRequest:
             return self.json({"error": "Expected a JSON object."}, status_code=400)
         challenge_id = str(payload.get("id", ""))[:64]
-        refusal = challenge_accept_refusal(hass, runtime, challenge_id)
+        refusal = challenge_submit_refusal(hass, runtime, challenge_id)
         if refusal is not None:
             status_code, body = refusal
             return self.json(body, status_code=status_code)
-        await runtime.async_accept_challenge(challenge_id)
-        return self.json({"ok": True})
+        await runtime.async_submit_challenge(challenge_id)
+        return self.json({"ok": True, "status": "submitted"})
 
 
 class PcChallengeEvidenceView(HomeAssistantView):
@@ -840,7 +842,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     hass.http.register_view(PcNotificationsView)
     hass.http.register_view(PcExtensionView)
     hass.http.register_view(PcUnblockRequestView)
-    hass.http.register_view(PcChallengeAcceptView)
+    hass.http.register_view(PcChallengeSubmitView)
     hass.http.register_view(PcChallengeEvidenceView)
     hass.http.register_view(PcPortalView)
     hass.http.register_view(PcPortalDataView)

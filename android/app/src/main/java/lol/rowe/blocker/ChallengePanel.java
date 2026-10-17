@@ -1,5 +1,6 @@
 package lol.rowe.blocker;
 
+import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
@@ -11,6 +12,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Parcelable;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -38,6 +40,8 @@ public final class ChallengePanel extends LinearLayout {
     /** The longest edge of the thumbnail shown on the lock. */
     private static final int THUMBNAIL_EDGE = 512;
     private static final int REQUEST_CAPTURE = 0x43484C;
+    /** One half of the highlight pulse. */
+    private static final long PULSE_MILLIS = 700L;
     private static final String STATE_SUPER = "super";
     private static final String STATE_CHALLENGE_ID = "challenge_id";
     private static final String STATE_PHRASE = "phrase";
@@ -68,6 +72,11 @@ public final class ChallengePanel extends LinearLayout {
     private boolean uploading;
     /** A message that outranks the step hints until the child changes something. */
     private String message = "";
+    /** The element the current step pulses, or null. */
+    private View pulsing;
+    private ObjectAnimator pulse;
+    /** The text colour the highlighted element had before a static highlight. */
+    private Integer originalTextColour;
 
     public ChallengePanel(Context context, AttributeSet attributes) {
         super(context, attributes);
@@ -102,11 +111,13 @@ public final class ChallengePanel extends LinearLayout {
     /** Take the lock down: the challenge was answered, or a parent override is running. */
     void hide() {
         setVisibility(GONE);
+        stopPulse();
         endCapture();
     }
 
     /** The block screen is going away for good. */
     void release() {
+        stopPulse();
         endCapture();
         executor.shutdownNow();
     }
@@ -286,6 +297,7 @@ public final class ChallengePanel extends LinearLayout {
         boolean phraseMatches = Challenge.matches(phrase, answer.getText().toString());
         boolean hasPhoto = hasPhoto();
         accept.setEnabled(Challenge.canAccept(phraseMatches, hasPhoto) && !uploading);
+        highlight(Challenge.step(phraseMatches, hasPhoto));
         if (!message.isEmpty()) {
             status.setText(message);
             return;
@@ -561,6 +573,65 @@ public final class ChallengePanel extends LinearLayout {
         thumbnail.setVisibility(VISIBLE);
         retake.setVisibility(VISIBLE);
         takePhoto.setVisibility(GONE);
+    }
+
+    /**
+     * Point the child at the step they are on: the phrase field, then the
+     * camera, then Accept. Exactly one element is highlighted at a time, and
+     * the highlight is a pulse unless the system has animations turned off, in
+     * which case it is a plain colour change.
+     */
+    private void highlight(int step) {
+        View target = step == Challenge.STEP_PHRASE
+                ? answer
+                : step == Challenge.STEP_PHOTO ? takePhoto : accept;
+        if (target == pulsing) {
+            return;
+        }
+        stopPulse();
+        pulsing = target;
+        if (animationsDisabled()) {
+            target.setAlpha(1f);
+            if (target instanceof TextView) {
+                TextView text = (TextView) target;
+                originalTextColour = text.getCurrentTextColor();
+                text.setTextColor(getContext().getColor(R.color.challenge_highlight));
+            }
+            return;
+        }
+        pulse = ObjectAnimator.ofFloat(target, "alpha", 1f, 0.35f);
+        pulse.setDuration(PULSE_MILLIS);
+        pulse.setRepeatMode(ObjectAnimator.REVERSE);
+        pulse.setRepeatCount(ObjectAnimator.INFINITE);
+        pulse.start();
+    }
+
+    /** Stop the pulse and put the element back the way it was. */
+    private void stopPulse() {
+        if (pulse != null) {
+            pulse.cancel();
+            pulse = null;
+        }
+        if (pulsing != null) {
+            pulsing.setAlpha(1f);
+            if (originalTextColour != null && pulsing instanceof TextView) {
+                ((TextView) pulsing).setTextColor(originalTextColour);
+            }
+            originalTextColour = null;
+            pulsing = null;
+        }
+    }
+
+    /** True when the system asks apps not to animate. */
+    private boolean animationsDisabled() {
+        try {
+            return Settings.Global.getFloat(
+                    getContext().getContentResolver(),
+                    Settings.Global.ANIMATOR_DURATION_SCALE,
+                    1f) == 0f;
+        } catch (RuntimeException exception) {
+            return false;
+        }
     }
 
     private void showMessage(String text) {

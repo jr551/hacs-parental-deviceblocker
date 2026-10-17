@@ -694,6 +694,7 @@ public final class MainActivity extends Activity {
     private void showBlocked(Policy policy) {
         currentPolicy = policy;
         updateScreen = false;
+        blockedPanel.setBackgroundColor(getColor(R.color.block_background));
         installUpdateButton.setVisibility(View.GONE);
         Challenge challenge = policy.challengePending(Challenge.acceptedId(this))
                 ? policy.challenge
@@ -748,6 +749,7 @@ public final class MainActivity extends Activity {
     /** The challenge lock: the same kiosk screen, with the chore on it instead. */
     private void showChallenge(Challenge challenge) {
         updateScreen = false;
+        blockedPanel.setBackgroundColor(getColor(R.color.challenge_background));
         installUpdateButton.setVisibility(View.GONE);
         blockCopyPanel.setVisibility(View.GONE);
         challengePanel.show(challenge);
@@ -764,6 +766,7 @@ public final class MainActivity extends Activity {
      */
     private void showUpdateScreen(AppUpdater.Pending pending) {
         updateScreen = true;
+        blockedPanel.setBackgroundColor(getColor(R.color.block_background));
         challengePanel.hide();
         blockCopyPanel.setVisibility(View.VISIBLE);
         blockTitle.setText("Update needed");
@@ -815,6 +818,7 @@ public final class MainActivity extends Activity {
     private void showUninstallGuard() {
         uninstallGuard = true;
         updateScreen = false;
+        blockedPanel.setBackgroundColor(getColor(R.color.block_background));
         challengePanel.hide();
         blockCopyPanel.setVisibility(View.VISIBLE);
         installUpdateButton.setVisibility(View.GONE);

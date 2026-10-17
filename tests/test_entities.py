@@ -363,7 +363,9 @@ class EnumSensorTests(EntityTestCase):
         self.assertIn(sensor.native_value, sensor.options)
         self.runtime.challenge_id = "a" * 32
         self.assertIn(sensor.native_value, sensor.options)
-        self.runtime.challenge_accepted_at = ha_stub.utcnow()
+        self.runtime.challenge_submitted_at = ha_stub.utcnow()
+        self.assertIn(sensor.native_value, sensor.options)
+        self.runtime.challenge_approved_at = ha_stub.utcnow()
         self.assertIn(sensor.native_value, sensor.options)
 
     def test_the_screen_safety_sensor_offers_every_risk_level(self) -> None:

@@ -1,4 +1,4 @@
-"""The chore challenge: a phrase and a photo the child must supply to unlock.
+"""The chore challenge: a phrase and a photo a parent approves.
 
 The HTTP views are thin wrappers around the rules in ``challenge.py`` and
 ``evidence.py`` (the routes themselves are pinned in ``test_protocol.py``), so
@@ -7,6 +7,7 @@ these tests drive the rules, the stored photo, the services, and the entities.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -14,8 +15,9 @@ from datetime import timedelta
 from pathlib import Path
 
 import ha_stub
-from ha_stub import FakeConfigEntry, FakeHass, object_id
+from ha_stub import FakeConfigEntry, FakeHass, FakeRequest, object_id
 
+API = ha_stub.load("api")
 CONST = ha_stub.load("const")
 CHALLENGE = ha_stub.load("challenge")
 EVIDENCE = ha_stub.load("evidence")
@@ -83,7 +85,8 @@ class ChallengeRuntimeTests(ChallengeTestCase):
         self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
         self.assertEqual(self.runtime.challenge_phrase, "I will tidy my room")
         self.assertIsNotNone(self.runtime.challenge_sent_at)
-        self.assertIsNone(self.runtime.challenge_accepted_at)
+        self.assertIsNone(self.runtime.challenge_submitted_at)
+        self.assertIsNone(self.runtime.challenge_approved_at)
 
         # A second phrase replaces the first, with a new id.
         await self._send("And my homework")
@@ -100,47 +103,99 @@ class ChallengeRuntimeTests(ChallengeTestCase):
         self.assertEqual(
             payload["sent_at"], self.runtime.challenge_sent_at.isoformat()
         )
+        self.assertEqual(payload["status"], RUNTIME.CHALLENGE_PENDING)
+        self.assertIsNone(payload["submitted_at"])
 
-    async def test_accepting_the_current_id_flips_to_accepted(self) -> None:
+    async def test_submitting_the_current_id_flips_to_submitted(self) -> None:
         await self._send()
-        accepted = await self.runtime.async_accept_challenge(self.runtime.challenge_id)
-        self.assertTrue(accepted)
-        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_ACCEPTED)
-        self.assertIsNotNone(self.runtime.challenge_accepted_at)
+        submitted = await self.runtime.async_submit_challenge(
+            self.runtime.challenge_id
+        )
+        self.assertTrue(submitted)
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_SUBMITTED)
+        self.assertIsNotNone(self.runtime.challenge_submitted_at)
+        self.assertIsNone(self.runtime.challenge_approved_at)
+
+        # The phone is still locked: the payload says it is waiting on a parent.
+        payload = self.runtime.challenge_payload
+        self.assertEqual(payload["status"], RUNTIME.CHALLENGE_SUBMITTED)
+        self.assertEqual(
+            payload["submitted_at"], self.runtime.challenge_submitted_at.isoformat()
+        )
 
     async def test_a_wrong_or_missing_id_is_refused(self) -> None:
-        self.assertFalse(await self.runtime.async_accept_challenge("a" * 32))
+        self.assertFalse(await self.runtime.async_submit_challenge("a" * 32))
         self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_NONE)
 
         await self._send()
-        self.assertFalse(await self.runtime.async_accept_challenge("a" * 32))
+        self.assertFalse(await self.runtime.async_submit_challenge("a" * 32))
         self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
-        self.assertIsNone(self.runtime.challenge_accepted_at)
+        self.assertIsNone(self.runtime.challenge_submitted_at)
 
-    async def test_accepting_twice_keeps_the_first_time(self) -> None:
+    async def test_submitting_twice_keeps_the_first_time(self) -> None:
         await self._send()
-        await self.runtime.async_accept_challenge(self.runtime.challenge_id)
-        first = self.runtime.challenge_accepted_at
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        first = self.runtime.challenge_submitted_at
         self.assertTrue(
-            await self.runtime.async_accept_challenge(self.runtime.challenge_id)
+            await self.runtime.async_submit_challenge(self.runtime.challenge_id)
         )
-        self.assertEqual(self.runtime.challenge_accepted_at, first)
+        self.assertEqual(self.runtime.challenge_submitted_at, first)
+
+    async def test_approving_clears_the_payload_so_the_phone_unlocks(self) -> None:
+        await self._send()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+
+        self.assertTrue(await self.runtime.async_approve_challenge())
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_APPROVED)
+        self.assertIsNotNone(self.runtime.challenge_approved_at)
+        # That null is how the phone knows the chore is done.
+        self.assertIsNone(self.runtime.challenge_payload)
+
+        # Approving again is a no-op, and a late submit is refused.
+        self.assertTrue(await self.runtime.async_approve_challenge())
+        self.assertFalse(
+            await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        )
+
+    async def test_approving_nothing_is_refused(self) -> None:
+        self.assertFalse(await self.runtime.async_approve_challenge())
+
+        await self._send()
+        # Still pending: the child has not sent the photo yet.
+        self.assertFalse(await self.runtime.async_approve_challenge())
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
+
+    async def test_rejecting_sends_the_challenge_back_to_pending(self) -> None:
+        await self._send()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+
+        self.assertTrue(await self.runtime.async_reject_challenge())
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
+        self.assertIsNone(self.runtime.challenge_submitted_at)
+        self.assertIsNone(self.runtime.challenge_approved_at)
+        self.assertEqual(self.runtime.challenge_payload["status"], "pending")
+
+        # Nothing is waiting any more, so a second reject is a no-op.
+        self.assertFalse(await self.runtime.async_reject_challenge())
 
     async def test_clearing_returns_to_none(self) -> None:
         await self._send()
-        await self.runtime.async_accept_challenge(self.runtime.challenge_id)
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        await self.runtime.async_approve_challenge()
         await self.runtime.async_clear_challenge()
         self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_NONE)
         self.assertEqual(self.runtime.challenge_id, "")
         self.assertEqual(self.runtime.challenge_phrase, "")
         self.assertIsNone(self.runtime.challenge_sent_at)
-        self.assertIsNone(self.runtime.challenge_accepted_at)
+        self.assertIsNone(self.runtime.challenge_submitted_at)
+        self.assertIsNone(self.runtime.challenge_approved_at)
         self.assertIsNone(self.runtime.challenge_payload)
 
     async def test_the_challenge_survives_a_restart(self) -> None:
         await self.runtime.async_load()
         await self._send()
-        await self.runtime.async_accept_challenge(self.runtime.challenge_id)
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        await self.runtime.async_approve_challenge()
 
         restarted = RUNTIME.PcRuntime(
             hass=self.hass,
@@ -154,9 +209,12 @@ class ChallengeRuntimeTests(ChallengeTestCase):
         await restarted.async_load()
         self.assertEqual(restarted.challenge_id, self.runtime.challenge_id)
         self.assertEqual(restarted.challenge_phrase, "I will tidy my room")
-        self.assertEqual(restarted.challenge_state, RUNTIME.CHALLENGE_ACCEPTED)
+        self.assertEqual(restarted.challenge_state, RUNTIME.CHALLENGE_APPROVED)
         self.assertEqual(
-            restarted.challenge_accepted_at, self.runtime.challenge_accepted_at
+            restarted.challenge_submitted_at, self.runtime.challenge_submitted_at
+        )
+        self.assertEqual(
+            restarted.challenge_approved_at, self.runtime.challenge_approved_at
         )
 
 
@@ -246,45 +304,56 @@ class EvidenceTests(ChallengeTestCase):
         await EVIDENCE.async_delete_evidence(self.hass, PHONE, self.runtime.challenge_id)
 
 
-class AcceptRuleTests(ChallengeTestCase):
-    async def test_accepting_without_a_challenge_is_a_404(self) -> None:
-        refusal = CHALLENGE.challenge_accept_refusal(self.hass, self.runtime, "a" * 32)
+class SubmitRuleTests(ChallengeTestCase):
+    async def test_submitting_without_a_challenge_is_a_404(self) -> None:
+        refusal = CHALLENGE.challenge_submit_refusal(self.hass, self.runtime, "a" * 32)
         self.assertEqual(refusal[0], 404)
         self.assertIn("error", refusal[1])
 
-    async def test_accepting_a_stale_id_is_a_404(self) -> None:
+    async def test_submitting_a_stale_id_is_a_404(self) -> None:
         await self._send()
-        refusal = CHALLENGE.challenge_accept_refusal(self.hass, self.runtime, "a" * 32)
+        refusal = CHALLENGE.challenge_submit_refusal(self.hass, self.runtime, "a" * 32)
         self.assertEqual(refusal[0], 404)
         self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
 
-    async def test_accepting_without_evidence_is_a_409(self) -> None:
+    async def test_submitting_without_evidence_is_a_409(self) -> None:
         await self._send()
-        refusal = CHALLENGE.challenge_accept_refusal(
+        refusal = CHALLENGE.challenge_submit_refusal(
             self.hass, self.runtime, self.runtime.challenge_id
         )
         self.assertEqual(refusal[0], 409)
         self.assertEqual(refusal[1], {"error": "Take the photo first."})
         self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
 
-    async def test_accepting_with_evidence_is_allowed(self) -> None:
+    async def test_submitting_with_evidence_is_allowed(self) -> None:
         await self._send()
         await self._upload()
         self.assertIsNone(
-            CHALLENGE.challenge_accept_refusal(
+            CHALLENGE.challenge_submit_refusal(
                 self.hass, self.runtime, self.runtime.challenge_id
             )
         )
         self.assertTrue(
-            await self.runtime.async_accept_challenge(self.runtime.challenge_id)
+            await self.runtime.async_submit_challenge(self.runtime.challenge_id)
         )
-        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_ACCEPTED)
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_SUBMITTED)
+
+    async def test_an_approved_challenge_is_no_longer_active(self) -> None:
+        await self._send()
+        await self._upload()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        await self.runtime.async_approve_challenge()
+
+        refusal = CHALLENGE.challenge_submit_refusal(
+            self.hass, self.runtime, self.runtime.challenge_id
+        )
+        self.assertEqual(refusal[0], 404)
 
     async def test_evidence_for_another_challenge_does_not_count(self) -> None:
         await self._send()
         await self._upload()
         await self._send("A different chore")
-        refusal = CHALLENGE.challenge_accept_refusal(
+        refusal = CHALLENGE.challenge_submit_refusal(
             self.hass, self.runtime, self.runtime.challenge_id
         )
         self.assertEqual(refusal[0], 409)
@@ -305,12 +374,15 @@ class ChallengeServiceTests(ChallengeTestCase):
         )
 
     def test_the_services_are_registered_once(self) -> None:
-        self.assertIn((CONST.DOMAIN, CHALLENGE.SERVICE_SEND), self.hass.services.registered)
-        self.assertIn(
-            (CONST.DOMAIN, CHALLENGE.SERVICE_CLEAR), self.hass.services.registered
-        )
+        for service in (
+            CHALLENGE.SERVICE_SEND,
+            CHALLENGE.SERVICE_APPROVE,
+            CHALLENGE.SERVICE_REJECT,
+            CHALLENGE.SERVICE_CLEAR,
+        ):
+            self.assertIn((CONST.DOMAIN, service), self.hass.services.registered)
         CHALLENGE.async_register_services(self.hass, None, None)
-        self.assertEqual(len(self.hass.services.registered), 2)
+        self.assertEqual(len(self.hass.services.registered), 4)
 
     async def test_sending_from_the_dashboard_starts_a_challenge(self) -> None:
         await self._call(CHALLENGE.SERVICE_SEND, {"phrase": "  I will tidy my room  "})
@@ -338,6 +410,30 @@ class ChallengeServiceTests(ChallengeTestCase):
                 target={"entity_id": "sensor.caseys_phone_installed_apps"},
             )
 
+    async def test_approving_from_the_dashboard_unlocks_the_phone(self) -> None:
+        await self._call(CHALLENGE.SERVICE_SEND, {"phrase": "Tidy up"})
+        await self._upload()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+
+        await self._call(CHALLENGE.SERVICE_APPROVE, {})
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_APPROVED)
+        self.assertIsNone(self.runtime.challenge_payload)
+        # The photo stays until the challenge is cleared, so a parent can still
+        # look at what they approved.
+        self.assertTrue(self._evidence_file().is_file())
+
+    async def test_rejecting_from_the_dashboard_deletes_the_photo(self) -> None:
+        await self._call(CHALLENGE.SERVICE_SEND, {"phrase": "Tidy up"})
+        await self._upload()
+        path = self._evidence_file()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+
+        await self._call(CHALLENGE.SERVICE_REJECT, {})
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
+        self.assertFalse(path.exists())
+        # The child can do the chore again: the challenge is still active.
+        self.assertEqual(self.runtime.challenge_payload["status"], "pending")
+
     async def test_clearing_removes_the_challenge_and_its_photo(self) -> None:
         await self._call(CHALLENGE.SERVICE_SEND, {"phrase": "Tidy up"})
         await self._upload()
@@ -347,6 +443,46 @@ class ChallengeServiceTests(ChallengeTestCase):
         await self._call(CHALLENGE.SERVICE_CLEAR, {})
         self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_NONE)
         self.assertFalse(path.exists())
+
+
+class ChallengeSubmitViewTests(ChallengeTestCase):
+    """The endpoint a phone calls once the child has sent the photo."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.view = API.PcChallengeSubmitView()
+
+    async def _submit(self, payload, *, raw: bytes | None = None):
+        body = raw if raw is not None else json.dumps(payload).encode()
+        request = FakeRequest(
+            self.hass, body=body, headers={"X-Device-Blocker-Key": "existing-key"}
+        )
+        return await self.view.post(request, PHONE)
+
+    async def test_a_submit_with_evidence_is_accepted(self) -> None:
+        await self._send()
+        await self._upload()
+        response = await self._submit({"id": self.runtime.challenge_id})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(set(response.data), PROTOCOL.CHALLENGE_SUBMIT_RESPONSE_KEYS)
+        self.assertEqual(response.data["status"], "submitted")
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_SUBMITTED)
+        # The phone is still locked until a parent decides.
+        self.assertIsNotNone(self.runtime.challenge_payload)
+
+    async def test_a_submit_without_evidence_is_a_409(self) -> None:
+        await self._send()
+        response = await self._submit({"id": self.runtime.challenge_id})
+        self.assertEqual(response.status, 409)
+        self.assertEqual(response.data, {"error": "Take the photo first."})
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
+
+    async def test_a_stale_id_is_a_404(self) -> None:
+        await self._send()
+        await self._upload()
+        response = await self._submit({"id": "a" * 32})
+        self.assertEqual(response.status, 404)
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
 
 
 class ChallengeEntityTests(ChallengeTestCase):
@@ -360,7 +496,8 @@ class ChallengeEntityTests(ChallengeTestCase):
             {
                 "phrase": None,
                 "sent_at": None,
-                "accepted_at": None,
+                "submitted_at": None,
+                "approved_at": None,
                 "evidence_at": None,
                 "evidence_expires_at": None,
             },
@@ -387,11 +524,18 @@ class ChallengeEntityTests(ChallengeTestCase):
             EVIDENCE.evidence_expires_at(path).isoformat(),
         )
 
-        await self.runtime.async_accept_challenge(self.runtime.challenge_id)
-        self.assertEqual(sensor.native_value, "accepted")
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        self.assertEqual(sensor.native_value, "submitted")
         self.assertEqual(
-            sensor.extra_state_attributes["accepted_at"],
-            self.runtime.challenge_accepted_at.isoformat(),
+            sensor.extra_state_attributes["submitted_at"],
+            self.runtime.challenge_submitted_at.isoformat(),
+        )
+
+        await self.runtime.async_approve_challenge()
+        self.assertEqual(sensor.native_value, "approved")
+        self.assertEqual(
+            sensor.extra_state_attributes["approved_at"],
+            self.runtime.challenge_approved_at.isoformat(),
         )
 
     async def test_the_image_serves_the_stored_photo(self) -> None:

@@ -107,7 +107,8 @@ def _challenge(hass: HomeAssistant, runtime) -> dict | None:
         "state": runtime.challenge_state,
         "phrase": runtime.challenge_phrase,
         "sent_at": _iso(runtime.challenge_sent_at),
-        "accepted_at": _iso(runtime.challenge_accepted_at),
+        "submitted_at": _iso(runtime.challenge_submitted_at),
+        "approved_at": _iso(runtime.challenge_approved_at),
         "evidence": {
             "stored": path is not None,
             "expires_at": _iso(evidence_expires_at(path)) if path else None,

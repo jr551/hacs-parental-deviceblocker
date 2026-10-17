@@ -39,7 +39,7 @@ POST_VIEWS = frozenset(
         "PcLocationView",
         "PcExtensionView",
         "PcUnblockRequestView",
-        "PcChallengeAcceptView",
+        "PcChallengeSubmitView",
         "PcChallengeEvidenceView",
         "PcPortalActionView",
         "PcParentOverrideView",
@@ -146,7 +146,7 @@ class ProtocolSurfaceTests(unittest.TestCase):
 
     def test_the_challenge_shapes_are_the_documented_ones(self) -> None:
         self.assertEqual(
-            set(_fixture("challenge_accept.json")), PROTOCOL.CHALLENGE_REQUEST_KEYS
+            set(_fixture("challenge_submit.json")), PROTOCOL.CHALLENGE_REQUEST_KEYS
         )
         self.assertEqual(
             set(_fixture("challenge_evidence.json")), PROTOCOL.CHALLENGE_EVIDENCE_KEYS

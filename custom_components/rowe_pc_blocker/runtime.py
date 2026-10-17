@@ -50,12 +50,14 @@ from .notifications import NotificationDump, is_newer
 if TYPE_CHECKING:
     from .screen_monitor import ScreenMonitor
 
-# The three states the challenge sensor reports. ``accepted`` stays until a
-# parent clears the challenge or sends a new one, so the dashboard can show
-# that the child did the chore.
+# The four states the challenge sensor reports. A child fills the phrase in
+# (``pending``), sends the photo (``submitted``), and a parent approves it
+# (``approved``); ``approved`` stays until a parent clears the challenge or
+# sends a new one, so the dashboard can show that the chore was done.
 CHALLENGE_NONE = "none"
 CHALLENGE_PENDING = "pending"
-CHALLENGE_ACCEPTED = "accepted"
+CHALLENGE_SUBMITTED = "submitted"
+CHALLENGE_APPROVED = "approved"
 
 
 @dataclass(slots=True)
@@ -107,12 +109,14 @@ class PcRuntime:
     allowed_apps: str = ""
     installed_apps: list[dict] = field(default_factory=list)
     # A chore challenge: the phone stays locked until the child types the
-    # phrase back. ``challenge_id`` is empty when there is no challenge, and
-    # ``challenge_accepted_at`` is set once the child has answered it.
+    # phrase back and a parent approves the photo. ``challenge_id`` is empty
+    # when there is no challenge; ``challenge_submitted_at`` is set when the
+    # child sends it, and ``challenge_approved_at`` when a parent accepts it.
     challenge_id: str = ""
     challenge_phrase: str = ""
     challenge_sent_at: datetime | None = None
-    challenge_accepted_at: datetime | None = None
+    challenge_submitted_at: datetime | None = None
+    challenge_approved_at: datetime | None = None
     block_requested_at: datetime | None = None
     extension_used_at: datetime | None = None
     extension_until: datetime | None = None
@@ -192,23 +196,39 @@ class PcRuntime:
 
     @property
     def challenge_state(self) -> str:
-        """``none``, ``pending``, or ``accepted`` for the dashboard sensor."""
+        """``none``, ``pending``, ``submitted`` or ``approved``."""
         if not self.challenge_id:
             return CHALLENGE_NONE
-        if self.challenge_accepted_at is not None:
-            return CHALLENGE_ACCEPTED
+        if self.challenge_approved_at is not None:
+            return CHALLENGE_APPROVED
+        if self.challenge_submitted_at is not None:
+            return CHALLENGE_SUBMITTED
         return CHALLENGE_PENDING
 
     @property
     def challenge_payload(self) -> dict | None:
-        """The challenge the phone reads on its state poll, or None."""
-        if not self.challenge_id:
+        """The challenge the phone reads on its state poll, or None.
+
+        None once a parent has approved it — that is how the phone knows the
+        chore is done and it may unlock — and None when there is no challenge.
+        """
+        if not self.challenge_id or self.challenge_approved_at is not None:
             return None
         return {
             "id": self.challenge_id,
             "phrase": self.challenge_phrase,
             "sent_at": (
                 self.challenge_sent_at.isoformat() if self.challenge_sent_at else None
+            ),
+            "status": (
+                CHALLENGE_SUBMITTED
+                if self.challenge_submitted_at is not None
+                else CHALLENGE_PENDING
+            ),
+            "submitted_at": (
+                self.challenge_submitted_at.isoformat()
+                if self.challenge_submitted_at
+                else None
             ),
         }
 
@@ -229,7 +249,8 @@ class PcRuntime:
         self.challenge_id = str(data.get("challenge_id", ""))
         self.challenge_phrase = str(data.get("challenge_phrase", ""))
         self.challenge_sent_at = _parse_datetime(data.get("challenge_sent_at"))
-        self.challenge_accepted_at = _parse_datetime(data.get("challenge_accepted_at"))
+        self.challenge_submitted_at = _parse_datetime(data.get("challenge_submitted_at"))
+        self.challenge_approved_at = _parse_datetime(data.get("challenge_approved_at"))
         self.notifications = NotificationDump.from_dict(data.get("notifications"))
         self.location_request_id = str(data.get("location_request_id", ""))
         self.location_requested_at = _parse_datetime(data.get("location_requested_at"))
@@ -247,7 +268,8 @@ class PcRuntime:
                 "challenge_id": self.challenge_id,
                 "challenge_phrase": self.challenge_phrase,
                 "challenge_sent_at": _format_datetime(self.challenge_sent_at),
-                "challenge_accepted_at": _format_datetime(self.challenge_accepted_at),
+                "challenge_submitted_at": _format_datetime(self.challenge_submitted_at),
+                "challenge_approved_at": _format_datetime(self.challenge_approved_at),
                 "notifications": (
                     self.notifications.as_dict() if self.notifications else None
                 ),
@@ -330,16 +352,18 @@ class PcRuntime:
         self.challenge_id = new_request_id()
         self.challenge_phrase = phrase
         self.challenge_sent_at = dt_util.utcnow()
-        self.challenge_accepted_at = None
+        self.challenge_submitted_at = None
+        self.challenge_approved_at = None
         await self.async_save()
         self.notify()
 
     async def async_clear_challenge(self) -> None:
-        """Cancel the challenge, accepted or not."""
+        """Cancel the challenge, approved or not."""
         self.challenge_id = ""
         self.challenge_phrase = ""
         self.challenge_sent_at = None
-        self.challenge_accepted_at = None
+        self.challenge_submitted_at = None
+        self.challenge_approved_at = None
         await self.async_save()
         self.notify()
 
@@ -411,19 +435,41 @@ class PcRuntime:
         self.notify()
         return True
 
-    async def async_accept_challenge(self, challenge_id: str) -> bool:
-        """Mark the current challenge done. False when that id is not current.
+    async def async_submit_challenge(self, challenge_id: str) -> bool:
+        """Mark the current challenge sent. False when that id is not current.
 
-        An accepted challenge stays visible until a parent clears it or sends a
-        new one, so a retry after a dropped response is answered the same way
-        and the first acceptance time is kept.
+        The child waits for a parent from here, so a retry after a dropped
+        response is answered the same way and the first submission time is
+        kept.
         """
         if not self.challenge_is_current(challenge_id):
             return False
-        if self.challenge_accepted_at is None:
-            self.challenge_accepted_at = dt_util.utcnow()
+        if self.challenge_approved_at is not None:
+            return False
+        if self.challenge_submitted_at is None:
+            self.challenge_submitted_at = dt_util.utcnow()
             await self.async_save()
             self.notify()
+        return True
+
+    async def async_approve_challenge(self) -> bool:
+        """Approve a submitted challenge. False when nothing is waiting."""
+        if not self.challenge_id or self.challenge_submitted_at is None:
+            return False
+        if self.challenge_approved_at is None:
+            self.challenge_approved_at = dt_util.utcnow()
+            await self.async_save()
+            self.notify()
+        return True
+
+    async def async_reject_challenge(self) -> bool:
+        """Send a submitted challenge back to the child. False when nothing is waiting."""
+        if not self.challenge_id or self.challenge_submitted_at is None:
+            return False
+        self.challenge_submitted_at = None
+        self.challenge_approved_at = None
+        await self.async_save()
+        self.notify()
         return True
 
     def _async_update_device_version(self) -> None:

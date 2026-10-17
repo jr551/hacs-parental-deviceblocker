@@ -36,7 +36,8 @@ SEND_CHALLENGE_SCHEMA = vol.Schema(
     }
 )
 
-CLEAR_CHALLENGE_SCHEMA = vol.Schema({vol.Required("entity_id"): cv.entity_ids})
+# The approve, reject and clear services all just name the challenge sensor.
+CHALLENGE_TARGET_SCHEMA = vol.Schema({vol.Required("entity_id"): cv.entity_ids})
 
 DEVICE_SCHEMA = vol.Schema(
     {
@@ -71,7 +72,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up API routes."""
     async_register_api(hass)
-    async_register_services(hass, SEND_CHALLENGE_SCHEMA, CLEAR_CHALLENGE_SCHEMA)
+    async_register_services(hass, SEND_CHALLENGE_SCHEMA, CHALLENGE_TARGET_SCHEMA)
     for device in config.get(DOMAIN, {}).get(CONF_DEVICES, []):
         hass.async_create_task(
             hass.config_entries.flow.async_init(
@@ -86,7 +87,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up one PC."""
     async_register_api(hass)
-    async_register_services(hass, SEND_CHALLENGE_SCHEMA, CLEAR_CHALLENGE_SCHEMA)
+    async_register_services(hass, SEND_CHALLENGE_SCHEMA, CHALLENGE_TARGET_SCHEMA)
     await async_load_pending(hass)
     # A photo that outlived its window must go even if nothing new arrives.
     await async_prune_evidence(hass)

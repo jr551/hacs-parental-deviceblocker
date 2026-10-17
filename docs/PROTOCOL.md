@@ -329,11 +329,23 @@ with a `requests` attribute) and a dynamic
 ## Chore challenge (Android)
 
 A parent can lock a phone behind a chore: the phone shows a phrase, the child
-takes a photo and types the phrase back, and the phone unlocks. The challenge
+takes a photo and types the phrase back, and the phone hands it to a parent.
+The child waits from there — a parent approves the photo, and only then does
+the challenge leave the state payload and the phone unlock. The challenge
 travels on the state poll, so a new one reaches the phone within a minute and
 no push channel is needed.
 
-### `POST /api/rowe_pc_blocker/{device_id}/challenge/accept`
+The challenge runs `none` → `pending` (sent, the child fills it in) →
+`submitted` (photo uploaded, waiting for a parent) → `approved` (a parent
+approved it), and back to `none` when a parent clears it.
+
+The `challenge` object in the state payload is present while the state is
+`pending` or `submitted`, and **null** once it is `approved` or `none` — that
+null is how the phone knows the chore is done and it may unlock. It carries
+`{"id", "phrase", "sent_at", "status", "submitted_at"}`, where `status` is
+`pending` or `submitted` and `submitted_at` is ISO-8601 or null.
+
+### `POST /api/rowe_pc_blocker/{device_id}/challenge/submit`
 
 Device credentials required, like every other device endpoint.
 
@@ -341,16 +353,22 @@ Device credentials required, like every other device endpoint.
 
 The id is the one from the `challenge` object in the state payload.
 
-**Response 200** — the challenge is done: `{"ok": true}`
+**Response 200** — the challenge is waiting for a parent:
 
-**Response 404** — there is no challenge, or this id is not the current one: `{"error": "That challenge is no longer active."}`
+```json
+{
+  "ok": true,
+  "status": "submitted"
+}
+```
+
+**Response 404** — there is no challenge, this id is not the current one, or a parent has already approved it: `{"error": "That challenge is no longer active."}`
 
 **Response 409** — no photo has been uploaded for this challenge: `{"error": "Take the photo first."}`
 
-Accepting is idempotent: a retry with the current id is answered **200** and
-keeps the first acceptance time. The challenge stays in the state payload until
-a parent clears it or sends a new one, so the dashboard can show that the chore
-was done.
+Submitting is idempotent: a retry with the current id is answered **200** and
+keeps the first submission time. The phone must keep the lock up until the
+`challenge` object goes null.
 
 ### `POST /api/rowe_pc_blocker/{device_id}/challenge/evidence`
 
@@ -388,10 +406,14 @@ is never involved, and the entity has no image while nothing is stored.
 | Service | Target | Data | Effect |
 |---------|--------|------|--------|
 | `rowe_pc_blocker.send_challenge` | `sensor.<device>_challenge` | `phrase` (required, 1–200 characters, trimmed) | Starts a new challenge with a fresh id; the sensor becomes `pending` |
-| `rowe_pc_blocker.clear_challenge` | `sensor.<device>_challenge` | — | Cancels the challenge and deletes its photo; the sensor returns to `none` |
+| `rowe_pc_blocker.approve_challenge` | `sensor.<device>_challenge` | — | Approves a `submitted` challenge; the sensor becomes `approved` and the payload goes null, so the phone unlocks |
+| `rowe_pc_blocker.reject_challenge` | `sensor.<device>_challenge` | — | Sends a `submitted` challenge back to the child and deletes its photo; the sensor returns to `pending` |
+| `rowe_pc_blocker.clear_challenge` | `sensor.<device>_challenge` | — | Cancels the challenge, approved or not, and deletes its photo; the sensor returns to `none` |
 
-`sensor.<device>_challenge` is `none`, `pending`, or `accepted`, with `phrase`,
-`sent_at`, `accepted_at`, `evidence_at`, and `evidence_expires_at` attributes.
+`sensor.<device>_challenge` is `none`, `pending`, `submitted`, or `approved`,
+with `phrase`, `sent_at`, `submitted_at`, `approved_at`, `evidence_at`, and
+`evidence_expires_at` attributes. Approving keeps the photo until the challenge
+is cleared, so a parent can still look at what they approved.
 
 ## Contract tests
 
