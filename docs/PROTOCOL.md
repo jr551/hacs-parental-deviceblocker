@@ -40,11 +40,11 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
 | `points_balance` | integer \| null | Child's Taskmate balance, or null |
 | `wake_alarm` | object \| null | Alarm schedule; null leaves the agent's cache alone |
 | `allowed_apps` | string[] | Android allow-list; empty means "use the agent's built-in defaults" |
-| `challenge` | object \| null | Active chore challenge: `{"id", "phrase", "sent_at"}`, or null when there is none |
+| `challenge` | object \| null | Active chore challenge: `{"id", "phrase", "sent_at", "status", "submitted_at"}`, or null once a parent approves it |
 | `location_request` | object \| null | Pending on-demand fix: `{"id", "requested_at"}`, or null when nothing is pending |
 | `family` | object | This child's other devices: `{"phone": peer\|null, "pc": peer\|null}` |
 
-A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application", "challenge"}`, where `last_seen` is ISO-8601 or null and `challenge` is the same `{"id", "phrase", "sent_at"}` object the peer's own state poll carries (null when it has none). Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer. Challenges are phone-only, so a PC peer always reports `"challenge": null`; the key is present on both peers so the shape is uniform.
+A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application", "challenge"}`, where `last_seen` is ISO-8601 or null and `challenge` is the same `{"id", "phrase", "sent_at", "status", "submitted_at"}` object the peer's own state poll carries (null when it has none). Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer. Challenges are phone-only, so a PC peer always reports `"challenge": null`; the key is present on both peers so the shape is uniform.
 
 Reading this endpoint refreshes the device's `last_seen`, so an agent may use it as a plain liveness check-in.
 

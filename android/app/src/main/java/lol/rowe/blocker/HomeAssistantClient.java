@@ -347,7 +347,8 @@ final class HomeAssistantClient {
 
     /**
      * POST /api/rowe_pc_blocker/{device_id}/challenge/evidence. The photo is the
-     * raw JPEG body; Home Assistant stores it as the child's evidence.
+     * raw JPEG body; Home Assistant stores it as the child's evidence. A 404
+     * means there is no challenge left to hold the photo, so the lock must go.
      */
     Challenge.Outcome uploadChallengeEvidence(byte[] jpeg) throws Exception {
         HttpURLConnection connection = open("challenge/evidence", "POST");
@@ -366,6 +367,11 @@ final class HomeAssistantClient {
                 return Challenge.Outcome.accepted("Photo sent.");
             }
             String error = errorText(body);
+            if (status == 404) {
+                return Challenge.Outcome.gone(error.isEmpty()
+                        ? "That challenge is no longer active."
+                        : error);
+            }
             return Challenge.Outcome.failed(error.isEmpty()
                     ? "Home Assistant refused the photo (" + status + ")."
                     : error);
@@ -374,9 +380,14 @@ final class HomeAssistantClient {
         }
     }
 
-    /** POST /api/rowe_pc_blocker/{device_id}/challenge/accept. */
-    Challenge.Outcome acceptChallenge(String challengeId) throws Exception {
-        HttpURLConnection connection = open("challenge/accept", "POST");
+    /**
+     * POST /api/rowe_pc_blocker/{device_id}/challenge/submit. The photo is
+     * already uploaded; this hands the challenge to a parent, who approves it
+     * from Home Assistant. The phone keeps the lock up until the state poll
+     * stops carrying the challenge.
+     */
+    Challenge.Outcome submitChallenge(String challengeId) throws Exception {
+        HttpURLConnection connection = open("challenge/submit", "POST");
         try {
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "application/json");
@@ -389,16 +400,31 @@ final class HomeAssistantClient {
             int status = connection.getResponseCode();
             InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
             String body = stream == null ? "" : readAll(stream);
-            if (status == 200) {
-                return Challenge.Outcome.accepted("Challenge accepted.");
-            }
-            String error = errorText(body);
-            return Challenge.Outcome.failed(error.isEmpty()
-                    ? "Home Assistant refused the answer (" + status + ")."
-                    : error);
+            return readSubmitResponse(status, body);
         } finally {
             connection.disconnect();
         }
+    }
+
+    /**
+     * What Home Assistant's answer to a submit means for the lock screen. A 404
+     * is the challenge being over — approved, cleared or replaced — and the
+     * phone must let it go; a 409 is Home Assistant having no photo for it yet,
+     * so the form stays up and the child is told why.
+     */
+    static Challenge.Outcome readSubmitResponse(int status, String body) {
+        if (status == 200) {
+            return Challenge.Outcome.accepted("Waiting for a parent to approve.");
+        }
+        String error = errorText(body);
+        if (status == 404) {
+            return Challenge.Outcome.gone(error.isEmpty()
+                    ? "That challenge is no longer active."
+                    : error);
+        }
+        return Challenge.Outcome.failed(error.isEmpty()
+                ? "Home Assistant refused the answer (" + status + ")."
+                : error);
     }
 
     /**
@@ -665,7 +691,12 @@ final class HomeAssistantClient {
         if (id.isEmpty() || phrase.isEmpty()) {
             return null;
         }
-        return new Challenge(id, phrase, optionalString(challenge, "sent_at"));
+        return new Challenge(
+                id,
+                phrase,
+                optionalString(challenge, "sent_at"),
+                optionalString(challenge, "status"),
+                optionalString(challenge, "submitted_at"));
     }
 
     /** The child's other device; null when Home Assistant did not send one. */

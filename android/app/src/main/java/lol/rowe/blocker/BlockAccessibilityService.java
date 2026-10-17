@@ -248,8 +248,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
             WakeAlarm.applyServer(this, policy.wakeAlarm);
             currentPolicy = policy;
             decision.setAllowedApps(policy.allowedApps);
-            String acceptedChallengeId = Challenge.acceptedId(this);
-            boolean challengePending = policy.challengePending(acceptedChallengeId);
+            boolean challengePending = policy.challengePending();
             AppUpdater.challengeActive = challengePending;
             refreshPendingUpdate();
             publishStatus(
@@ -302,20 +301,18 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * True when a lock screen (a parent block, an unanswered challenge or a
+     * True when a lock screen (a parent block, an unapproved challenge or a
      * verified update) must cover disallowed apps. All three go through the
      * same enforcement path; only the screen differs.
      */
     private boolean kioskActive(Policy policy) {
-        String acceptedChallengeId = Challenge.acceptedId(this);
-        return policy.isLocked(acceptedChallengeId)
-                || updateScreenPending(policy, acceptedChallengeId);
+        return policy.isLocked() || updateScreenPending(policy);
     }
 
-    private boolean updateScreenPending(Policy policy, String acceptedChallengeId) {
+    private boolean updateScreenPending(Policy policy) {
         return UpdateGate.shouldShowUpdateScreen(
                 pendingUpdate != null,
-                policy.challengePending(acceptedChallengeId),
+                policy.challengePending(),
                 policy.isExtensionActive(),
                 LocalOverride.isActive(this));
     }
@@ -401,9 +398,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
         if (UpdateGate.installInProgress) {
             return;
         }
-        String acceptedChallengeId = Challenge.acceptedId(this);
-        boolean kiosk = policy.isLocked(acceptedChallengeId)
-                || updateScreenPending(policy, acceptedChallengeId);
+        boolean kiosk = policy.isLocked() || updateScreenPending(policy);
         // Never resume the block activity over an app the holder is allowed to use.
         if (kiosk && decision != null && decision.isAllowed(true, foregroundPackage)) {
             return;
@@ -427,9 +422,13 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 .putExtra(MainActivity.EXTRA_BLOCKED_PACKAGE, blockedPackageForScreen())
                 .putStringArrayListExtra(
                         MainActivity.EXTRA_ALLOWED_APPS, new ArrayList<>(policy.allowedApps));
-        if (policy.challengePending(acceptedChallengeId)) {
+        if (policy.challengePending()) {
             intent.putExtra(MainActivity.EXTRA_CHALLENGE_ID, policy.challenge.id)
-                    .putExtra(MainActivity.EXTRA_CHALLENGE_PHRASE, policy.challenge.phrase);
+                    .putExtra(MainActivity.EXTRA_CHALLENGE_PHRASE, policy.challenge.phrase)
+                    .putExtra(MainActivity.EXTRA_CHALLENGE_STATUS, policy.challenge.status)
+                    .putExtra(
+                            MainActivity.EXTRA_CHALLENGE_SUBMITTED_AT,
+                            policy.challenge.submittedAt);
         }
         mainHandler.post(() -> {
             if (kiosk && decision != null && decision.isAllowed(true, foregroundPackage)) {
@@ -464,7 +463,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
 
     private void failOpen(String status, String detail) {
         currentPolicy = Challenge.enforced(this, null, true, false);
-        AppUpdater.challengeActive = currentPolicy.challengePending(Challenge.acceptedId(this));
+        AppUpdater.challengeActive = currentPolicy.challengePending();
         MainActivity.applyPolicySnapshot(currentPolicy);
         publishStatus(status, detail == null ? "" : detail, true);
     }

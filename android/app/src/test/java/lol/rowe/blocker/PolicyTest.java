@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import java.util.Collections;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
@@ -104,11 +105,25 @@ public class PolicyTest {
 
         Policy failed = Policy.enforced(null, true, false, held);
         assertFalse(failed.blocked);
-        assertTrue(failed.challengePending(""));
-        assertTrue(failed.isLocked(""));
+        assertTrue(failed.challengePending());
+        assertTrue(failed.isLocked());
 
         // A parent override still releases it.
-        assertFalse(Policy.enforced(null, true, true, held).isLocked(""));
+        assertFalse(Policy.enforced(null, true, true, held).isLocked());
+    }
+
+    @Test
+    public void aHeldSubmittedChallengeSurvivesAFailedPoll() {
+        Challenge held = new Challenge(
+                "abc123", "I have brushed my teeth", null,
+                Challenge.STATUS_SUBMITTED, "2026-10-17T12:00:00Z");
+
+        Policy failed = Policy.enforced(null, true, false, held);
+
+        assertTrue(failed.challengePending());
+        assertTrue(failed.isLocked());
+        assertSame(held, failed.challenge);
+        assertEquals(Challenge.STATUS_SUBMITTED, failed.challenge.status);
     }
 
     @Test
@@ -119,7 +134,7 @@ public class PolicyTest {
         Policy enforced = Policy.enforced(fromServer, false, false, held);
 
         assertNull(enforced.challenge);
-        assertFalse(enforced.isLocked(""));
+        assertFalse(enforced.isLocked());
     }
 
     @Test
@@ -132,24 +147,26 @@ public class PolicyTest {
         Policy enforced = Policy.enforced(policy, false, false, null);
 
         assertSame(fromServer, enforced.challenge);
-        assertTrue(enforced.isLocked(""));
+        assertTrue(enforced.isLocked());
     }
 
     @Test
-    public void anUnansweredChallengeLocksThePhoneLikeABlock() {
+    public void anUnapprovedChallengeLocksThePhoneLikeABlock() {
         Policy policy = challengePolicy(null);
 
         assertFalse(policy.blocked);
-        assertTrue(policy.challengePending(""));
-        assertTrue(policy.isLocked(""));
+        assertTrue(policy.challengePending());
+        assertTrue(policy.isLocked());
     }
 
     @Test
-    public void anAcceptedChallengeDoesNotLock() {
-        Policy policy = challengePolicy(null);
+    public void aSubmittedChallengeKeepsTheLockUntilAParentApproves() {
+        // The phone never accepts its own challenge: sending the photo leaves
+        // the lock up, and only a payload without the challenge lifts it.
+        Policy policy = challengePolicy(null, Challenge.STATUS_SUBMITTED);
 
-        assertFalse(policy.challengePending("abc123"));
-        assertFalse(policy.isLocked("abc123"));
+        assertTrue(policy.challengePending());
+        assertTrue(policy.isLocked());
     }
 
     @Test
@@ -157,33 +174,39 @@ public class PolicyTest {
         Policy policy = challengePolicy("2099-01-01T00:05:00Z");
 
         assertTrue(policy.isExtensionActive());
-        assertFalse(policy.challengePending(""));
-        assertFalse(policy.isLocked(""));
+        assertFalse(policy.challengePending());
+        assertFalse(policy.isLocked());
     }
 
     @Test
-    public void aBlockStillLocksWhileTheChallengeIsAnswered() {
+    public void aBlockStillLocksWhileTheChallengeWaitsForApproval() {
         Policy policy = new Policy(
                 true, true, "Paused", false, null, null,
                 null, 0, null, Collections.emptyList(), null, null,
-                new Challenge("abc123", "I have brushed my teeth", null));
+                new Challenge(
+                        "abc123", "I have brushed my teeth", null,
+                        Challenge.STATUS_SUBMITTED, "2026-10-17T12:00:00Z"));
 
-        assertFalse(policy.challengePending("abc123"));
-        assertTrue(policy.isLocked("abc123"));
+        assertTrue(policy.challengePending());
+        assertTrue(policy.isLocked());
     }
 
     @Test
     public void aPolicyWithoutAChallengeNeverLocks() {
         Policy policy = new Policy(false, false, "Available", false, null, null);
 
-        assertFalse(policy.challengePending(""));
-        assertFalse(policy.isLocked(""));
+        assertFalse(policy.challengePending());
+        assertFalse(policy.isLocked());
     }
 
     private static Policy challengePolicy(String extensionUntil) {
+        return challengePolicy(extensionUntil, Challenge.STATUS_PENDING);
+    }
+
+    private static Policy challengePolicy(String extensionUntil, String status) {
         return new Policy(
                 false, false, "Paused", false, null, extensionUntil,
                 null, 0, null, Collections.emptyList(), null, null,
-                new Challenge("abc123", "I have brushed my teeth", null));
+                new Challenge("abc123", "I have brushed my teeth", null, status, null));
     }
 }

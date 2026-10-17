@@ -97,7 +97,7 @@ final class Challenge {
     }
 
     /** True when the child may send the challenge: the phrase and the photo are both in. */
-    static boolean canAccept(boolean phraseMatches, boolean hasPhoto) {
+    static boolean canSubmit(boolean phraseMatches, boolean hasPhoto) {
         return phraseMatches && hasPhoto;
     }
 

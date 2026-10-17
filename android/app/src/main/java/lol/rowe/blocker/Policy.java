@@ -200,8 +200,8 @@ final class Policy {
      * The policy the phone enforces. A poll that failed and a parent's local
      * override both mean "unblocked": the phone must never stay blocked on a
      * policy it could not verify, and a parent's decision wins over the server.
-     * A challenge the phone is holding survives a failed poll, so a chore the
-     * child has not answered cannot be escaped by taking the phone offline.
+     * A challenge the phone is holding survives a failed poll, so a chore a
+     * parent has not approved cannot be escaped by taking the phone offline.
      */
     static Policy enforced(
             Policy fromServer, boolean pollFailed, boolean localOverrideActive, Challenge held) {
@@ -212,7 +212,8 @@ final class Policy {
             return held == null ? UNBLOCKED : UNBLOCKED.withChallenge(held);
         }
         // A successful poll is authoritative: a challenge it does not carry has
-        // been cleared by a parent, and the held one was dropped to match.
+        // been approved or cleared by a parent, and the held one was dropped to
+        // match. That null is the phone's unlock signal.
         return fromServer;
     }
 

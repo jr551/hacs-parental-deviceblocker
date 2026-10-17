@@ -44,9 +44,11 @@ public final class MainActivity extends Activity {
     static final String EXTRA_ALLOWED_APPS = "allowed_apps";
     /** The disallowed app the block screen was raised for, from the service. */
     static final String EXTRA_BLOCKED_PACKAGE = "blocked_package";
-    /** The unanswered challenge the block screen must show, from the service. */
+    /** The unapproved challenge the block screen must show, from the service. */
     static final String EXTRA_CHALLENGE_ID = "challenge_id";
     static final String EXTRA_CHALLENGE_PHRASE = "challenge_phrase";
+    static final String EXTRA_CHALLENGE_STATUS = "challenge_status";
+    static final String EXTRA_CHALLENGE_SUBMITTED_AT = "challenge_submitted_at";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
@@ -112,7 +114,7 @@ public final class MainActivity extends Activity {
         blockedPanel = findViewById(R.id.blockedPanel);
         blockCopyPanel = findViewById(R.id.blockCopyPanel);
         challengePanel = findViewById(R.id.challengePanel);
-        challengePanel.setListener(this::onChallengeAccepted);
+        challengePanel.setListener(this::onChallengeGone);
         installUpdateButton = findViewById(R.id.installUpdateButton);
         statusText = findViewById(R.id.statusText);
         blockTitle = findViewById(R.id.blockTitle);
@@ -204,7 +206,7 @@ public final class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (!updateScreen && !currentPolicy.isLocked(Challenge.acceptedId(this))) {
+        if (!updateScreen && !currentPolicy.isLocked()) {
             super.onBackPressed();
         }
     }
@@ -621,14 +623,14 @@ public final class MainActivity extends Activity {
             showUpdateScreen(pending);
             return;
         }
-        if (policy.blockRequested || policy.isLocked(Challenge.acceptedId(this))) {
+        if (policy.blockRequested || policy.isLocked()) {
             uninstallGuard = false;
-            if (!policy.challengePending(Challenge.acceptedId(this))
+            if (!policy.challengePending()
                     && blockedPanel.getVisibility() == View.VISIBLE
                     && blockedAppAllowed(policy)) {
                 // The parent allowed the app this screen was raised for. Leave so the
                 // child can go back to it; the service raises the screen again for any
-                // other disallowed app. An unanswered challenge keeps the screen up.
+                // other disallowed app. An unapproved challenge keeps the screen up.
                 finish();
             } else {
                 showBlocked(policy);
@@ -660,7 +662,7 @@ public final class MainActivity extends Activity {
         AppUpdater.Pending pending = AppUpdater.pending(this);
         if (!UpdateGate.shouldShowUpdateScreen(
                 pending != null,
-                policy.challengePending(Challenge.acceptedId(this)),
+                policy.challengePending(),
                 policy.isExtensionActive(),
                 LocalOverride.isActive(this))) {
             return null;
@@ -668,7 +670,7 @@ public final class MainActivity extends Activity {
         return pending;
     }
 
-    /** The block screen was raised with a challenge the child has not answered. */
+    /** The block screen was raised with a challenge a parent has not approved. */
     private void showFromIntent(Intent intent) {
         uninstallGuard = false;
         blockedPackage = blockedPackageFrom(intent);
@@ -682,13 +684,22 @@ public final class MainActivity extends Activity {
         showBlocked(policy);
     }
 
-    /** The child answered the challenge: the lock is over unless a block is still on. */
-    private void onChallengeAccepted() {
-        if (currentPolicy.blocked || currentPolicy.blockRequested) {
-            showBlocked(currentPolicy);
+    /**
+     * Home Assistant no longer has the challenge — a parent approved it, or it
+     * was cleared or replaced while the child was filling it in. Drop it from
+     * the policy in force and let the lock go; the next poll is authoritative.
+     */
+    private void onChallengeGone() {
+        Challenge.hold(this, null);
+        Policy policy = currentPolicy.withChallenge(null);
+        currentPolicy = policy;
+        BlockAccessibilityService.applyPolicySnapshot(policy);
+        if (policy.blocked || policy.blockRequested) {
+            showBlocked(policy);
         } else {
             finish();
         }
+        executor.execute(this::refreshPolicy);
     }
 
     private void showBlocked(Policy policy) {
@@ -696,9 +707,7 @@ public final class MainActivity extends Activity {
         updateScreen = false;
         blockedPanel.setBackgroundColor(getColor(R.color.block_background));
         installUpdateButton.setVisibility(View.GONE);
-        Challenge challenge = policy.challengePending(Challenge.acceptedId(this))
-                ? policy.challenge
-                : null;
+        Challenge challenge = policy.challengePending() ? policy.challenge : null;
         if (challenge != null) {
             showChallenge(challenge);
             return;
@@ -1125,7 +1134,12 @@ public final class MainActivity extends Activity {
         if (id == null || id.trim().isEmpty() || phrase == null || phrase.trim().isEmpty()) {
             return null;
         }
-        return new Challenge(id, phrase, null);
+        return new Challenge(
+                id,
+                phrase,
+                null,
+                intent.getStringExtra(EXTRA_CHALLENGE_STATUS),
+                intent.getStringExtra(EXTRA_CHALLENGE_SUBMITTED_AT));
     }
 
     private static String formatRemaining(long seconds) {

@@ -27,14 +27,16 @@ import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.time.Instant;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
 /**
  * The chore-challenge lock: the phrase, the answer field, the photo evidence
- * and the Accept button. It lives inside the block screen, so an unanswered
- * challenge is enforced by the same path as a parent block and cannot be
- * dismissed on its own.
+ * and the button that sends it to a parent. Once it is sent the panel waits —
+ * the phone stays locked until a parent approves the photo in Home Assistant.
+ * It lives inside the block screen, so an unapproved challenge is enforced by
+ * the same path as a parent block and cannot be dismissed on its own.
  */
 public final class ChallengePanel extends LinearLayout {
     /** The longest edge of the thumbnail shown on the lock. */
@@ -42,6 +44,8 @@ public final class ChallengePanel extends LinearLayout {
     private static final int REQUEST_CAPTURE = 0x43484C;
     /** One half of the highlight pulse. */
     private static final long PULSE_MILLIS = 700L;
+    /** How often the waiting view re-reads the clock. */
+    private static final long COUNTDOWN_MILLIS = 1000L;
     private static final String STATE_SUPER = "super";
     private static final String STATE_CHALLENGE_ID = "challenge_id";
     private static final String STATE_PHRASE = "phrase";
@@ -49,23 +53,34 @@ public final class ChallengePanel extends LinearLayout {
     private static final String STATE_MESSAGE = "message";
     private static final String STATE_PHOTO = "photo";
     private static final String STATE_PENDING_PHOTO = "pending_photo";
+    private static final String STATE_STATUS = "status";
+    private static final String STATE_SUBMITTED_AT = "submitted_at";
 
-    /** Told when the child answers the challenge, so the lock can be taken down. */
+    /** Told when Home Assistant no longer has the challenge, so the lock can go. */
     interface Listener {
-        void onChallengeAccepted();
+        void onChallengeGone();
     }
 
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private Listener listener;
     private String challengeId = "";
     private String phrase = "";
+    /** The status the panel is showing: pending is the form, submitted is the wait. */
+    private String status = Challenge.STATUS_PENDING;
+    /** The server's submission time, or "" when it has not sent one. */
+    private String submittedAt = "";
+    /** When the child sent the challenge, for the waiting view's countdown. */
+    private long submittedAtMillis;
+    private LinearLayout form;
+    private LinearLayout waiting;
     private TextView phraseView;
     private EditText answer;
-    private Button accept;
+    private Button submitButton;
     private Button takePhoto;
     private Button retake;
     private ImageView thumbnail;
-    private TextView status;
+    private TextView statusLine;
+    private TextView countdown;
     private File photoFile;
     /** The file the camera is writing to, until the shot comes back. */
     private File pendingPhotoFile;
@@ -89,7 +104,9 @@ public final class ChallengePanel extends LinearLayout {
 
     /**
      * Show the challenge. Whatever the child has already typed and shot stays
-     * put when the same challenge is shown again on the next poll.
+     * put when the same challenge is shown again on the next poll, and a
+     * challenge a parent sent back returns to the form with the typed phrase
+     * still in place.
      */
     void show(Challenge challenge) {
         if (challenge == null) {
@@ -103,24 +120,91 @@ public final class ChallengePanel extends LinearLayout {
             answer.setText("");
             clearPhoto();
             message = "";
-            updateAcceptState();
+            submittedAtMillis = 0;
+        } else if (Challenge.statusTransition(status, challenge.status)
+                == Challenge.TRANSITION_REJECTED) {
+            // A parent sent the challenge back: the photo they saw is gone, so
+            // the child has to take a new one. What they typed stays put.
+            clearPhoto();
+            message = "A parent asked for a new photo. Please retake it.";
         }
+        status = challenge.status;
+        submittedAt = challenge.submittedAt;
+        applyState(Challenge.panelState(status, true));
         setVisibility(VISIBLE);
     }
 
-    /** Take the lock down: the challenge was answered, or a parent override is running. */
+    /** Take the lock down: the challenge is over, or a parent override is running. */
     void hide() {
         setVisibility(GONE);
         stopPulse();
+        stopCountdown();
         endCapture();
     }
 
     /** The block screen is going away for good. */
     void release() {
         stopPulse();
+        stopCountdown();
         endCapture();
         executor.shutdownNow();
     }
+
+    /** Show the form or the wait, and keep the countdown running only while waiting. */
+    private void applyState(int state) {
+        if (state == Challenge.PANEL_WAITING) {
+            applySubmittedAt();
+            form.setVisibility(GONE);
+            waiting.setVisibility(VISIBLE);
+            stopPulse();
+            startCountdown();
+            return;
+        }
+        stopCountdown();
+        waiting.setVisibility(GONE);
+        form.setVisibility(VISIBLE);
+        updateSubmitState();
+    }
+
+    /**
+     * Point the countdown at the server's submission time when it has one, and
+     * at the moment this phone sent it otherwise — an older Home Assistant
+     * sends no {@code submitted_at}, and the wait still has to be counted.
+     */
+    private void applySubmittedAt() {
+        long parsed = Challenge.epochMillis(submittedAt);
+        if (parsed > 0) {
+            submittedAtMillis = parsed;
+        } else if (submittedAtMillis == 0) {
+            submittedAtMillis = System.currentTimeMillis();
+        }
+    }
+
+    private void startCountdown() {
+        removeCallbacks(countdownTick);
+        refreshCountdown();
+        postDelayed(countdownTick, COUNTDOWN_MILLIS);
+    }
+
+    private void stopCountdown() {
+        removeCallbacks(countdownTick);
+    }
+
+    private void refreshCountdown() {
+        long elapsed = Math.max(0L, (System.currentTimeMillis() - submittedAtMillis) / 1000L);
+        countdown.setText(Challenge.countdownText(elapsed));
+    }
+
+    /** Re-reads the clock once a second for as long as the waiting view is up. */
+    private final Runnable countdownTick = new Runnable() {
+        @Override
+        public void run() {
+            refreshCountdown();
+            if (waiting.getVisibility() == VISIBLE) {
+                postDelayed(this, COUNTDOWN_MILLIS);
+            }
+        }
+    };
 
     /** @return true when the result belonged to the challenge camera. */
     boolean onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -137,7 +221,7 @@ public final class ChallengePanel extends LinearLayout {
             }
             if (hasPhoto()) {
                 // The child backed out of the camera; the earlier photo stands.
-                updateAcceptState();
+                updateSubmitState();
             } else {
                 showMessage("No photo was taken.");
             }
@@ -149,7 +233,7 @@ public final class ChallengePanel extends LinearLayout {
         photoFile = captured;
         message = "";
         showThumbnail();
-        updateAcceptState();
+        updateSubmitState();
         return true;
     }
 
@@ -170,6 +254,8 @@ public final class ChallengePanel extends LinearLayout {
         state.putString(
                 STATE_PENDING_PHOTO,
                 pendingPhotoFile == null ? null : pendingPhotoFile.getAbsolutePath());
+        state.putString(STATE_STATUS, status);
+        state.putLong(STATE_SUBMITTED_AT, submittedAtMillis);
         return state;
     }
 
@@ -188,10 +274,12 @@ public final class ChallengePanel extends LinearLayout {
         message = text(saved.getString(STATE_MESSAGE));
         photoFile = file(saved.getString(STATE_PHOTO));
         pendingPhotoFile = file(saved.getString(STATE_PENDING_PHOTO));
+        status = Challenge.normalizeStatus(saved.getString(STATE_STATUS));
+        submittedAtMillis = saved.getLong(STATE_SUBMITTED_AT, 0L);
         if (hasPhoto()) {
             showThumbnail();
         }
-        updateAcceptState();
+        applyState(Challenge.panelState(status, !challengeId.isEmpty()));
     }
 
     private static String text(String value) {
@@ -215,13 +303,17 @@ public final class ChallengePanel extends LinearLayout {
         title.setGravity(Gravity.CENTER);
         addView(title);
 
+        form = new LinearLayout(getContext());
+        form.setOrientation(VERTICAL);
+        form.setGravity(Gravity.CENTER_HORIZONTAL);
+
         TextView instruction = new TextView(getContext());
         instruction.setText("Type this back to unlock this phone:");
         instruction.setTextColor(getContext().getColor(R.color.muted));
         instruction.setTextSize(16);
         instruction.setGravity(Gravity.CENTER);
         instruction.setPadding(0, padding / 2, 0, 0);
-        addView(instruction);
+        form.addView(instruction);
 
         phraseView = new TextView(getContext());
         phraseView.setTextColor(getContext().getColor(R.color.white));
@@ -229,7 +321,7 @@ public final class ChallengePanel extends LinearLayout {
         phraseView.setTypeface(Typeface.DEFAULT_BOLD);
         phraseView.setGravity(Gravity.CENTER);
         phraseView.setPadding(0, padding / 2, 0, padding / 2);
-        addView(phraseView);
+        form.addView(phraseView);
 
         answer = new EditText(getContext());
         answer.setHint("Type the phrase here");
@@ -248,41 +340,74 @@ public final class ChallengePanel extends LinearLayout {
             @Override
             public void afterTextChanged(Editable text) {
                 message = "";
-                updateAcceptState();
+                updateSubmitState();
             }
         });
-        addView(answer);
+        form.addView(answer);
 
         takePhoto = new Button(getContext());
         takePhoto.setText("Take photo");
         takePhoto.setOnClickListener(view -> takePhoto());
-        addView(takePhoto, buttonParams(density));
+        form.addView(takePhoto, buttonParams(density));
 
         thumbnail = new ImageView(getContext());
         thumbnail.setAdjustViewBounds(true);
         thumbnail.setVisibility(GONE);
-        addView(thumbnail);
+        form.addView(thumbnail);
 
         retake = new Button(getContext());
         retake.setText("Retake");
         retake.setVisibility(GONE);
         retake.setOnClickListener(view -> takePhoto());
-        addView(retake, buttonParams(density));
+        form.addView(retake, buttonParams(density));
 
-        status = new TextView(getContext());
-        status.setTextColor(getContext().getColor(R.color.muted));
-        status.setTextSize(16);
-        status.setGravity(Gravity.CENTER);
-        status.setPadding(0, padding / 2, 0, padding / 2);
-        addView(status);
+        statusLine = new TextView(getContext());
+        statusLine.setTextColor(getContext().getColor(R.color.muted));
+        statusLine.setTextSize(16);
+        statusLine.setGravity(Gravity.CENTER);
+        statusLine.setPadding(0, padding / 2, 0, padding / 2);
+        form.addView(statusLine);
 
-        accept = new Button(getContext());
-        accept.setText("Accept");
-        accept.setEnabled(false);
-        accept.setOnClickListener(view -> accept());
-        addView(accept, buttonParams(density));
+        submitButton = new Button(getContext());
+        submitButton.setText("Send for approval");
+        submitButton.setEnabled(false);
+        submitButton.setOnClickListener(view -> submit());
+        form.addView(submitButton, buttonParams(density));
 
-        updateAcceptState();
+        addView(form);
+
+        waiting = new LinearLayout(getContext());
+        waiting.setOrientation(VERTICAL);
+        waiting.setGravity(Gravity.CENTER_HORIZONTAL);
+        waiting.setVisibility(GONE);
+
+        TextView waitingTitle = new TextView(getContext());
+        waitingTitle.setText("Waiting for a parent to approve");
+        waitingTitle.setTextColor(getContext().getColor(R.color.white));
+        waitingTitle.setTextSize(24);
+        waitingTitle.setGravity(Gravity.CENTER);
+        waitingTitle.setPadding(0, padding / 2, 0, 0);
+        waiting.addView(waitingTitle);
+
+        TextView waitingHint = new TextView(getContext());
+        waitingHint.setText("This can take up to 1 hour.");
+        waitingHint.setTextColor(getContext().getColor(R.color.muted));
+        waitingHint.setTextSize(16);
+        waitingHint.setGravity(Gravity.CENTER);
+        waitingHint.setPadding(0, padding / 2, 0, 0);
+        waiting.addView(waitingHint);
+
+        countdown = new TextView(getContext());
+        countdown.setTextColor(getContext().getColor(R.color.challenge_highlight));
+        countdown.setTextSize(20);
+        countdown.setTypeface(Typeface.DEFAULT_BOLD);
+        countdown.setGravity(Gravity.CENTER);
+        countdown.setPadding(0, padding / 2, 0, 0);
+        waiting.addView(countdown);
+
+        addView(waiting);
+
+        applyState(Challenge.PANEL_FORM);
     }
 
     private LinearLayout.LayoutParams buttonParams(float density) {
@@ -293,23 +418,23 @@ public final class ChallengePanel extends LinearLayout {
     }
 
     /** The phrase and the photo are both required; the hint says which is missing. */
-    private void updateAcceptState() {
+    private void updateSubmitState() {
         boolean phraseMatches = Challenge.matches(phrase, answer.getText().toString());
         boolean hasPhoto = hasPhoto();
-        accept.setEnabled(Challenge.canAccept(phraseMatches, hasPhoto) && !uploading);
+        submitButton.setEnabled(Challenge.canSubmit(phraseMatches, hasPhoto) && !uploading);
         highlight(Challenge.step(phraseMatches, hasPhoto));
         if (!message.isEmpty()) {
-            status.setText(message);
+            statusLine.setText(message);
             return;
         }
         if (!phraseMatches && !hasPhoto) {
-            status.setText("Type the phrase and take a photo.");
+            statusLine.setText("Type the phrase and take a photo.");
         } else if (!phraseMatches) {
-            status.setText("Now type the phrase exactly.");
+            statusLine.setText("Now type the phrase exactly.");
         } else if (!hasPhoto) {
-            status.setText("Now take a photo as evidence.");
+            statusLine.setText("Now take a photo as evidence.");
         } else {
-            status.setText("Ready to send.");
+            statusLine.setText("Ready to send.");
         }
     }
 
@@ -360,18 +485,24 @@ public final class ChallengePanel extends LinearLayout {
         }
     }
 
-    private void accept() {
+    /**
+     * Send the photo and hand the challenge to a parent. The lock stays up
+     * afterwards: the phone only unlocks when a state poll stops carrying the
+     * challenge, which happens once a parent approves it.
+     */
+    private void submit() {
         if (uploading || !hasPhoto()) {
             return;
         }
         uploading = true;
         message = "Sending the photo…";
-        updateAcceptState();
+        updateSubmitState();
         final String id = challengeId;
         final File file = photoFile;
         executor.execute(() -> {
             String failure = "";
-            boolean accepted = false;
+            boolean sent = false;
+            boolean gone = false;
             byte[] jpeg = null;
             try {
                 jpeg = uploadBytes(file);
@@ -382,32 +513,52 @@ public final class ChallengePanel extends LinearLayout {
                 try {
                     HomeAssistantClient client = new HomeAssistantClient(AppConfig.load(getContext()));
                     Challenge.Outcome evidence = client.uploadChallengeEvidence(jpeg);
-                    if (!evidence.accepted) {
+                    if (evidence.gone) {
+                        gone = true;
+                    } else if (!evidence.accepted) {
                         failure = evidence.message;
                     } else {
-                        Challenge.Outcome result = client.acceptChallenge(id);
-                        accepted = result.accepted;
+                        Challenge.Outcome result = client.submitChallenge(id);
+                        sent = result.accepted;
+                        gone = result.gone;
                         failure = result.message;
                     }
                 } catch (Exception exception) {
                     failure = "Could not reach Home Assistant. Please try again.";
                 }
             }
-            final boolean done = accepted;
+            final boolean finished = gone;
+            final boolean waiting = sent;
             final String text = failure;
             post(() -> {
                 uploading = false;
-                if (done) {
-                    Challenge.rememberAccepted(getContext(), id);
+                if (finished) {
+                    // Home Assistant no longer has this challenge: let the lock go.
                     Challenge.hold(getContext(), null);
                     Listener target = listener;
                     if (target != null) {
-                        target.onChallengeAccepted();
+                        target.onChallengeGone();
                     }
                     return;
                 }
+                if (waiting) {
+                    // The photo is in and a parent now has to approve it. The
+                    // wait is held from now until the next poll brings the
+                    // server's own submission time.
+                    submittedAt = "";
+                    submittedAtMillis = System.currentTimeMillis();
+                    status = Challenge.STATUS_SUBMITTED;
+                    Challenge.hold(getContext(), new Challenge(
+                            challengeId,
+                            phrase,
+                            null,
+                            Challenge.STATUS_SUBMITTED,
+                            Instant.now().toString()));
+                    applyState(Challenge.PANEL_WAITING);
+                    return;
+                }
                 message = text;
-                updateAcceptState();
+                updateSubmitState();
             });
         });
     }
@@ -577,14 +728,14 @@ public final class ChallengePanel extends LinearLayout {
 
     /**
      * Point the child at the step they are on: the phrase field, then the
-     * camera, then Accept. Exactly one element is highlighted at a time, and
-     * the highlight is a pulse unless the system has animations turned off, in
-     * which case it is a plain colour change.
+     * camera, then the button that sends it. Exactly one element is highlighted
+     * at a time, and the highlight is a pulse unless the system has animations
+     * turned off, in which case it is a plain colour change.
      */
     private void highlight(int step) {
         View target = step == Challenge.STEP_PHRASE
                 ? answer
-                : step == Challenge.STEP_PHOTO ? takePhoto : accept;
+                : step == Challenge.STEP_PHOTO ? takePhoto : submitButton;
         if (target == pulsing) {
             return;
         }
@@ -636,7 +787,7 @@ public final class ChallengePanel extends LinearLayout {
 
     private void showMessage(String text) {
         message = text;
-        updateAcceptState();
+        updateSubmitState();
     }
 
     private void endCapture() {
