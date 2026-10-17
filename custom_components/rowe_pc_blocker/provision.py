@@ -27,6 +27,12 @@ ANDROID = "android"
 # the parent a fresh code by asking again.
 PENDING_TTL_SECONDS = 30 * 60
 
+# How many apps one phone may have waiting on a parent at once. The block
+# screen's picker makes asking cheap, so the cap is what stops a child filling
+# the dashboard; the phone reads it from the state payload and disables the
+# button before it hits the wall.
+MAX_PENDING_UNBLOCK_REQUESTS = 3
+
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"

@@ -42,6 +42,8 @@ The Windows blocker service polls state on a configurable interval (default ≥ 
 | `allowed_apps` | string[] | Android allow-list; empty means "use the agent's built-in defaults" |
 | `challenge` | object \| null | Active chore challenge: `{"id", "phrase", "sent_at", "status", "submitted_at"}`, or null once a parent approves it |
 | `location_request` | object \| null | Pending on-demand fix: `{"id", "requested_at"}`, or null when nothing is pending |
+| `unblock_requests_pending` | integer | Apps this phone is waiting on a parent to allow |
+| `unblock_requests_limit` | integer | How many it may have waiting at once |
 | `family` | object | This child's other devices: `{"phone": peer\|null, "pc": peer\|null}` |
 
 A `family` peer is `{"device_id", "device_type", "blocked", "message", "agent_online", "last_seen", "active_application", "challenge"}`, where `last_seen` is ISO-8601 or null and `challenge` is the same `{"id", "phrase", "sent_at", "status", "submitted_at"}` object the peer's own state poll carries (null when it has none). Peers are the same child's other devices, matched on the chore-manager child name; the requesting device is never its own peer. Challenges are phone-only, so a PC peer always reports `"challenge": null`; the key is present on both peers so the shape is uniform.
@@ -318,12 +320,21 @@ Device credentials required, like every other device endpoint.
 
 **Response 409** — a request for that app is already waiting: `{"error": "A parent already has a request for that app."}`
 
-At most one pending request exists per device and package. Approving appends the
-package to that device's allowlist (the same value the `text.<device>_allowed_apps`
-entity holds and the state payload sends) and removes the request; rejecting just
-removes it. The dashboard shows `sensor.<device>_unblock_requests` (state = count,
-with a `requests` attribute) and a dynamic
-`button.rowe_pc_blocker_approve_unblock_<request_id>` /
+**Response 429** — the phone already has **3** requests waiting on a parent: `{"error": "A parent is already looking at your requests."}`
+
+At most one pending request exists per device and package, and at most **3**
+per device at any time — the block screen's **Request another app** picker makes
+asking cheap, so the cap is what stops a child filling the dashboard. The phone
+reads `unblock_requests_pending` and `unblock_requests_limit` from the state
+payload and disables the picker before it hits the wall; a slot frees up as soon
+as a request is approved, rejected or expires.
+
+Approving appends the package to that device's allowlist (the same value the
+`text.<device>_allowed_apps` entity holds and the state payload sends) and
+removes the request; rejecting just removes it. The dashboard shows
+`sensor.<device>_unblock_requests` (state = count, with `requests`,
+`unblock_requests_pending` and `unblock_requests_limit` attributes) and a
+dynamic `button.rowe_pc_blocker_approve_unblock_<request_id>` /
 `button.rowe_pc_blocker_reject_unblock_<request_id>` pair per request.
 
 ## Chore challenge (Android)
@@ -339,11 +350,19 @@ The challenge runs `none` → `pending` (sent, the child fills it in) →
 `submitted` (photo uploaded, waiting for a parent) → `approved` (a parent
 approved it), and back to `none` when a parent clears it.
 
+A `submitted` challenge **approves itself two hours after `submitted_at`** if
+nobody decides, so a child is never locked indefinitely. The check runs
+whenever the challenge is read — the state poll below and the challenge
+sensor — so no scheduler is involved, and the payload goes null on that same
+poll. A parent approving or rejecting before the deadline wins.
+
 The `challenge` object in the state payload is present while the state is
 `pending` or `submitted`, and **null** once it is `approved` or `none` — that
 null is how the phone knows the chore is done and it may unlock. It carries
-`{"id", "phrase", "sent_at", "status", "submitted_at"}`, where `status` is
-`pending` or `submitted` and `submitted_at` is ISO-8601 or null.
+`{"id", "phrase", "sent_at", "status", "submitted_at", "auto_approve_at"}`,
+where `status` is `pending` or `submitted`, `submitted_at` is ISO-8601 or null,
+and `auto_approve_at` is `submitted_at + 2 hours` while `submitted` and null
+otherwise.
 
 ### `POST /api/rowe_pc_blocker/{device_id}/challenge/submit`
 
@@ -406,14 +425,15 @@ is never involved, and the entity has no image while nothing is stored.
 | Service | Target | Data | Effect |
 |---------|--------|------|--------|
 | `rowe_pc_blocker.send_challenge` | `sensor.<device>_challenge` | `phrase` (required, 1–200 characters, trimmed) | Starts a new challenge with a fresh id; the sensor becomes `pending` |
-| `rowe_pc_blocker.approve_challenge` | `sensor.<device>_challenge` | — | Approves a `submitted` challenge; the sensor becomes `approved` and the payload goes null, so the phone unlocks |
+| `rowe_pc_blocker.approve_challenge` | `sensor.<device>_challenge` | — | Approves a `submitted` challenge; the sensor becomes `approved` and the payload goes null, so the phone unlocks. Only needed to decide before the two-hour deadline |
 | `rowe_pc_blocker.reject_challenge` | `sensor.<device>_challenge` | — | Sends a `submitted` challenge back to the child and deletes its photo; the sensor returns to `pending` |
 | `rowe_pc_blocker.clear_challenge` | `sensor.<device>_challenge` | — | Cancels the challenge, approved or not, and deletes its photo; the sensor returns to `none` |
 
 `sensor.<device>_challenge` is `none`, `pending`, `submitted`, or `approved`,
-with `phrase`, `sent_at`, `submitted_at`, `approved_at`, `evidence_at`, and
-`evidence_expires_at` attributes. Approving keeps the photo until the challenge
-is cleared, so a parent can still look at what they approved.
+with `phrase`, `sent_at`, `submitted_at`, `approved_at`, `auto_approve_at`,
+`evidence_at`, and `evidence_expires_at` attributes. Approving — by a parent or
+by the two-hour deadline — keeps the photo until the challenge is cleared, so a
+parent can still look at what was approved.
 
 ## Contract tests
 

@@ -11,8 +11,9 @@ import unittest
 from datetime import timedelta
 
 import ha_stub
-from ha_stub import FakeConfigEntry, FakeHass, object_id
+from ha_stub import FakeConfigEntry, FakeHass, FakeRequest, object_id
 
+API = ha_stub.load("api")
 CONST = ha_stub.load("const")
 APPS = ha_stub.load("apps")
 PENDING = ha_stub.load("pending")
@@ -233,6 +234,75 @@ class UnblockRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.allowed_apps, full)
         self.assertEqual(len(PENDING.unblock_requests(self.hass)), 1)
 
+    async def _fill(self) -> list[str]:
+        request_ids = []
+        for index in range(PROVISION.MAX_PENDING_UNBLOCK_REQUESTS):
+            status_code, body = await self._request(f"com.app{index}", f"App {index}")
+            self.assertEqual(status_code, 200)
+            request_ids.append(body["request_id"])
+        return request_ids
+
+    async def test_a_fourth_request_is_refused_with_429(self) -> None:
+        await self._fill()
+
+        status_code, body = await self._request("com.app9", "App 9")
+        self.assertEqual(status_code, 429)
+        self.assertEqual(
+            body, {"error": "A parent is already looking at your requests."}
+        )
+        self.assertEqual(
+            len(PENDING.unblock_requests(self.hass)),
+            PROVISION.MAX_PENDING_UNBLOCK_REQUESTS,
+        )
+
+    async def test_a_duplicate_is_still_a_409_not_a_429(self) -> None:
+        await self._fill()
+
+        status_code, body = await self._request("com.app0", "App 0")
+        self.assertEqual(status_code, 409)
+        self.assertEqual(
+            body, {"error": "A parent already has a request for that app."}
+        )
+
+    async def test_the_cap_frees_up_when_a_request_is_answered(self) -> None:
+        request_ids = await self._fill()
+        self.assertEqual((await self._request("com.app9", "App 9"))[0], 429)
+
+        await PENDING.async_approve_unblock_request(self.hass, request_ids[0])
+        self.assertEqual((await self._request("com.app9", "App 9"))[0], 200)
+
+        await PENDING.async_reject_unblock_request(self.hass, request_ids[1])
+        self.assertEqual((await self._request("com.app8", "App 8"))[0], 200)
+
+    async def test_the_cap_frees_up_when_a_request_expires(self) -> None:
+        request_ids = await self._fill()
+        self.assertEqual((await self._request("com.app9", "App 9"))[0], 429)
+
+        store = PENDING.unblock_store(self.hass)
+        for request_id in request_ids:
+            store.get(request_id, ha_stub.utcnow()).requested_at = (
+                ha_stub.utcnow() - EXPIRED
+            )
+        self.assertEqual((await self._request("com.app9", "App 9"))[0], 200)
+
+    async def _state(self):
+        request = FakeRequest(
+            self.hass, headers={"X-Device-Blocker-Key": "existing-key"}
+        )
+        return await API.PcStateView().get(request, "casey-phone")
+
+    async def test_the_payload_carries_the_count_and_the_cap(self) -> None:
+        response = await self._state()
+        self.assertEqual(response.data["unblock_requests_pending"], 0)
+        self.assertEqual(
+            response.data["unblock_requests_limit"],
+            PROVISION.MAX_PENDING_UNBLOCK_REQUESTS,
+        )
+
+        await self._request()
+        response = await self._state()
+        self.assertEqual(response.data["unblock_requests_pending"], 1)
+
     async def test_requests_survive_a_home_assistant_restart(self) -> None:
         _status, body = await self._request()
         restarted = FakeHass()
@@ -273,13 +343,26 @@ class UnblockEntityTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_sensor_counts_and_lists_the_requests(self) -> None:
         sensor = self._sensor()
         self.assertEqual(sensor.native_value, 0)
-        self.assertEqual(sensor.extra_state_attributes, {"requests": []})
+        self.assertEqual(
+            sensor.extra_state_attributes,
+            {
+                "unblock_requests_pending": 0,
+                "unblock_requests_limit": PROVISION.MAX_PENDING_UNBLOCK_REQUESTS,
+                "requests": [],
+            },
+        )
 
         _status, body = await self._request()
         request = PENDING.unblock_requests(self.hass)[0]
         self.assertEqual(sensor.native_value, 1)
+        attributes = sensor.extra_state_attributes
+        self.assertEqual(attributes["unblock_requests_pending"], 1)
         self.assertEqual(
-            sensor.extra_state_attributes["requests"],
+            attributes["unblock_requests_limit"],
+            PROVISION.MAX_PENDING_UNBLOCK_REQUESTS,
+        )
+        self.assertEqual(
+            attributes["requests"],
             [
                 {
                     "request_id": body["request_id"],

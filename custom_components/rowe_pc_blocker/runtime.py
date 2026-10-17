@@ -59,6 +59,10 @@ CHALLENGE_PENDING = "pending"
 CHALLENGE_SUBMITTED = "submitted"
 CHALLENGE_APPROVED = "approved"
 
+# A submitted challenge approves itself after this long, so a parent who is
+# away from their phone cannot leave a child locked indefinitely.
+CHALLENGE_AUTO_APPROVE_SECONDS = 2 * 60 * 60
+
 
 @dataclass(slots=True)
 class PcRuntime:
@@ -206,6 +210,19 @@ class PcRuntime:
         return CHALLENGE_PENDING
 
     @property
+    def challenge_auto_approve_at(self) -> datetime | None:
+        """When a submitted challenge approves itself, or None.
+
+        Only a challenge that is waiting on a parent has a deadline; a pending
+        one has not been sent yet, and an approved one is already decided.
+        """
+        if self.challenge_submitted_at is None or self.challenge_approved_at is not None:
+            return None
+        return self.challenge_submitted_at + timedelta(
+            seconds=CHALLENGE_AUTO_APPROVE_SECONDS
+        )
+
+    @property
     def challenge_payload(self) -> dict | None:
         """The challenge the phone reads on its state poll, or None.
 
@@ -228,6 +245,11 @@ class PcRuntime:
             "submitted_at": (
                 self.challenge_submitted_at.isoformat()
                 if self.challenge_submitted_at
+                else None
+            ),
+            "auto_approve_at": (
+                self.challenge_auto_approve_at.isoformat()
+                if self.challenge_auto_approve_at
                 else None
             ),
         }
@@ -451,6 +473,19 @@ class PcRuntime:
             await self.async_save()
             self.notify()
         return True
+
+    async def async_auto_approve_challenge(self) -> bool:
+        """Approve a submitted challenge nobody decided on in time.
+
+        Called whenever the challenge is read — the phone's state poll and the
+        challenge sensor's tick — so no scheduler is needed. A parent's
+        decision before the deadline wins: this only fires while the challenge
+        is still waiting on one.
+        """
+        deadline = self.challenge_auto_approve_at
+        if deadline is None or dt_util.utcnow() < deadline:
+            return False
+        return await self.async_approve_challenge()
 
     async def async_approve_challenge(self) -> bool:
         """Approve a submitted challenge. False when nothing is waiting."""

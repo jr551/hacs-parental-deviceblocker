@@ -37,6 +37,7 @@ from .const import (
     SIGNAL_PENDING,
 )
 from .provision import (
+    MAX_PENDING_UNBLOCK_REQUESTS,
     ApprovalDecision,
     PendingProvisionStore,
     PendingRequest,
@@ -250,7 +251,8 @@ async def async_create_unblock_request(
 
     Returns the HTTP status and body the phone is answered with. A package that
     is already allowed, or one a parent is already looking at, is a conflict
-    rather than a second request.
+    rather than a second request, and a phone with the cap already waiting on a
+    parent is told to wait rather than adding another.
     """
     package = package.strip()
     if PACKAGE_PATTERN.fullmatch(package) is None:
@@ -264,6 +266,8 @@ async def async_create_unblock_request(
     unblock = unblock_store(hass)
     if unblock.pending_for(runtime.device_id, package, now) is not None:
         return 409, {"error": "A parent already has a request for that app."}
+    if len(unblock.for_device(runtime.device_id, now)) >= MAX_PENDING_UNBLOCK_REQUESTS:
+        return 429, {"error": "A parent is already looking at your requests."}
     request = unblock.create(
         runtime.device_id,
         package,

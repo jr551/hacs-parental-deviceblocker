@@ -12,6 +12,8 @@
   "allowed_apps": [],
   "challenge": null,
   "location_request": null,
+  "unblock_requests_pending": 0,
+  "unblock_requests_limit": 3,
   "family": {
     "phone": {
       "device_id": "child-phone",
@@ -26,7 +28,8 @@
         "phrase": "I have brushed my teeth",
         "sent_at": "2026-10-17T11:58:00+00:00",
         "status": "submitted",
-        "submitted_at": "2026-10-17T11:59:00+00:00"
+        "submitted_at": "2026-10-17T11:59:00+00:00",
+        "auto_approve_at": "2026-10-17T13:59:00+00:00"
       }
     },
     "pc": null

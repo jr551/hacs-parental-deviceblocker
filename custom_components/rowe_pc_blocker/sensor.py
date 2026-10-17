@@ -13,6 +13,8 @@ Telemetry that only an agent check-in refreshes derives from
 leaving a stale reading on the dashboard.
 """
 
+from datetime import timedelta
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -20,6 +22,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .agent_status import DEGRADED_UI_STATUSES, is_portal_error_status
@@ -28,6 +31,7 @@ from .entity import AgentTelemetryEntity, ParentalDeviceEntity
 from .evidence import evidence_expires_at, evidence_file
 from .notifications import recent_items
 from .pending import awaiting_requests, claim_pending_entities, unblock_requests
+from .provision import MAX_PENDING_UNBLOCK_REQUESTS
 
 # The states the challenge sensor reports, and the concern levels the screen
 # monitor reports. Both are enum sensors, so Home Assistant needs the full set
@@ -345,7 +349,12 @@ class UnblockRequestsSensor(ParentalDeviceEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
+        requests = unblock_requests(self.hass, self.runtime.device_id)
         return {
+            # The state is the count; the limit is what the phone's picker
+            # reads from the state payload to disable itself in time.
+            "unblock_requests_pending": len(requests),
+            "unblock_requests_limit": MAX_PENDING_UNBLOCK_REQUESTS,
             "requests": [
                 {
                     "request_id": request.request_id,
@@ -353,8 +362,8 @@ class UnblockRequestsSensor(ParentalDeviceEntity, SensorEntity):
                     "label": request.label,
                     "requested_at": request.requested_at.isoformat(),
                 }
-                for request in unblock_requests(self.hass, self.runtime.device_id)
-            ]
+                for request in requests
+            ],
         }
 
     async def async_added_to_hass(self) -> None:
@@ -390,6 +399,23 @@ class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
     def native_value(self) -> str:
         return self.runtime.challenge_state
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # A submitted challenge approves itself after two hours. The phone's
+        # state poll settles it too; this tick is what settles it for a
+        # dashboard when no phone is polling.
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass,
+                self._handle_interval,
+                timedelta(seconds=30),
+            )
+        )
+
+    async def _handle_interval(self, _now) -> None:
+        await self.runtime.async_auto_approve_challenge()
+        self.async_write_ha_state()
+
     @property
     def extra_state_attributes(self) -> dict:
         path = evidence_file(
@@ -410,6 +436,11 @@ class ChallengeSensor(ParentalDeviceEntity, SensorEntity):
             "approved_at": (
                 self.runtime.challenge_approved_at.isoformat()
                 if self.runtime.challenge_approved_at
+                else None
+            ),
+            "auto_approve_at": (
+                self.runtime.challenge_auto_approve_at.isoformat()
+                if self.runtime.challenge_auto_approve_at
                 else None
             ),
             "evidence_at": (

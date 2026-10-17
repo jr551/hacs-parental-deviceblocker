@@ -38,6 +38,8 @@ STATE_RESPONSE_KEYS = frozenset(
         "allowed_apps",
         "challenge",
         "location_request",
+        "unblock_requests_pending",
+        "unblock_requests_limit",
         "family",
     }
 )
@@ -98,7 +100,7 @@ UNBLOCK_PENDING_KEYS = frozenset({"ok", "request_id", "status"})
 CHALLENGE_REQUEST_KEYS = frozenset({"id"})
 
 CHALLENGE_PAYLOAD_KEYS = frozenset(
-    {"id", "phrase", "sent_at", "status", "submitted_at"}
+    {"id", "phrase", "sent_at", "status", "submitted_at", "auto_approve_at"}
 )
 
 CHALLENGE_SUBMIT_RESPONSE_KEYS = frozenset({"ok", "status"})

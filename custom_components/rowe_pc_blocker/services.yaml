@@ -24,7 +24,8 @@ approve_challenge:
   description: >-
     Approve the photo a child submitted. The challenge leaves the phone's state
     payload, so the phone unlocks on its next poll. The sensor becomes
-    approved.
+    approved. A submitted challenge approves itself two hours after the child
+    sent it, so this is only needed to decide sooner.
   target:
     entity:
       integration: rowe_pc_blocker
@@ -34,7 +35,8 @@ reject_challenge:
   name: Reject chore challenge
   description: >-
     Send a submitted challenge back to the child and delete its photo, so the
-    chore can be done again. The sensor returns to pending.
+    chore can be done again. The sensor returns to pending. Rejecting before
+    the two-hour deadline beats the automatic approval.
   target:
     entity:
       integration: rowe_pc_blocker

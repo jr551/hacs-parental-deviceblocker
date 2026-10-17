@@ -445,6 +445,117 @@ class ChallengeServiceTests(ChallengeTestCase):
         self.assertFalse(path.exists())
 
 
+class ChallengeAutoApproveTests(ChallengeTestCase):
+    """A submitted challenge approves itself after two hours."""
+
+    async def _submit(self) -> None:
+        await self._send()
+        await self._upload()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+
+    def _backdate_submission(self, seconds: int) -> None:
+        self.runtime.challenge_submitted_at = ha_stub.utcnow() - timedelta(
+            seconds=seconds
+        )
+
+    async def _state(self):
+        request = FakeRequest(
+            self.hass, headers={"X-Device-Blocker-Key": "existing-key"}
+        )
+        return await API.PcStateView().get(request, PHONE)
+
+    async def test_the_deadline_is_two_hours_after_submission(self) -> None:
+        self.assertEqual(RUNTIME.CHALLENGE_AUTO_APPROVE_SECONDS, 2 * 60 * 60)
+
+        await self._send()
+        self.assertIsNone(self.runtime.challenge_auto_approve_at)
+        await self._upload()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        self.assertEqual(
+            self.runtime.challenge_auto_approve_at,
+            self.runtime.challenge_submitted_at
+            + timedelta(seconds=RUNTIME.CHALLENGE_AUTO_APPROVE_SECONDS),
+        )
+        self.assertEqual(
+            self.runtime.challenge_payload["auto_approve_at"],
+            self.runtime.challenge_auto_approve_at.isoformat(),
+        )
+
+    async def test_a_challenge_inside_the_deadline_stays_submitted(self) -> None:
+        await self._submit()
+        self._backdate_submission(RUNTIME.CHALLENGE_AUTO_APPROVE_SECONDS - 60)
+
+        self.assertFalse(await self.runtime.async_auto_approve_challenge())
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_SUBMITTED)
+        self.assertIsNotNone(self.runtime.challenge_payload)
+
+    async def test_a_challenge_past_the_deadline_approves_itself(self) -> None:
+        await self._submit()
+        self._backdate_submission(RUNTIME.CHALLENGE_AUTO_APPROVE_SECONDS)
+
+        self.assertTrue(await self.runtime.async_auto_approve_challenge())
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_APPROVED)
+        # The null payload is what unlocks the phone.
+        self.assertIsNone(self.runtime.challenge_payload)
+        self.assertIsNone(self.runtime.challenge_auto_approve_at)
+        # A second check has nothing left to do.
+        self.assertFalse(await self.runtime.async_auto_approve_challenge())
+
+    async def test_a_parents_decision_before_the_deadline_wins(self) -> None:
+        await self._submit()
+        await self.runtime.async_approve_challenge()
+        self._backdate_submission(RUNTIME.CHALLENGE_AUTO_APPROVE_SECONDS * 2)
+        self.assertFalse(await self.runtime.async_auto_approve_challenge())
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_APPROVED)
+
+        # Rejecting wins too: the challenge goes back to the child, and a
+        # pending challenge has no deadline.
+        await self.runtime.async_clear_challenge()
+        await self._submit()
+        await self.runtime.async_reject_challenge()
+        self.assertIsNone(self.runtime.challenge_auto_approve_at)
+        self.assertFalse(await self.runtime.async_auto_approve_challenge())
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_PENDING)
+
+    async def test_the_state_poll_settles_it_and_the_payload_goes_null(self) -> None:
+        await self._submit()
+        self._backdate_submission(RUNTIME.CHALLENGE_AUTO_APPROVE_SECONDS)
+
+        response = await self._state()
+        self.assertIsNone(response.data["challenge"])
+        self.assertEqual(self.runtime.challenge_state, RUNTIME.CHALLENGE_APPROVED)
+
+    async def test_the_sensor_tick_settles_it(self) -> None:
+        await self._submit()
+        sensor = self._attach(SENSOR.ChallengeSensor(self.runtime))
+        await sensor.async_added_to_hass()
+        tick, interval = self.hass.intervals[-1]
+        self.assertEqual(interval, timedelta(seconds=30))
+        self.assertEqual(sensor.native_value, "submitted")
+
+        self._backdate_submission(RUNTIME.CHALLENGE_AUTO_APPROVE_SECONDS)
+        await tick(None)
+        self.assertEqual(sensor.native_value, "approved")
+        self.assertGreaterEqual(sensor.state_writes, 1)
+
+    async def test_the_sensor_exposes_the_deadline_only_while_submitted(self) -> None:
+        sensor = self._attach(SENSOR.ChallengeSensor(self.runtime))
+        self.assertIsNone(sensor.extra_state_attributes["auto_approve_at"])
+
+        await self._send()
+        self.assertIsNone(sensor.extra_state_attributes["auto_approve_at"])
+
+        await self._upload()
+        await self.runtime.async_submit_challenge(self.runtime.challenge_id)
+        self.assertEqual(
+            sensor.extra_state_attributes["auto_approve_at"],
+            self.runtime.challenge_auto_approve_at.isoformat(),
+        )
+
+        await self.runtime.async_approve_challenge()
+        self.assertIsNone(sensor.extra_state_attributes["auto_approve_at"])
+
+
 class ChallengeSubmitViewTests(ChallengeTestCase):
     """The endpoint a phone calls once the child has sent the photo."""
 
@@ -498,6 +609,7 @@ class ChallengeEntityTests(ChallengeTestCase):
                 "sent_at": None,
                 "submitted_at": None,
                 "approved_at": None,
+                "auto_approve_at": None,
                 "evidence_at": None,
                 "evidence_expires_at": None,
             },

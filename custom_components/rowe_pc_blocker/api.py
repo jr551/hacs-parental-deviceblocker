@@ -52,6 +52,7 @@ from .pending import (
     async_create_request,
     async_create_unblock_request,
     async_load_pending,
+    unblock_requests,
 )
 from .portal import (
     PORTAL_HTML,
@@ -61,6 +62,7 @@ from .portal import (
     resolve_child_identity,
 )
 from .provision import (
+    MAX_PENDING_UNBLOCK_REQUESTS,
     collection_response,
     match_child,
     request_response,
@@ -201,8 +203,11 @@ class PcStateView(HomeAssistantView):
         hass = request.app["hass"]
         runtime = await _require_runtime(hass, request, device_id)
         runtime.last_seen = dt_util.utcnow()
-        # A request nobody answered stops riding the payload once it expires.
+        # A request nobody answered stops riding the payload once it expires,
+        # and a challenge nobody decided on approves itself, so the phone
+        # unlocks on this same poll.
         await runtime.async_expire_location_request()
+        await runtime.async_auto_approve_challenge()
         runtime.notify()
         return self.json(
             {
@@ -229,6 +234,12 @@ class PcStateView(HomeAssistantView):
                 or list(DEFAULT_ALLOWED_APPS),
                 "challenge": runtime.challenge_payload,
                 "location_request": runtime.location_request_payload,
+                # What the block screen's picker needs to disable itself
+                # before the phone hits the cap.
+                "unblock_requests_pending": len(
+                    unblock_requests(hass, runtime.device_id)
+                ),
+                "unblock_requests_limit": MAX_PENDING_UNBLOCK_REQUESTS,
                 "family": family_peers(
                     runtime,
                     _runtimes(hass),
