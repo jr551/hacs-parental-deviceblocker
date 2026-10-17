@@ -134,8 +134,11 @@ public sealed class WindowsUpdater(
         }
         // Prefer the installer, exactly as a parent would; fall back to the
         // archive when the release ships no installer or the installer path
-        // fails before the swap starts.
-        foreach (ReleaseAsset? candidate in new[] { release.Installer, release.Zip })
+        // fails before the swap starts. An install laid down by the script
+        // helper is the exception: it lives under ProgramData, which the Inno
+        // package does not manage, so running the installer there would leave a
+        // second copy under Program Files and never touch the running one.
+        foreach (ReleaseAsset? candidate in UpgradeOrder(release))
         {
             if (candidate is null)
                 continue;
@@ -157,6 +160,35 @@ public sealed class WindowsUpdater(
             if (installed)
                 return;
         }
+    }
+
+    /// <summary>
+    /// The assets to try, in order, for this install.
+    ///
+    /// The Inno package installs under Program Files. An agent installed by
+    /// <c>Install-RowePcBlocker.ps1</c> instead lives under ProgramData, so it
+    /// must be upgraded from the archive or the installer would create a
+    /// parallel copy and report success while the running build stayed put.
+    /// </summary>
+    private static ReleaseAsset?[] UpgradeOrder(ReleaseInfo release)
+    {
+        return InstalledByScriptHelper()
+            ? new[] { release.Zip, release.Installer }
+            : new[] { release.Installer, release.Zip };
+    }
+
+    /// <summary>
+    /// True when this agent's binaries sit under %ProgramData%, which is where
+    /// the script helper installs them and where the Inno package never does.
+    /// </summary>
+    private static bool InstalledByScriptHelper()
+    {
+        string programData = Environment.GetFolderPath(
+            Environment.SpecialFolder.CommonApplicationData);
+        string baseDirectory = AppContext.BaseDirectory;
+        return programData.Length != 0
+            && baseDirectory.StartsWith(programData, StringComparison.OrdinalIgnoreCase)
+            && baseDirectory.Contains("RowePcBlocker", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<ReleaseInfo> ReadReleaseAsync(Version current, CancellationToken cancellationToken)

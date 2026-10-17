@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.1
+
+### Fixed
+
+- **The Windows agent no longer installs a second copy of itself.** The updater preferred the Inno Setup package, which installs under `Program Files`, but an agent laid down by `Install-RowePcBlocker.ps1` lives under `%ProgramData%\RowePcBlocker`. On those PCs the installer reported success while the running build stayed where it was, leaving a parallel copy behind and never falling back to the archive. The updater now picks the archive first when its own binaries sit under `%ProgramData%`, and the installer first everywhere else.
+
 ## 0.13.0
 
 ### Added
