@@ -110,3 +110,20 @@ class ParseInstalledAppsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultAllowedAppsTests(unittest.TestCase):
+    """The list a parent sees before editing anything."""
+
+    def test_default_list_fits_a_text_entity_state(self):
+        joined = ", ".join(APPS.DEFAULT_ALLOWED_APPS)
+        self.assertLessEqual(len(joined), APPS.MAX_ALLOWED_APPS_LENGTH)
+
+    def test_default_list_survives_a_round_trip(self):
+        joined = ", ".join(APPS.DEFAULT_ALLOWED_APPS)
+        self.assertEqual(APPS.parse_allowed_apps(joined), list(APPS.DEFAULT_ALLOWED_APPS))
+
+    def test_default_list_has_no_duplicates(self):
+        self.assertEqual(
+            len(APPS.DEFAULT_ALLOWED_APPS), len(set(APPS.DEFAULT_ALLOWED_APPS))
+        )

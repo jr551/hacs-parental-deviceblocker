@@ -19,6 +19,20 @@ PACKAGE_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*")
 # A text entity state is capped at 255 characters, so the list has to fit.
 MAX_ALLOWED_APPS_LENGTH = 255
 
+# The apps a blocked phone may open by default, matching the phone's own
+# built-in Calls/WhatsApp/Maps/MapMyWalk/Classroom/Clock/Camera shortcuts. The
+# phone keeps extra fallbacks for other dialers, clocks and cameras, but this
+# is the list a parent sees and edits, so it has to fit the 255-character cap.
+DEFAULT_ALLOWED_APPS = (
+    "com.whatsapp",
+    "com.google.android.apps.maps",
+    "com.google.android.apps.classroom",
+    "com.mapmywalk.android2",
+    "com.samsung.android.dialer",
+    "com.sec.android.app.clockpackage",
+    "com.sec.android.app.camera",
+)
+
 # Bound what one heartbeat may store; a phone with more apps than this is
 # reporting something other than its launcher list.
 MAX_INSTALLED_APPS = 500

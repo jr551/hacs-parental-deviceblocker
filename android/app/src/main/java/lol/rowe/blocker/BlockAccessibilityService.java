@@ -36,6 +36,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private String lastReportedPackage = "";
     private String lastReportedTitle = "";
     private long lastHeartbeat;
+    /** Elapsed time of the last report that carried a position. */
+    private long lastLocationReport;
     private PolicyDecision decision;
 
     @Override
@@ -196,6 +198,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
                     "",
                     false);
             MainActivity.applyPolicySnapshot(policy);
+            reportLocationIfDue();
             if (decision.shouldShowBlockScreen(policy.shouldCaptureForeground(), foregroundPackage)) {
                 showBlockScreen(policy);
             } else if (policy.shouldWarnGrace()) {
@@ -215,6 +218,28 @@ public final class BlockAccessibilityService extends AccessibilityService {
         } finally {
             pollRunning.set(false);
         }
+    }
+
+    /**
+     * Send a position as soon as one is available instead of waiting for the
+     * hourly batch. {@link PassiveLocation#latest} also asks a provider for a
+     * fresh fix when the cache is stale, so the poll both warms the cache and
+     * reports it. Reading a cached fix is free; the request itself is throttled
+     * inside PassiveLocation, so this adds no extra wakeups.
+     */
+    private void reportLocationIfDue() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastLocationReport < ReportSchedule.LOCATION_REPORT_INTERVAL_MS) {
+            return;
+        }
+        android.location.Location location = PassiveLocation.latest(this);
+        if (location == null) {
+            // Nothing recent enough yet; the request above will fill the cache.
+            return;
+        }
+        lastLocationReport = now;
+        String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
+        activityExecutor.execute(() -> postReport(application, "", true));
     }
 
     private void reportActivityIfNeeded(String packageName, String title) {

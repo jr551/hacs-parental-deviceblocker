@@ -323,6 +323,7 @@ class PcRuntime:
                 {
                     "device_id": self.device_id,
                     "device_name": self.device_name,
+                    "device_type": self.device_type,
                     "minutes_offline": int(
                         (now - self.last_seen).total_seconds() // 60
                     ),
@@ -334,6 +335,7 @@ class PcRuntime:
                 {
                     "device_id": self.device_id,
                     "device_name": self.device_name,
+                    "device_type": self.device_type,
                 },
             )
 

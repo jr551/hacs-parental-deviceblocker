@@ -3,7 +3,12 @@
 from homeassistant.components.text import TextEntity
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .apps import MAX_ALLOWED_APPS_LENGTH, normalize_allowed_apps, parse_allowed_apps
+from .apps import (
+    DEFAULT_ALLOWED_APPS,
+    MAX_ALLOWED_APPS_LENGTH,
+    normalize_allowed_apps,
+    parse_allowed_apps,
+)
 from .const import DEVICE_TYPE_ANDROID, DOMAIN
 from .entity import ParentalDeviceEntity
 
@@ -59,7 +64,9 @@ class AllowedAppsText(ParentalDeviceEntity, TextEntity, RestoreEntity):
 
     @property
     def native_value(self) -> str:
-        return self.runtime.allowed_apps
+        # An unset list shows the built-in default so a parent can see and edit
+        # what the phone will actually allow, rather than an empty box.
+        return self.runtime.allowed_apps or ", ".join(DEFAULT_ALLOWED_APPS)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

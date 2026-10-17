@@ -38,7 +38,7 @@ from .const import (
     PARENT_PIN_LOCKOUT_MINUTES,
     PARENT_PIN_MAX_ATTEMPTS,
 )
-from .apps import parse_allowed_apps
+from .apps import DEFAULT_ALLOWED_APPS, parse_allowed_apps
 from .family import family_peers
 from .pending import async_create_request, async_load_pending
 from .portal import (
@@ -221,7 +221,8 @@ class PcStateView(HomeAssistantView):
                 "points_hour_cost": POINTS_HOUR_COST,
                 "points_balance": _points_balance(request.app["hass"], runtime),
                 "wake_alarm": _wake_alarm(request.app["hass"], runtime),
-                "allowed_apps": parse_allowed_apps(runtime.allowed_apps),
+                "allowed_apps": parse_allowed_apps(runtime.allowed_apps)
+                or list(DEFAULT_ALLOWED_APPS),
                 "family": family_peers(
                     runtime,
                     _runtimes(hass),
