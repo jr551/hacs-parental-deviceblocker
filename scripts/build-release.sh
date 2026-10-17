@@ -19,26 +19,21 @@ run_dotnet() {
     dotnet "$@"
 }
 
-# The Windows runner has no `zip`, but it does ship bsdtar and 7-Zip. Pick
-# whichever archiver this host has so the same script works on macOS, Linux and
-# Windows. Python caches and macOS resource forks never belong in a release.
+# The Windows runner has no `zip`, but it does ship 7-Zip and bsdtar. Each
+# archiver spells exclusions differently, so use its own syntax rather than a
+# file list: a POSIX temp path from Git Bash is not a path a native archiver can
+# open, which is what broke the Windows job.
 zip_tree() {
   local archive="$1"
   local directory="$2"
-  local list
-  list="$(mktemp)"
-  find "$directory" \
-    \( -name '__pycache__' -o -name '._*' \) -prune -o \
-    -type f -print > "$list"
   rm -f "$archive"
   if command -v zip >/dev/null 2>&1; then
-    zip -q -@ "$archive" < "$list"
+    zip -qr "$archive" "$directory" -x '*/__pycache__/*' -x '*/._*'
   elif command -v 7z >/dev/null 2>&1; then
-    7z a -tzip -bso0 -bsp0 "$archive" -i@"$list" >/dev/null
+    7z a -tzip -bso0 -bsp0 "$archive" "$directory" -xr!__pycache__ -xr!._* >/dev/null
   else
-    tar -a -c -f "$archive" -T "$list"
+    tar -a -c -f "$archive" --exclude __pycache__ --exclude '._*' "$directory"
   fi
-  rm -f "$list"
 }
 
 rm -rf "$release_root"
