@@ -713,3 +713,41 @@ class PendingSetupButtonTests(EntityTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChallengeDecisionButtonTests(EntityTestCase):
+    """A parent answers a submitted challenge from the device page."""
+
+    def _submitted(self):
+        self.runtime.challenge_id = "challenge-1"
+        self.runtime.challenge_phrase = "feed the cat"
+        self.runtime.challenge_submitted_at = ha_stub.utcnow()
+        return self.runtime
+
+    async def test_the_pair_is_offered_only_while_a_submission_waits(self) -> None:
+        runtime = self._submitted()
+        approve = self._attach(BUTTON.ApproveChallengeButton(runtime))
+        reject = self._attach(BUTTON.RejectChallengeButton(runtime))
+
+        self.assertTrue(approve.available)
+        self.assertTrue(reject.available)
+
+        await approve.async_press()
+
+        self.assertEqual(runtime.challenge_state, "approved")
+        self.assertFalse(approve.available)
+        self.assertFalse(reject.available)
+
+    async def test_approving_leaves_the_photo_verdict_to_the_parent(self) -> None:
+        runtime = self._submitted()
+        reject = self._attach(BUTTON.RejectChallengeButton(runtime))
+
+        await reject.async_press()
+
+        self.assertEqual(runtime.challenge_state, "pending")
+        self.assertEqual(runtime.challenge_attempt, 2)
+
+    async def test_a_phone_without_a_challenge_has_nothing_to_press(self) -> None:
+        approve = self._attach(BUTTON.ApproveChallengeButton(self.runtime))
+        self.assertFalse(approve.available)
+        self.assertFalse(await self.runtime.async_approve_challenge())

@@ -223,8 +223,28 @@ class LocationTrackerTests(LocationTestCase):
                 "location_provider": None,
                 "reported_at": None,
                 "requested_at": None,
+                "request_pending": False,
+                "request_age_seconds": None,
             },
         )
+
+    async def test_a_request_the_phone_never_answered_stays_visible(self) -> None:
+        """A button that produced nothing must not look like a broken button.
+
+        A phone with the screen off can leave the request unanswered, and the
+        tracker used to sit at ``unknown`` with no explanation. While it is
+        outstanding the tracker says so, and how long it has been waiting.
+        """
+        tracker = TRACKER.LocationTracker(self.runtime)
+        self.assertFalse(tracker.extra_state_attributes["request_pending"])
+
+        await self.runtime.async_request_location()
+        attributes = tracker.extra_state_attributes
+
+        self.assertTrue(attributes["request_pending"])
+        self.assertIsNotNone(attributes["request_age_seconds"])
+        self.assertGreaterEqual(attributes["request_age_seconds"], 0)
+        self.assertIsNone(tracker.latitude)
 
     async def test_the_tracker_reports_the_fix_and_its_age(self) -> None:
         request_id = await self.runtime.async_request_location()

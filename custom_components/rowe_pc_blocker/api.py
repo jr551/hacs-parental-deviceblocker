@@ -229,7 +229,7 @@ class PcStateView(HomeAssistantView):
                 ),
                 "points_hour_cost": POINTS_HOUR_COST,
                 "points_balance": _points_balance(request.app["hass"], runtime),
-                "wake_alarm": _wake_alarm(request.app["hass"], runtime),
+                "wake_alarm": _wake_alarm(runtime),
                 "allowed_apps": parse_allowed_apps(runtime.allowed_apps)
                 or list(DEFAULT_ALLOWED_APPS),
                 "challenge": runtime.challenge_payload,
@@ -580,12 +580,14 @@ class PcPortalActionView(HomeAssistantView):
         return self.json({"ok": True})
 
 
-def _wake_alarm(hass: HomeAssistant, runtime) -> dict:
-    """Alarm for this device entry. A missing entry keeps the phone's last cache."""
+def _wake_alarm(runtime) -> dict:
+    """The alarm the phone reads on its state poll.
 
-    entry = hass.config_entries.async_get_entry(runtime.entry_id)
-    options = entry.options if entry is not None else {}
-    return wake_alarm_payload(options)
+    Built from the runtime rather than the config entry: the alarm entities
+    write runtime state, and reading options here would hide their change
+    until the entry reloaded.
+    """
+    return wake_alarm_payload(runtime.wake_alarm_options)
 
 
 def _points_balance(hass: HomeAssistant, runtime) -> int | None:

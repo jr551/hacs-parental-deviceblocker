@@ -1,7 +1,7 @@
 # Windows deploy checklist
 
 Use this before installing Parental Device Blocker on a child's PC. Windows
-**0.12.0** belongs with Home Assistant **0.12.0** or newer. The release assets
+\*\*0.13.0\*\* belongs with Home Assistant **0.13.0** or newer. The release assets
 are `ParentalDeviceBlocker-{version}-win-x64-setup.exe` (installer) and
 `ParentalDeviceBlocker-{version}-win-x64.zip` (portable payload); verify
 whichever you use against the release's `SHA256SUMS` first. The HACS zip does

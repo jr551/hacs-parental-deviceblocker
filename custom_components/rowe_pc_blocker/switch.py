@@ -9,14 +9,19 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, INITIAL_GRACE_SECONDS
+from .const import DEVICE_TYPE_ANDROID, DOMAIN, INITIAL_GRACE_SECONDS
 from .entity import ParentalDeviceEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
-    async_add_entities([PcBlockedSwitch(hass.data[DOMAIN][entry.entry_id])])
+    runtime = hass.data[DOMAIN][entry.entry_id]
+    entities = [PcBlockedSwitch(runtime)]
+    # A PC agent has no alarm to ring; only the phone gets these controls.
+    if runtime.device_type == DEVICE_TYPE_ANDROID:
+        entities.append(PcWakeAlarmSwitch(runtime))
+    async_add_entities(entities)
 
 
 class PcBlockedSwitch(ParentalDeviceEntity, SwitchEntity, RestoreEntity):
@@ -107,3 +112,30 @@ class PcBlockedSwitch(ParentalDeviceEntity, SwitchEntity, RestoreEntity):
                 else None
             ),
         }
+
+
+class PcWakeAlarmSwitch(ParentalDeviceEntity, SwitchEntity):
+    """Whether the phone's wake alarm rings.
+
+    A parent setting rather than an agent reading, so it stays settable while
+    the phone is offline. The change is runtime state, not a config option:
+    the phone picks it up on its next state poll and the integration does not
+    reload.
+    """
+
+    _attr_name = "Wake alarm"
+    _attr_icon = "mdi:alarm"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_wake_alarm"
+
+    @property
+    def is_on(self) -> bool:
+        return self.runtime.wake_alarm_enabled
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.runtime.async_update_wake_alarm(enabled=True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.runtime.async_update_wake_alarm(enabled=False)

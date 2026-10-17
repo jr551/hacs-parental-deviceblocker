@@ -358,6 +358,19 @@ final class Challenge {
             Context context, Policy fromServer, boolean pollFailed, boolean localOverrideActive) {
         if (!pollFailed && fromServer != null) {
             hold(context, fromServer.challenge);
+            // A local PIN unlock covers the block it was granted against. A
+            // block a parent starts afterwards — a fresh enforce_at — supersedes
+            // it, so turning the switch off and on always revokes a local unlock
+            // instead of leaving the phone unenforced for the rest of the hour.
+            if (localOverrideActive
+                    && fromServer.blocked
+                    && fromServer.enforceAt != null
+                    && LocalOverride.blockSupersedes(
+                            fromServer.enforceAt.toEpochMilli(),
+                            LocalOverride.grantedAtMillis(context))) {
+                LocalOverride.clear(context);
+                localOverrideActive = false;
+            }
         }
         return Policy.enforced(fromServer, pollFailed, localOverrideActive, held(context));
     }

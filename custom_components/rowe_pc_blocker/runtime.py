@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
 import secrets
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry
@@ -46,6 +46,16 @@ from .location import (
     request_is_live,
 )
 from .notifications import NotificationDump, is_newer
+from .wake_alarm import (
+    CONF_WAKE_ALARM_DAYS,
+    CONF_WAKE_ALARM_ENABLED,
+    CONF_WAKE_ALARM_TIME,
+    CONF_WAKE_ALARM_VOLUME,
+    DEFAULT_WAKE_DAYS,
+    DEFAULT_WAKE_TIME,
+    DEFAULT_WAKE_VOLUME,
+    normalize_wake_alarm_form,
+)
 
 if TYPE_CHECKING:
     from .screen_monitor import ScreenMonitor
@@ -112,6 +122,17 @@ class PcRuntime:
     # phone last reported. Both are empty for a PC.
     allowed_apps: str = ""
     installed_apps: list[dict] = field(default_factory=list)
+    # The wake alarm is a parent setting, not an agent reading. It lives in the
+    # runtime so the entities can change it instantly: writing config-entry
+    # options would reload the whole integration on every slider move. The
+    # options flow still seeds these, so an alarm configured there keeps
+    # working, but a value persisted by an entity wins over it.
+    wake_alarm_enabled: bool = False
+    wake_alarm_time: str = DEFAULT_WAKE_TIME
+    wake_alarm_days: list[str] = field(
+        default_factory=lambda: list(DEFAULT_WAKE_DAYS)
+    )
+    wake_alarm_volume: int = DEFAULT_WAKE_VOLUME
     # A chore challenge: the phone stays locked until the child types the
     # phrase back and a parent approves the photo. ``challenge_id`` is empty
     # when there is no challenge; ``challenge_submitted_at`` is set when the
@@ -262,9 +283,37 @@ class PcRuntime:
         """True when this id is the challenge the phone should be answering."""
         return bool(self.challenge_id) and challenge_id == self.challenge_id
 
+    def _seed_wake_alarm(self, data: dict) -> None:
+        """Take the alarm from the options only where the store has no value.
+
+        The options flow used to be the only way to set the alarm. Seeding
+        here keeps an existing configured alarm working after the upgrade,
+        while a value an entity has persisted wins over the options: the
+        runtime is the newer source once a parent has touched the controls.
+        """
+        entry = self.hass.config_entries.async_get_entry(self.entry_id)
+        options = entry.options if entry is not None else {}
+        raw: dict[str, Any] = {}
+        for key in (
+            CONF_WAKE_ALARM_ENABLED,
+            CONF_WAKE_ALARM_TIME,
+            CONF_WAKE_ALARM_DAYS,
+            CONF_WAKE_ALARM_VOLUME,
+        ):
+            if key in data:
+                raw[key] = data[key]
+            elif key in options:
+                raw[key] = options[key]
+        cleaned, _errors = normalize_wake_alarm_form(raw)
+        self.wake_alarm_enabled = cleaned[CONF_WAKE_ALARM_ENABLED]
+        self.wake_alarm_time = cleaned[CONF_WAKE_ALARM_TIME]
+        self.wake_alarm_days = cleaned[CONF_WAKE_ALARM_DAYS]
+        self.wake_alarm_volume = cleaned[CONF_WAKE_ALARM_VOLUME]
+
     async def async_load(self) -> None:
         self._store = Store(self.hass, 1, f"{__package__}.{self.device_id}")
         data = await self._store.async_load() or {}
+        self._seed_wake_alarm(data)
         self.block_requested_at = _parse_datetime(data.get("block_requested_at"))
         self.extension_used_at = _parse_datetime(data.get("extension_used_at"))
         self.extension_until = _parse_datetime(data.get("extension_until"))
@@ -292,6 +341,10 @@ class PcRuntime:
                 "extension_until": _format_datetime(self.extension_until),
                 "portal_reward_claims": sorted(self.portal_reward_claims),
                 "agent_stale": self.agent_stale,
+                "wake_alarm_enabled": self.wake_alarm_enabled,
+                "wake_alarm_time": self.wake_alarm_time,
+                "wake_alarm_days": list(self.wake_alarm_days),
+                "wake_alarm_volume": self.wake_alarm_volume,
                 "challenge_id": self.challenge_id,
                 "challenge_phrase": self.challenge_phrase,
                 "challenge_sent_at": _format_datetime(self.challenge_sent_at),
@@ -374,6 +427,56 @@ class PcRuntime:
         await self.async_save()
         self.notify()
         return self.extension_until
+
+    @property
+    def wake_alarm_options(self) -> dict[str, Any]:
+        """The alarm fields in the shape ``wake_alarm_payload`` reads."""
+        return {
+            CONF_WAKE_ALARM_ENABLED: self.wake_alarm_enabled,
+            CONF_WAKE_ALARM_TIME: self.wake_alarm_time,
+            CONF_WAKE_ALARM_DAYS: list(self.wake_alarm_days),
+            CONF_WAKE_ALARM_VOLUME: self.wake_alarm_volume,
+        }
+
+    async def async_update_wake_alarm(
+        self,
+        *,
+        enabled: bool | None = None,
+        at: str | None = None,
+        days: list[str] | None = None,
+        volume: float | None = None,
+    ) -> bool:
+        """Apply one validated alarm change, or reject the write.
+
+        Each entity sets one field, so the other current values are carried
+        into the validator: an enabled alarm with no days is not a valid
+        alarm, and a half-applied schedule would ring on the wrong morning.
+        False means a value was out of range or unreadable and nothing was
+        stored, which the entity surfaces by keeping its old state.
+        """
+        changes: dict[str, Any] = {}
+        if enabled is not None:
+            changes[CONF_WAKE_ALARM_ENABLED] = enabled
+        if at is not None:
+            changes[CONF_WAKE_ALARM_TIME] = at
+        if days is not None:
+            changes[CONF_WAKE_ALARM_DAYS] = days
+        if volume is not None:
+            changes[CONF_WAKE_ALARM_VOLUME] = volume
+        if not changes:
+            return False
+        cleaned, errors = normalize_wake_alarm_form(
+            {**self.wake_alarm_options, **changes}
+        )
+        if errors:
+            return False
+        self.wake_alarm_enabled = cleaned[CONF_WAKE_ALARM_ENABLED]
+        self.wake_alarm_time = cleaned[CONF_WAKE_ALARM_TIME]
+        self.wake_alarm_days = cleaned[CONF_WAKE_ALARM_DAYS]
+        self.wake_alarm_volume = cleaned[CONF_WAKE_ALARM_VOLUME]
+        await self.async_save()
+        self.notify()
+        return True
 
     async def async_send_challenge(self, phrase: str) -> None:
         """Start a new challenge. The phone shows it on its next state poll."""

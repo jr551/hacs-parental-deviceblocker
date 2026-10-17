@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+
+- **A parent answers a submitted challenge from the device page.** Accept and Send back buttons sit next to the evidence photo instead of leaving `approve_challenge` / `reject_challenge` as service calls only. `button.<device>_approve_challenge` and `button.<device>_reject_challenge` are available exactly while a submission is waiting, and the same rule drives a conditional card on the dashboard.
+- **The wake alarm is a set of controls, not an options form.** `switch.<device>_wake_alarm`, `time.<device>_wake_alarm_time`, `select.<device>_wake_alarm_days` (Every day / Weekdays / Weekends / Custom, with the real list in a `days` attribute) and `number.<device>_wake_alarm_volume` set the alarm from the device page or a dashboard. They write runtime state, so moving a slider never reloads the integration, and the change reaches the phone on its next state poll. An alarm configured through the options flow still seeds the controls, and a value set by an entity wins afterwards.
+- **A location request that is still waiting says so.** `device_tracker.<device>_location` carries `request_pending` and `request_age_seconds`, so a request the phone has not answered reads as outstanding rather than as a button that did nothing.
+
+### Fixed
+
+- **A local PIN unlock no longer hides a parent's block.** The phone's own unlock — granted when Home Assistant refuses an override or cannot be reached — was stored with only a deadline, and `Policy.enforced` let it turn every successful poll back into "unblocked" for the whole hour. Nothing could revoke it: `LocalOverride.clear` had no caller, so turning the switch off and on, or pressing block again, changed nothing and the phone kept reporting `monitoring` while Home Assistant said the block was `enforced`. The override now records when it was granted, and a block a parent starts afterwards — a fresh `enforce_at` — supersedes it, so toggling the switch revokes a local unlock. An override written by an older build has no grant timestamp, so its grant is derived from its deadline, which is what makes an existing stuck phone recover on its first poll after updating.
+- **The enforcement sensor says why a block is not in force.** `sensor.<device>_enforcement_status` reports `monitoring` with a `detail` that names the cause — a local PIN unlock and how long it has left, a grace period and the seconds remaining, or an active extension — instead of an empty attribute a parent has to guess at.
+- **The release build no longer fails on Windows.** `scripts/build-release.sh` called `zip`, which the Windows runner does not have, so the Windows installer job died before the GitHub release was created. It now uses `zip`, `7z` or `tar` — whichever the host provides — and the file list feeds the archiver, so `__pycache__` and macOS resource forks still stay out of the HACS zip.
+
 ## 0.12.0
 
 ### Added

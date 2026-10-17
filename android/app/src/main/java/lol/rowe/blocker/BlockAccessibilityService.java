@@ -48,6 +48,9 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private volatile String lastPostedStatus = "";
     /** The location request id this phone last answered or gave up on. */
     private volatile String lastLocationRequest = "";
+    // One requested fix in flight at a time; a poll every minute must not
+    // stack fetches while the provider is slow.
+    private final AtomicBoolean locationFetchRunning = new AtomicBoolean();
     private PolicyDecision decision;
 
     @Override
@@ -218,7 +221,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
             refreshPendingUpdate();
             publishStatus(
                     policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
-                    "",
+                    policy.blocked || !policy.blockRequested ? "" : notEnforcingReason(policy),
                     false);
             MainActivity.applyPolicySnapshot(policy);
             answerLocationRequest(policy);
@@ -284,9 +287,15 @@ public final class BlockAccessibilityService extends AccessibilityService {
 
     /**
      * Answer a parent's location request. Nothing touches the provider until
-     * one arrives, and each request id is answered at most once: a fix that
-     * cannot be fetched inside the timeout is left unanswered rather than
-     * filled with a stale position.
+     * one arrives, and a request is only recorded as answered once the fix has
+     * been posted.
+     *
+     * <p>A request used to be recorded before the fetch, so the first attempt
+     * that timed out — the common case on a phone whose screen is off and whose
+     * background work the OEM has frozen — silently swallowed the request for
+     * good and the parent's button did nothing. Until it is answered the request
+     * stays pending, so the next poll tries again, and one fetch is in flight at
+     * a time so a slow provider cannot pile up threads.
      */
     private void answerLocationRequest(Policy policy) {
         Policy.LocationRequest request = policy.locationRequest;
@@ -297,20 +306,22 @@ public final class BlockAccessibilityService extends AccessibilityService {
             // Never prompt from the background; the setup screen offers the button.
             return;
         }
-        lastLocationRequest = request.id;
-        OnDemandLocation.rememberRequestId(this, request.id);
+        if (!locationFetchRunning.compareAndSet(false, true)) {
+            return;
+        }
         locationExecutor.execute(() -> {
-            android.location.Location fix = OnDemandLocation.fetch(this, OnDemandLocation.TIMEOUT_MILLIS);
-            if (fix == null) {
-                return;
-            }
-            long ageSeconds = Math.max(0L, (System.currentTimeMillis() - fix.getTime()) / 1000L);
-            Double latitude = fix.getLatitude();
-            Double longitude = fix.getLongitude();
-            if (!OnDemandLocation.isSendable(latitude, longitude, ageSeconds)) {
-                return;
-            }
             try {
+                android.location.Location fix =
+                        OnDemandLocation.fetch(this, OnDemandLocation.TIMEOUT_MILLIS);
+                if (fix == null) {
+                    return;
+                }
+                long ageSeconds = Math.max(0L, (System.currentTimeMillis() - fix.getTime()) / 1000L);
+                Double latitude = fix.getLatitude();
+                Double longitude = fix.getLongitude();
+                if (!OnDemandLocation.isSendable(latitude, longitude, ageSeconds)) {
+                    return;
+                }
                 AppConfig config = AppConfig.load(this);
                 if (!config.isConfigured()) {
                     return;
@@ -322,9 +333,15 @@ public final class BlockAccessibilityService extends AccessibilityService {
                         fix.hasAccuracy() ? fix.getAccuracy() : 0f,
                         fix.getProvider() == null ? "" : fix.getProvider(),
                         ageSeconds);
+                // Only now is the request spent: a fetch or an upload that
+                // failed leaves it pending for the next poll.
+                lastLocationRequest = request.id;
+                OnDemandLocation.rememberRequestId(this, request.id);
             } catch (Exception ignored) {
                 // A failed upload must not affect blocking, the challenge or the
-                // poll, and the request is not retried in a loop.
+                // poll; the request stays pending and is retried on the next one.
+            } finally {
+                locationFetchRunning.set(false);
             }
         });
     }
@@ -428,6 +445,28 @@ public final class BlockAccessibilityService extends AccessibilityService {
         AppUpdater.challengeActive = currentPolicy.challengePending();
         MainActivity.applyPolicySnapshot(currentPolicy);
         publishStatus(status, detail == null ? "" : detail, true);
+    }
+
+    /**
+     * Why a block a parent asked for is not in force yet, in words a parent can
+     * act on. A local PIN unlock used to silence enforcement for the rest of
+     * the hour with no visible cause; naming it here makes that recoverable.
+     */
+    private String notEnforcingReason(Policy policy) {
+        if (LocalOverride.isActive(this)) {
+            long minutes = Math.max(
+                    1L, (LocalOverride.activeUntil(this) - System.currentTimeMillis()) / 60_000L);
+            return "Local PIN unlock active for another " + minutes
+                    + " minute(s); turn the block off and on to revoke it.";
+        }
+        if (policy.shouldWarnGrace()) {
+            return "Grace period: enforcement starts in "
+                    + policy.secondsUntilEnforcement() + " second(s).";
+        }
+        if (policy.isExtensionActive()) {
+            return "An extension is holding the block off.";
+        }
+        return "The agent has not applied the block yet.";
     }
 
     private void publishStatus(String status, String detail, boolean force) {

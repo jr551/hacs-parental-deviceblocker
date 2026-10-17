@@ -7,6 +7,7 @@ of the phone's alarm-stream maximum. Bit 0 of ``days`` is Monday.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 CONF_WAKE_ALARM_ENABLED = "wake_alarm_enabled"
@@ -105,6 +106,10 @@ def _volume_exact(value: Any) -> int | None:
     try:
         number = float(value)
     except (TypeError, ValueError):
+        return None
+    # A non-finite volume would raise inside round() rather than fail the
+    # range check, so treat it as the same unreadable value as "loud".
+    if not math.isfinite(number):
         return None
     if abs(number - round(number)) > 1e-6:
         return None
