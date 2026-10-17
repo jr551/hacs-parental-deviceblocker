@@ -77,6 +77,21 @@ def normalize_allowed_apps(value: str) -> str:
     return normalized
 
 
+def append_allowed_app(allowed_apps: str, package: str) -> str:
+    """The parent's list with one package added, keeping the built-in defaults.
+
+    An empty list means the phone falls back to ``DEFAULT_ALLOWED_APPS``, so
+    adding an app to an empty list has to spell those defaults out or the
+    approval would drop them. Raises ValueError when the result would not fit
+    the text entity's cap, so a parent can shorten the list and try again.
+    """
+
+    packages = parse_allowed_apps(allowed_apps) or list(DEFAULT_ALLOWED_APPS)
+    if package not in packages:
+        packages.append(package)
+    return normalize_allowed_apps(", ".join(packages))
+
+
 def parse_installed_apps(payload: dict) -> list[dict]:
     """Bound and clean the installed-app list reported by a phone."""
 

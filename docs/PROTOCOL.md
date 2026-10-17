@@ -206,6 +206,53 @@ These two paths take no device credentials — the phone has none yet.
 
 **Response 404:** `{"error": "That setup request has expired."}`
 
+## Asking a parent to allow an app (Android)
+
+A blocked phone shows the block screen; when the child taps an app that is not
+allowed, the phone asks a parent to allow it. The request waits for a parent on
+the dashboard and expires after **30 minutes**, like a setup request. There is
+no polling endpoint: the phone already polls `GET …/state` about once a minute,
+so the block screen clears itself once the package appears in `allowed_apps`.
+
+### `POST /api/rowe_pc_blocker/{device_id}/unblock_request`
+
+Device credentials required, like every other device endpoint.
+
+**Request:**
+
+```json
+{
+  "package": "com.roblox.client",
+  "label": "Roblox"
+}
+```
+
+`label` is what the parent sees on the dashboard; it is truncated to 128 characters.
+
+**Response 200** — the request is waiting for a parent:
+
+```json
+{
+  "ok": true,
+  "request_id": "0123456789abcdef0123456789abcdef",
+  "status": "pending"
+}
+```
+
+**Response 400** — `package` is not an Android package name: `{"error": "That is not an Android package name."}`
+
+**Response 409** — the app is already allowed, either by the parent's list or by the agent's built-in defaults: `{"error": "That app is already allowed on this phone."}`
+
+**Response 409** — a request for that app is already waiting: `{"error": "A parent already has a request for that app."}`
+
+At most one pending request exists per device and package. Approving appends the
+package to that device's allowlist (the same value the `text.<device>_allowed_apps`
+entity holds and the state payload sends) and removes the request; rejecting just
+removes it. The dashboard shows `sensor.<device>_unblock_requests` (state = count,
+with a `requests` attribute) and a dynamic
+`button.rowe_pc_blocker_approve_unblock_<request_id>` /
+`button.rowe_pc_blocker_reject_unblock_<request_id>` pair per request.
+
 ## Contract tests
 
 Machine-readable pins live in `custom_components/rowe_pc_blocker/protocol_surface.py` and `tests/test_protocol.py`.

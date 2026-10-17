@@ -36,6 +36,7 @@ POST_VIEWS = frozenset(
     {
         "PcActivityView",
         "PcExtensionView",
+        "PcUnblockRequestView",
         "PcPortalActionView",
         "PcParentOverrideView",
         "PcPointsHourView",
@@ -98,6 +99,24 @@ class ProtocolSurfaceTests(unittest.TestCase):
         status_code, body = PROVISION.collection_response(request)
         self.assertEqual(status_code, 200)
         self.assertEqual(set(body), PROTOCOL.PROVISION_APPROVED_KEYS)
+
+    def test_the_unblock_request_fixture_matches_the_documented_keys(self) -> None:
+        self.assertEqual(
+            set(_fixture("unblock_request.json")), PROTOCOL.UNBLOCK_REQUEST_KEYS
+        )
+
+    def test_the_unblock_pending_body_is_the_documented_shape(self) -> None:
+        request = PROVISION.UnblockRequest(
+            request_id="b" * 32,
+            device_id="casey-phone",
+            package="com.roblox.client",
+            label="Roblox",
+            requested_at=datetime(2026, 10, 17, tzinfo=timezone.utc),
+        )
+        body = PROVISION.unblock_pending_body(request)
+        self.assertEqual(set(body), PROTOCOL.UNBLOCK_PENDING_KEYS)
+        self.assertEqual(body["request_id"], "b" * 32)
+        self.assertEqual(body["status"], PROVISION.STATUS_PENDING)
 
 
 if __name__ == "__main__":

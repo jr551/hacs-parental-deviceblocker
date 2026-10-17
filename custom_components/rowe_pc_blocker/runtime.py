@@ -25,6 +25,7 @@ from .agent_status import (
 from .apps import parse_installed_apps
 from .const import (
     DEFAULT_MESSAGE,
+    DOMAIN,
     EVENT_AGENT_RECOVERED,
     EVENT_AGENT_STALE,
     EXTENSION_COOLDOWN_SECONDS,
@@ -338,6 +339,18 @@ class PcRuntime:
                     "device_type": self.device_type,
                 },
             )
+
+
+def runtime_for_device(hass: HomeAssistant, device_id: str) -> PcRuntime | None:
+    """The runtime for one configured device, or None when it is not set up."""
+    return next(
+        (
+            item
+            for item in hass.data.get(DOMAIN, {}).values()
+            if getattr(item, "device_id", None) == device_id
+        ),
+        None,
+    )
 
 
 def _parse_datetime(value: str | None) -> datetime | None:

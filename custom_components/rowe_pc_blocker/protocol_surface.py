@@ -9,6 +9,7 @@ API_ROUTES: tuple[dict[str, str | bool], ...] = (
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/state"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/activity"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/extension"},
+    {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/unblock_request"},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal", "query_key_ok": True},
     {"method": "GET", "path": "/api/rowe_pc_blocker/{device_id}/portal/data"},
     {"method": "POST", "path": "/api/rowe_pc_blocker/{device_id}/portal/action"},
@@ -70,6 +71,10 @@ PROVISION_REQUEST_KEYS = frozenset({"child_name"})
 PROVISION_PENDING_KEYS = frozenset({"status", "request_id", "child_name"})
 
 PROVISION_APPROVED_KEYS = frozenset({"status", "device_id", "api_key", "child_name"})
+
+UNBLOCK_REQUEST_KEYS = frozenset({"package", "label"})
+
+UNBLOCK_PENDING_KEYS = frozenset({"ok", "request_id", "status"})
 
 ACTIVITY_OK_BODY = {"ok": True}
 

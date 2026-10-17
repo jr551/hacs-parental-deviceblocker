@@ -5,7 +5,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import DEVICE_TYPE_ANDROID, DOMAIN, SIGNAL_PENDING
 from .entity import ParentalDeviceEntity
-from .pending import awaiting_requests, claim_pending_entities
+from .pending import awaiting_requests, claim_pending_entities, unblock_requests
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
@@ -22,6 +22,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     ]
     if runtime.device_type == DEVICE_TYPE_ANDROID:
         entities.append(InstalledAppsSensor(runtime))
+        entities.append(UnblockRequestsSensor(runtime))
     async_add_entities(entities)
     # The pending-setups sensor is integration-wide, so only the entry that
     # owns the pending entities creates it.
@@ -255,6 +256,47 @@ class InstalledAppsSensor(ParentalDeviceEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         return {"apps": [dict(app) for app in self.runtime.installed_apps]}
+
+
+class UnblockRequestsSensor(ParentalDeviceEntity, SensorEntity):
+    """The apps this phone has asked a parent to allow.
+
+    The phone polls its state every minute, so an approved app clears the block
+    screen by itself; this sensor is how a parent sees what is waiting.
+    """
+
+    _attr_name = "Unblock requests"
+    _attr_icon = "mdi:lock-open-alert"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_unblock_requests"
+
+    @property
+    def native_value(self) -> int:
+        return len(unblock_requests(self.hass, self.runtime.device_id))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "requests": [
+                {
+                    "request_id": request.request_id,
+                    "package": request.package,
+                    "label": request.label,
+                    "requested_at": request.requested_at.isoformat(),
+                }
+                for request in unblock_requests(self.hass, self.runtime.device_id)
+            ]
+        }
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_PENDING, self.async_write_ha_state
+            )
+        )
 
 
 class PendingSetupsSensor(SensorEntity):

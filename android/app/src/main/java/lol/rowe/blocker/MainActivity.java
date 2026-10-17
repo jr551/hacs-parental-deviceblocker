@@ -5,6 +5,8 @@ import android.app.AlertDialog;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
@@ -40,6 +42,8 @@ public final class MainActivity extends Activity {
     static final String EXTRA_EXTENSION_UNTIL = "extension_until";
     static final String EXTRA_UNINSTALL_GUARD = "uninstall_guard";
     static final String EXTRA_ALLOWED_APPS = "allowed_apps";
+    /** The disallowed app the block screen was raised for, from the service. */
+    static final String EXTRA_BLOCKED_PACKAGE = "blocked_package";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
@@ -53,13 +57,20 @@ public final class MainActivity extends Activity {
     private TextView blockMessage;
     private TextView blockCountdown;
     private TextView familyStatus;
+    private TextView blockLastApp;
+    private TextView blockRequestStatus;
     private Button extensionButton;
     private Button pointsHourButton;
+    private Button requestUnblockButton;
     private GridLayout allowedApps;
     private EditText homeAssistantUrl;
     private EditText childName;
     private View moreSection;
     private volatile Policy currentPolicy = Policy.UNBLOCKED;
+    /** The disallowed app this block screen was raised for, or "" when unknown. */
+    private String blockedPackage = "";
+    /** The name shown for {@link #blockedPackage}. */
+    private String blockedAppLabel = "";
     /** Local PIN unlock for changing a phone that is already set up. */
     private boolean setupUnlocked;
     private String pendingAfterPin;
@@ -96,8 +107,11 @@ public final class MainActivity extends Activity {
         blockMessage = findViewById(R.id.blockMessage);
         blockCountdown = findViewById(R.id.blockCountdown);
         familyStatus = findViewById(R.id.familyStatus);
+        blockLastApp = findViewById(R.id.blockLastApp);
+        blockRequestStatus = findViewById(R.id.blockRequestStatus);
         extensionButton = findViewById(R.id.extensionButton);
         pointsHourButton = findViewById(R.id.pointsHourButton);
+        requestUnblockButton = findViewById(R.id.requestUnblockButton);
         allowedApps = findViewById(R.id.allowedApps);
         homeAssistantUrl = findViewById(R.id.homeAssistantUrl);
         childName = findViewById(R.id.childName);
@@ -114,6 +128,7 @@ public final class MainActivity extends Activity {
         findViewById(R.id.wakePermissionButton).setOnClickListener(view -> requestExactAlarmPermission());
         extensionButton.setOnClickListener(view -> requestExtension());
         pointsHourButton.setOnClickListener(view -> requestPointsHour());
+        requestUnblockButton.setOnClickListener(view -> requestUnblock());
         findViewById(R.id.parentOverrideButton)
                 .setOnClickListener(view -> promptForParentOverride());
 
@@ -124,6 +139,7 @@ public final class MainActivity extends Activity {
             showUninstallGuard();
         } else if (getIntent().getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
             setupScroll.setVisibility(View.GONE);
+            blockedPackage = blockedPackageFrom(getIntent());
             showBlocked(policyFromIntent(getIntent()));
         } else {
             showSetupForm();
@@ -145,6 +161,7 @@ public final class MainActivity extends Activity {
             showUninstallGuard();
         } else if (intent.getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
             uninstallGuard = false;
+            blockedPackage = blockedPackageFrom(intent);
             showBlocked(policyFromIntent(intent));
         }
     }
@@ -533,7 +550,14 @@ public final class MainActivity extends Activity {
         BlockAccessibilityService.applyPolicySnapshot(policy);
         if (policy.blockRequested || policy.blocked) {
             uninstallGuard = false;
-            showBlocked(policy);
+            if (blockedPanel.getVisibility() == View.VISIBLE && blockedAppAllowed(policy)) {
+                // The parent allowed the app this screen was raised for. Leave so the
+                // child can go back to it; the service raises the screen again for any
+                // other disallowed app.
+                finish();
+            } else {
+                showBlocked(policy);
+            }
         } else if (uninstallGuard) {
             showUninstallGuard();
         } else if (blockedPanel.getVisibility() == View.VISIBLE) {
@@ -557,6 +581,7 @@ public final class MainActivity extends Activity {
         blockMessage.setText(policy.message);
         refreshAllowedApps();
         refreshFamilyStatus();
+        refreshBlockedApp();
         if (policy.blocked) {
             blockTitle.setText("This phone is paused");
             blockCountdown.setText("The apps below stay available until a parent unpauses this phone.");
@@ -625,6 +650,9 @@ public final class MainActivity extends Activity {
         blockMessage.setText("A parent has to turn uninstall protection off before this app can be removed.");
         blockCountdown.setText("Leave Settings to go back to the phone.");
         familyStatus.setVisibility(View.GONE);
+        blockLastApp.setVisibility(View.GONE);
+        requestUnblockButton.setVisibility(View.GONE);
+        blockRequestStatus.setVisibility(View.GONE);
         extensionButton.setVisibility(View.GONE);
         pointsHourButton.setVisibility(View.GONE);
         refreshAllowedApps();
@@ -702,6 +730,100 @@ public final class MainActivity extends Activity {
         String line = FamilyStatus.line(peer, System.currentTimeMillis());
         familyStatus.setText(line);
         familyStatus.setVisibility(line.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    /**
+     * The app the child was blocked on, with the button that asks a parent to
+     * allow it. Launcher and other non-app windows are not something a parent
+     * can allow, so they show nothing.
+     */
+    private void refreshBlockedApp() {
+        String packageName = blockedPackage;
+        if (packageName.isEmpty() || !isLaunchableApp(packageName)) {
+            blockedAppLabel = "";
+            blockLastApp.setVisibility(View.GONE);
+            requestUnblockButton.setVisibility(View.GONE);
+            blockRequestStatus.setVisibility(View.GONE);
+            return;
+        }
+        blockedAppLabel = appLabel(packageName);
+        blockLastApp.setText("Last app used: " + blockedAppLabel);
+        blockLastApp.setVisibility(View.VISIBLE);
+        boolean asked = !UnblockRequest.mayRequest(
+                UnblockRequest.lastRequestAt(this, packageName), System.currentTimeMillis());
+        requestUnblockButton.setVisibility(View.VISIBLE);
+        requestUnblockButton.setEnabled(!asked);
+        blockRequestStatus.setText(asked ? "Asked a parent to allow " + blockedAppLabel + "." : "");
+        blockRequestStatus.setVisibility(asked ? View.VISIBLE : View.GONE);
+    }
+
+    /** Ask a parent to allow the app the child was blocked on. */
+    private void requestUnblock() {
+        final String packageName = blockedPackage;
+        final String label = blockedAppLabel;
+        if (packageName.isEmpty() || label.isEmpty()) {
+            return;
+        }
+        if (!UnblockRequest.mayRequest(
+                UnblockRequest.lastRequestAt(this, packageName), System.currentTimeMillis())) {
+            blockRequestStatus.setText("Asked a parent to allow " + label + ".");
+            blockRequestStatus.setVisibility(View.VISIBLE);
+            requestUnblockButton.setEnabled(false);
+            return;
+        }
+        requestUnblockButton.setEnabled(false);
+        blockRequestStatus.setText("Asking a parent to allow " + label + "…");
+        blockRequestStatus.setVisibility(View.VISIBLE);
+        executor.execute(() -> {
+            UnblockRequest.Outcome outcome;
+            try {
+                outcome = new HomeAssistantClient(AppConfig.load(this))
+                        .requestUnblock(packageName, label);
+            } catch (Exception exception) {
+                outcome = UnblockRequest.Outcome.failed(
+                        "Could not reach Home Assistant. Please try again.");
+            }
+            final UnblockRequest.Outcome result = outcome;
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                blockRequestStatus.setText(result.message);
+                blockRequestStatus.setVisibility(View.VISIBLE);
+                if (result.accepted) {
+                    UnblockRequest.remember(this, packageName, System.currentTimeMillis());
+                    requestUnblockButton.setEnabled(false);
+                } else {
+                    requestUnblockButton.setEnabled(true);
+                }
+            });
+        });
+    }
+
+    /** The app's name for the block screen, or the package name when it has none. */
+    private String appLabel(String packageName) {
+        try {
+            ApplicationInfo info = getPackageManager().getApplicationInfo(packageName, 0);
+            CharSequence label = getPackageManager().getApplicationLabel(info);
+            return UnblockRequest.label(packageName, label == null ? null : label.toString());
+        } catch (PackageManager.NameNotFoundException exception) {
+            return UnblockRequest.label(packageName, null);
+        }
+    }
+
+    /** True when this package is an app the child can open, not launcher chrome. */
+    private boolean isLaunchableApp(String packageName) {
+        return getPackageManager().getLaunchIntentForPackage(packageName) != null;
+    }
+
+    private static String blockedPackageFrom(Intent intent) {
+        String packageName = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE);
+        return packageName == null ? "" : packageName.trim();
+    }
+
+    /** True when the parent has allowed the app this block screen was raised for. */
+    private boolean blockedAppAllowed(Policy policy) {
+        return !blockedPackage.isEmpty() && policy.allowedApps.contains(blockedPackage);
     }
 
     private void refreshAllowedApps() {

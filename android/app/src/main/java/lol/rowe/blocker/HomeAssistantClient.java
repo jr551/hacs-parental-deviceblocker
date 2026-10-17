@@ -141,6 +141,18 @@ final class HomeAssistantClient {
         return error;
     }
 
+    /** Home Assistant's error text, or "" when the body carries none. */
+    private static String errorText(String body) {
+        if (body == null || body.trim().isEmpty()) {
+            return "";
+        }
+        try {
+            return provisionError(new JSONObject(body), "");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
     /** The two calls the setup flow makes, bound to one Home Assistant address. */
     static final class ProvisionTransport implements ProvisionFlow.Transport {
         private final String homeAssistantUrl;
@@ -311,6 +323,36 @@ final class HomeAssistantClient {
                 // Fall through to the generic message below.
             }
             return "Home Assistant refused the override (" + status + ").";
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /**
+     * POST /api/rowe_pc_blocker/{device_id}/unblock_request. Asks a parent to
+     * add this app to the phone's allow-list; the request expires on Home
+     * Assistant's side, and the phone sees the result on its next policy poll.
+     */
+    UnblockRequest.Outcome requestUnblock(String packageName, String label) throws Exception {
+        HttpURLConnection connection = open("unblock_request", "POST");
+        try {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            byte[] bytes = new JSONObject()
+                    .put("package", packageName)
+                    .put("label", label)
+                    .toString()
+                    .getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 400
+                    ? connection.getErrorStream()
+                    : connection.getInputStream();
+            String body = stream == null ? "" : readAll(stream);
+            return UnblockRequest.fromResponse(status, errorText(body), label);
         } finally {
             connection.disconnect();
         }

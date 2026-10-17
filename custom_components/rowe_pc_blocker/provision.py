@@ -1,10 +1,14 @@
-"""Approve a phone's setup request from Home Assistant.
+"""Approve a phone's request from Home Assistant.
 
 A parent types the child's name and the Home Assistant address on the phone.
 The phone asks to be set up, and Home Assistant holds that request as pending
 until a parent approves or rejects it from the dashboard. Only an approved
 request hands the phone its device id and API key, so a random internet client
 cannot mint keys on its own.
+
+A set-up phone asks the same way when a child wants one blocked app allowed:
+the request waits for a parent, and approving it appends the package to that
+device's allowlist.
 
 The rules live here as pure functions so they can be tested without a running
 Home Assistant. ``pending.py`` owns the storage file and the approve/reject
@@ -86,6 +90,56 @@ class PendingRequest:
             status=status,
             device_id=str(data.get("device_id", "")),
             api_key=str(data.get("api_key", "")),
+        )
+
+
+@dataclass
+class UnblockRequest:
+    """One app a blocked phone has asked a parent to allow.
+
+    The phone shows the block screen; the child taps an app and asks a parent
+    to allow it. Approving appends the package to the device's allowlist, so
+    the phone's next state poll clears the block screen by itself.
+    """
+
+    request_id: str
+    device_id: str
+    package: str
+    label: str
+    requested_at: datetime
+
+    def is_expired(self, now: datetime, ttl_seconds: int = PENDING_TTL_SECONDS) -> bool:
+        return now - self.requested_at >= timedelta(seconds=ttl_seconds)
+
+    def to_dict(self) -> dict:
+        return {
+            "request_id": self.request_id,
+            "device_id": self.device_id,
+            "package": self.package,
+            "label": self.label,
+            "requested_at": self.requested_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> UnblockRequest | None:
+        """Rebuild one stored request, or None when the record is unusable."""
+        try:
+            request_id = str(data["request_id"]).strip()
+            device_id = str(data["device_id"]).strip()
+            package = str(data["package"]).strip()
+            requested_at = datetime.fromisoformat(str(data["requested_at"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not request_id or not device_id or not package:
+            return None
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=timezone.utc)
+        return cls(
+            request_id=request_id,
+            device_id=device_id,
+            package=package,
+            label=str(data.get("label", "")),
+            requested_at=requested_at,
         )
 
 
@@ -220,6 +274,16 @@ def collection_response(request: PendingRequest | None) -> tuple[int, dict]:
     return 200, {"status": STATUS_PENDING}
 
 
+def unblock_pending_body(request: UnblockRequest) -> dict:
+    """Answer a phone whose request is now waiting for a parent.
+
+    The phone needs nothing else: it polls its state every minute and sees the
+    package in ``allowed_apps`` once a parent approves.
+    """
+
+    return {"ok": True, "request_id": request.request_id, "status": STATUS_PENDING}
+
+
 class PendingProvisionStore:
     """Pending setup requests with serialisation; persistence is injected.
 
@@ -309,3 +373,89 @@ class PendingProvisionStore:
             return None
         request.status = STATUS_REJECTED
         return request
+
+
+class PendingUnblockStore:
+    """Apps blocked phones have asked a parent to allow.
+
+    One request per device and package: a phone that asks twice for the same
+    app is answered with the request a parent is already looking at. Every read
+    prunes expired requests, so an expired request can never be approved.
+    """
+
+    def __init__(self) -> None:
+        self._requests: dict[str, UnblockRequest] = {}
+
+    def load(self, data: dict | None) -> None:
+        self._requests = {}
+        for raw in (data or {}).get("unblock_requests", []):
+            if not isinstance(raw, dict):
+                continue
+            request = UnblockRequest.from_dict(raw)
+            if request is not None:
+                self._requests[request.request_id] = request
+
+    def dump(self) -> dict:
+        return {
+            "unblock_requests": [
+                request.to_dict() for request in self._requests.values()
+            ]
+        }
+
+    def prune(self, now: datetime) -> list[UnblockRequest]:
+        """Drop expired requests and return them."""
+        expired = [
+            request for request in self._requests.values() if request.is_expired(now)
+        ]
+        for request in expired:
+            self._requests.pop(request.request_id, None)
+        return expired
+
+    def create(
+        self, device_id: str, package: str, label: str, now: datetime
+    ) -> UnblockRequest:
+        request = UnblockRequest(
+            request_id=new_request_id(),
+            device_id=device_id,
+            package=package,
+            label=label,
+            requested_at=now,
+        )
+        self._requests[request.request_id] = request
+        return request
+
+    def get(self, request_id: str, now: datetime) -> UnblockRequest | None:
+        self.prune(now)
+        return self._requests.get(request_id)
+
+    def list(self, now: datetime) -> list[UnblockRequest]:
+        self.prune(now)
+        return list(self._requests.values())
+
+    def for_device(self, device_id: str, now: datetime) -> list[UnblockRequest]:
+        """The live requests one device is waiting on."""
+        self.prune(now)
+        return [
+            request
+            for request in self._requests.values()
+            if request.device_id == device_id
+        ]
+
+    def pending_for(
+        self, device_id: str, package: str, now: datetime
+    ) -> UnblockRequest | None:
+        """The request already waiting for this device and package, if any."""
+        self.prune(now)
+        return next(
+            (
+                request
+                for request in self._requests.values()
+                if request.device_id == device_id and request.package == package
+            ),
+            None,
+        )
+
+    def remove(self, request_id: str, now: datetime) -> bool:
+        """Drop one answered request. True when it was still live."""
+        self.prune(now)
+        return self._requests.pop(request_id, None) is not None

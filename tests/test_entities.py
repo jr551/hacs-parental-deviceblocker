@@ -324,7 +324,7 @@ class PendingSetupButtonTests(EntityTestCase):
     async def test_approving_creates_the_phone_and_removes_the_buttons(self) -> None:
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         self.assertEqual(len(added), 2)
         approve = next(
             button for button in added if button._action == BUTTON.APPROVE
@@ -354,7 +354,7 @@ class PendingSetupButtonTests(EntityTestCase):
         )
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         approve = next(button for button in added if button._action == BUTTON.APPROVE)
 
         await approve.async_press()
@@ -372,7 +372,7 @@ class PendingSetupButtonTests(EntityTestCase):
     async def test_an_expired_request_loses_its_buttons(self) -> None:
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         self.assertEqual(len(added), 2)
         sweep, interval = self.hass.intervals[0]
         self.assertEqual(interval, timedelta(seconds=60))
@@ -391,7 +391,7 @@ class PendingSetupButtonTests(EntityTestCase):
     async def test_rejecting_answers_the_phone_without_creating_anything(self) -> None:
         request = await self._pending_request()
         added: list = []
-        manager = BUTTON.PendingSetupButtons(self.hass, added.extend)
+        manager = BUTTON.PendingRequestButtons(self.hass, added.extend)
         reject = next(button for button in added if button._action == BUTTON.REJECT)
 
         await reject.async_press()

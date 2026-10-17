@@ -20,7 +20,6 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 - [ ] Device type: Android phone. Store each API key in a parent password manager.
 - [ ] Set a distinct Home Assistant parent-override PIN, or leave the override disabled on purpose. This PIN is not the phone's local configuration PIN.
 - [ ] Choose an HTTPS Home Assistant URL that the phone can reach on Wi-Fi and on mobile data. Plain HTTP is accepted only for a local address.
-- [ ] Server-mediated S3 backup was removed in integration 0.10.0; skip media-backup planning unless you use a separate tool.
 - [ ] Download the **0.5.1** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.5.1.apk.sha256`.
 
 ## Upgrading a phone that is already set up

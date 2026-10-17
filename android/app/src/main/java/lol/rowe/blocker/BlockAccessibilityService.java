@@ -289,6 +289,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 .putExtra(MainActivity.EXTRA_EXTENSION_AVAILABLE, policy.extensionAvailable)
                 .putExtra(MainActivity.EXTRA_ENFORCE_AT, policy.enforceAt == null ? null : policy.enforceAt.toString())
                 .putExtra(MainActivity.EXTRA_EXTENSION_UNTIL, policy.extensionUntil == null ? null : policy.extensionUntil.toString())
+                .putExtra(MainActivity.EXTRA_BLOCKED_PACKAGE, blockedPackageForScreen())
                 .putStringArrayListExtra(
                         MainActivity.EXTRA_ALLOWED_APPS, new ArrayList<>(policy.allowedApps));
         mainHandler.post(() -> {
@@ -313,6 +314,15 @@ public final class BlockAccessibilityService extends AccessibilityService {
                         | Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra(MainActivity.EXTRA_UNINSTALL_GUARD, true);
         mainHandler.post(() -> startActivity(intent));
+    }
+
+    /**
+     * The app the block screen was raised for, so the child can ask a parent to
+     * allow it. The last disallowed app is the one the holder was using; the
+     * foreground is the fallback when no event has named one yet.
+     */
+    private String blockedPackageForScreen() {
+        return lastDisallowedPackage.isEmpty() ? foregroundPackage : lastDisallowedPackage;
     }
 
     private void failOpen(String status, String detail) {

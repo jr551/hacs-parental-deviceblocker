@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Small fake Home Assistant and S3 surface for Android emulator testing.
+"""Small fake Home Assistant surface for Android emulator testing.
 
-This intentionally uses a public test key and stores only synthetic uploads.
+This intentionally uses a public test key and stores only synthetic payloads.
 Change the active policy by writing ``unblocked``, ``blocked``, ``malformed``
 or ``error`` to the mode file passed on the command line.
 """
@@ -105,23 +105,7 @@ class FakeStackHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._json(400, {"error": "invalid json"})
             return
-        if endpoint == "backup/presign":
-            size = int(payload.get("size", -1))
-            name = hashlib.sha256(
-                str(payload.get("relative_path", "")).encode()
-                + b"/"
-                + str(payload.get("display_name", "")).encode()
-            ).hexdigest()[:20]
-            self._record({"event": "presign", "name": name, "size": size})
-            self._json(
-                200,
-                {
-                    "url": f"https://10.0.2.2:{self.server.server_port}/upload/{name}",
-                    "headers": {"Content-Length": str(size)},
-                },
-            )
-            return
-        if endpoint in {"backup/status", "activity"}:
+        if endpoint == "activity":
             self._record({"event": endpoint, "payload": payload})
             self._json(200, {"ok": True})
             return

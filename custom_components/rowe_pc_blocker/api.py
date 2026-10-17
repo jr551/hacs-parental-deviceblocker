@@ -40,7 +40,11 @@ from .const import (
 )
 from .apps import DEFAULT_ALLOWED_APPS, parse_allowed_apps
 from .family import family_peers
-from .pending import async_create_request, async_load_pending
+from .pending import (
+    async_create_request,
+    async_create_unblock_request,
+    async_load_pending,
+)
 from .portal import (
     PORTAL_HTML,
     ChildIdentity,
@@ -54,6 +58,7 @@ from .provision import (
     request_response,
     unknown_child_response,
 )
+from .runtime import runtime_for_device
 from .wake_alarm import wake_alarm_payload
 
 
@@ -83,17 +88,6 @@ def _pin_lockout_remaining(hass: HomeAssistant, device_id: str) -> int:
     return int(remaining)
 
 
-def _runtime_for_request(hass: HomeAssistant, device_id: str):
-    return next(
-        (
-            item
-            for item in hass.data.get(DOMAIN, {}).values()
-            if getattr(item, "device_id", None) == device_id
-        ),
-        None,
-    )
-
-
 def _runtimes(hass: HomeAssistant) -> list:
     """Every configured device runtime."""
     return [
@@ -115,7 +109,7 @@ async def _require_runtime(
         await reject_unauthorized(hass, request)
     if integration_auth_blocked(hass, request):
         raise web.HTTPUnauthorized()
-    runtime = _runtime_for_request(hass, device_id)
+    runtime = runtime_for_device(hass, device_id)
     supplied = extract_device_key(request, allow_query=allow_query)
     if not device_authorized(
         hass,
@@ -277,6 +271,35 @@ class PcExtensionView(HomeAssistantView):
             },
             status_code=200 if granted else 429,
         )
+
+
+class PcUnblockRequestView(HomeAssistantView):
+    """Let a blocked phone ask a parent to allow one app.
+
+    The phone shows the block screen; the child taps an app and asks. The
+    request waits for a parent on the dashboard, and approving it appends the
+    package to the device's allowlist, which the phone reads on its next state
+    poll. The rules live in ``pending.py``.
+    """
+
+    url = "/api/rowe_pc_blocker/{device_id}/unblock_request"
+    name = "api:rowe_pc_blocker:unblock_request"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        try:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+        status_code, body = await async_create_unblock_request(
+            hass,
+            runtime,
+            str(payload.get("package", "")),
+            str(payload.get("label", "")),
+        )
+        return self.json(body, status_code=status_code)
 
 
 class PcPortalView(HomeAssistantView):
@@ -670,6 +693,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     hass.http.register_view(PcPointsHourView)
     hass.http.register_view(PcActivityView)
     hass.http.register_view(PcExtensionView)
+    hass.http.register_view(PcUnblockRequestView)
     hass.http.register_view(PcPortalView)
     hass.http.register_view(PcPortalDataView)
     hass.http.register_view(PcPortalActionView)

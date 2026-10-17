@@ -215,6 +215,34 @@
             android:textSize="16sp"
             android:visibility="gone" />
 
+        <TextView
+            android:id="@+id/blockLastApp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:textColor="@color/white"
+            android:textSize="18sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/requestUnblockButton"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="12dp"
+            android:text="Request unblock"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/blockRequestStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:textColor="@color/muted"
+            android:textSize="16sp"
+            android:visibility="gone" />
+
         <Button
             android:id="@+id/extensionButton"
             android:layout_width="match_parent"

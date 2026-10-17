@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- **Ask a parent to allow one app.** A blocked phone can now ask for a single app to be allowed instead of a parent editing the whole list: `POST /api/rowe_pc_blocker/{device_id}/unblock_request` records the request, `sensor.<device>_unblock_requests` shows what is waiting, and a dynamic `button.rowe_pc_blocker_approve_unblock_<request_id>` / `button.rowe_pc_blocker_reject_unblock_<request_id>` pair answers it. Approving appends the package to that phone's allowlist, so the block screen clears itself on the next state poll. Requests expire after 30 minutes and a second request for the same app is refused while one is waiting.
+
 ## 0.11.0
 
 ### Added
