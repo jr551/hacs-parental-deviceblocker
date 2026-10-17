@@ -1,4 +1,4 @@
-"""On-demand screen-check button and the pending-setup approve/reject pair."""
+"""Device buttons: screen check, location, and the challenge decision pair."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from .pending import (
     claim_pending_entities,
     unblock_requests,
 )
+from .runtime import CHALLENGE_SUBMITTED
 
 APPROVE = "approve"
 REJECT = "reject"
@@ -29,9 +30,16 @@ REJECT = "reject"
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     runtime = hass.data[DOMAIN][entry.entry_id]
     entities: list[ButtonEntity] = [CheckScreenButton(runtime)]
-    # Only a phone has a position to ask for.
+    # Only a phone has a position to ask for, and only a phone carries a chore
+    # challenge a parent decides on.
     if runtime.device_type == DEVICE_TYPE_ANDROID:
-        entities.append(RequestLocationButton(runtime))
+        entities.extend(
+            [
+                RequestLocationButton(runtime),
+                ApproveChallengeButton(runtime),
+                RejectChallengeButton(runtime),
+            ]
+        )
     async_add_entities(entities)
     # The approve/reject buttons are integration-wide, so only the entry that
     # owns the pending entities creates them.
@@ -56,6 +64,51 @@ class RequestLocationButton(ParentalDeviceEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.runtime.async_request_location()
+
+
+class ChallengeDecisionButton(ParentalDeviceEntity, ButtonEntity):
+    """Answer a challenge the child has submitted.
+
+    Pressing these is the same as calling ``approve_challenge`` /
+    ``reject_challenge``, but the pair sits on the device page next to the
+    evidence photo, so a parent can decide from the dashboard instead of
+    writing a service call. Both stay unavailable until a submission is
+    waiting, which is the only time a decision means anything.
+    """
+
+    _attr_icon = "mdi:check-circle"
+
+    @property
+    def available(self) -> bool:
+        return self.runtime.challenge_state == CHALLENGE_SUBMITTED
+
+
+class ApproveChallengeButton(ChallengeDecisionButton):
+    """Let the child back in after their photo and phrase."""
+
+    _attr_name = "Approve challenge"
+    _attr_icon = "mdi:check-circle"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_approve_challenge"
+
+    async def async_press(self) -> None:
+        await self.runtime.async_approve_challenge()
+
+
+class RejectChallengeButton(ChallengeDecisionButton):
+    """Send the challenge back so the chore can be done again."""
+
+    _attr_name = "Reject challenge"
+    _attr_icon = "mdi:close-circle"
+
+    def __init__(self, runtime) -> None:
+        super().__init__(runtime)
+        self._attr_unique_id = f"{runtime.device_id}_reject_challenge"
+
+    async def async_press(self) -> None:
+        await self.runtime.async_reject_challenge()
 
 
 class CheckScreenButton(ParentalDeviceEntity, ButtonEntity):
