@@ -15,8 +15,6 @@ REDACT = {
     CONF_VNC_PASSWORD,
     CONF_KILO_API_KEY,
     CONF_PARENT_PIN,
-    "s3_access_key",
-    "s3_secret_key",
 }
 
 

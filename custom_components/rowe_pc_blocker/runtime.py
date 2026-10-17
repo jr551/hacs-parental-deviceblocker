@@ -13,17 +13,26 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .agent_status import (
+    AGENT_RECOVERED,
+    AGENT_STALE,
+    agent_is_online,
+    agent_stale_transition,
     is_portal_error_status,
     resolve_ui_error,
     resolve_ui_status,
     should_notify_enforcement_degraded,
 )
+from .apps import parse_installed_apps
 from .const import (
     DEFAULT_MESSAGE,
+    EVENT_AGENT_RECOVERED,
+    EVENT_AGENT_STALE,
     EXTENSION_COOLDOWN_SECONDS,
     EXTENSION_SECONDS,
     INITIAL_GRACE_SECONDS,
+    ONLINE_TIMEOUT_SECONDS,
     PARENT_OVERRIDE_MINUTES,
+    POINTS_HOUR_MINUTES,
     SIGNAL_UPDATE,
 )
 
@@ -55,6 +64,9 @@ class PcRuntime:
     portal_error_notified_at: datetime | None = None
     enforcement_degraded_notified_at: datetime | None = None
     block_state_at_last_activity: bool = False
+    # True between the stale event and the agent's next check-in, so one
+    # offline episode fires exactly one event.
+    agent_stale: bool = False
     # Passive (cached-only) position reported by the Android agent. May be stale
     # or absent by design — the agent never asks the GPS chip for a fix.
     latitude: float | None = None
@@ -63,12 +75,10 @@ class PcRuntime:
     location_age_seconds: int | None = None
     location_provider: str = ""
     location_reported_at: datetime | None = None
-    backup_status: str = "disabled"
-    backup_uploaded: int = 0
-    backup_skipped: int = 0
-    backup_initial_complete: bool = False
-    backup_last_success: datetime | None = None
-    backup_error: str = ""
+    # The parent's comma-separated allowlist for this phone, and the apps the
+    # phone last reported. Both are empty for a PC.
+    allowed_apps: str = ""
+    installed_apps: list[dict] = field(default_factory=list)
     block_requested_at: datetime | None = None
     extension_used_at: datetime | None = None
     extension_until: datetime | None = None
@@ -131,6 +141,7 @@ class PcRuntime:
         self.portal_reward_claims = {
             str(value) for value in data.get("portal_reward_claims", []) if str(value)
         }
+        self.agent_stale = bool(data.get("agent_stale", False))
 
     async def async_save(self) -> None:
         if self._store is None:
@@ -141,6 +152,7 @@ class PcRuntime:
                 "extension_used_at": _format_datetime(self.extension_used_at),
                 "extension_until": _format_datetime(self.extension_until),
                 "portal_reward_claims": sorted(self.portal_reward_claims),
+                "agent_stale": self.agent_stale,
             }
         )
 
@@ -202,12 +214,23 @@ class PcRuntime:
         self.notify()
         return self.extension_until
 
+    async def async_grant_points_hour(self) -> datetime | None:
+        """Unlock one paid hour. Call only after the points deduction succeeded."""
+        if not self.blocked:
+            return None
+        self.extension_until = dt_util.utcnow() + timedelta(minutes=POINTS_HOUR_MINUTES)
+        await self.async_save()
+        self.notify()
+        return self.extension_until
+
     def update_activity(self, payload: dict) -> None:
         self.last_seen = dt_util.utcnow()
         self.active_application = str(payload.get("application", ""))[:255]
         self.active_window = str(payload.get("window_title", ""))[:255]
         self.reported_username = str(payload.get("username", ""))[:128]
         self.agent_version = str(payload.get("agent_version", ""))[:64]
+        if "installed_apps" in payload:
+            self.installed_apps = parse_installed_apps(payload)
         previous_ui_status = self.ui_status
         previous_ui_error = self.ui_error
         self.ui_status = resolve_ui_status(previous_ui_status, payload)
@@ -277,38 +300,44 @@ class PcRuntime:
         self.block_state_at_last_activity = self.blocked
         self.notify()
 
-    def update_backup_status(self, payload: dict) -> None:
-        """Store only bounded progress metadata, never media names or object keys."""
-        allowed = {
-            "disabled",
-            "idle",
-            "syncing",
-            "waiting_for_wifi",
-            "waiting_for_power",
-            "permission_required",
-            "complete",
-            "complete_with_skips",
-            "error",
-        }
-        status = str(payload.get("status", "error"))[:32]
-        self.backup_status = status if status in allowed else "error"
-        try:
-            uploaded = int(payload.get("uploaded", self.backup_uploaded))
-        except (TypeError, ValueError):
-            uploaded = self.backup_uploaded
-        self.backup_uploaded = max(0, min(uploaded, 10_000_000))
-        try:
-            skipped = int(payload.get("skipped", self.backup_skipped))
-        except (TypeError, ValueError):
-            skipped = self.backup_skipped
-        self.backup_skipped = max(0, min(skipped, 10_000_000))
-        self.backup_initial_complete = bool(payload.get("initial_complete", False))
-        self.backup_error = str(payload.get("error", ""))[:255]
-        last_success = str(payload.get("last_success", "")).strip()
-        parsed = dt_util.parse_datetime(last_success) if last_success else None
-        if parsed is not None:
-            self.backup_last_success = parsed
-        self.notify()
+    async def check_agent_stale(self) -> None:
+        """Fire one stale event per offline episode, and one on recovery.
+
+        An agent that has stopped polling cannot report its own silence, so the
+        binary sensor calls this on its 30-second tick. A device that has never
+        checked in is not stale: there is no episode to report. The flag is
+        persisted, so a Home Assistant restart during an outage does not report
+        the same episode a second time.
+        """
+        now = dt_util.utcnow()
+        online = agent_is_online(self.last_seen, now, ONLINE_TIMEOUT_SECONDS)
+        self.agent_stale, transition = agent_stale_transition(
+            self.agent_stale, online, self.last_seen is not None
+        )
+        if transition is None:
+            return
+        await self.async_save()
+        if transition == AGENT_STALE:
+            self.hass.bus.async_fire(
+                EVENT_AGENT_STALE,
+                {
+                    "device_id": self.device_id,
+                    "device_name": self.device_name,
+                    "device_type": self.device_type,
+                    "minutes_offline": int(
+                        (now - self.last_seen).total_seconds() // 60
+                    ),
+                },
+            )
+        else:
+            self.hass.bus.async_fire(
+                EVENT_AGENT_RECOVERED,
+                {
+                    "device_id": self.device_id,
+                    "device_name": self.device_name,
+                    "device_type": self.device_type,
+                },
+            )
 
 
 def _parse_datetime(value: str | None) -> datetime | None:

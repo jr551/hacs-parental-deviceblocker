@@ -6,11 +6,13 @@ import importlib.util
 import json
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = ROOT / "custom_components" / "rowe_pc_blocker"
+FIXTURES = ROOT / "tests" / "fixtures" / "protocol"
 
 
 def _load_module(name: str, path: Path):
@@ -25,6 +27,10 @@ def _load_module(name: str, path: Path):
 PROTOCOL = _load_module(
     "rowe_pc_blocker_protocol_surface", INTEGRATION / "protocol_surface.py"
 )
+APPS = _load_module("rowe_pc_blocker_apps_for_protocol", INTEGRATION / "apps.py")
+PROVISION = _load_module(
+    "rowe_pc_blocker_provision_for_protocol", INTEGRATION / "provision.py"
+)
 
 POST_VIEWS = frozenset(
     {
@@ -32,8 +38,8 @@ POST_VIEWS = frozenset(
         "PcExtensionView",
         "PcPortalActionView",
         "PcParentOverrideView",
-        "AndroidBackupPresignView",
-        "AndroidBackupStatusView",
+        "PcPointsHourView",
+        "AndroidProvisionView",
     }
 )
 
@@ -53,69 +59,45 @@ def _routes_from_api_source() -> set[tuple[str, str]]:
     return routes
 
 
+def _fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
 class ProtocolSurfaceTests(unittest.TestCase):
     def test_documented_routes_match_views(self) -> None:
         documented = {(item["method"], item["path"]) for item in PROTOCOL.API_ROUTES}
         self.assertEqual(documented, _routes_from_api_source())
 
-    def test_state_response_keys_fixture(self) -> None:
-        fixture = {
-            "device_id": "child-pc",
-            "blocked": False,
-            "block_requested": False,
-            "message": "Paused",
-            "windows_username": "child",
-            "device_type": "windows",
-            "enforce_at": None,
-            "extension_available": True,
-            "extension_available_at": None,
-            "extension_until": None,
-        }
-        self.assertEqual(set(fixture.keys()), PROTOCOL.STATE_RESPONSE_KEYS)
+    def test_state_response_fixture_matches_the_documented_keys(self) -> None:
+        self.assertEqual(set(_fixture("state_response.json")), PROTOCOL.STATE_RESPONSE_KEYS)
 
-    def test_activity_request_fixture(self) -> None:
-        fixture = {
-            "application": "Idle",
-            "window_title": "",
-            "username": "child",
-            "agent_version": "0.9.35",
-            "ui_status": "idle",
-            "ui_error": "",
-        }
-        self.assertEqual(set(fixture.keys()), PROTOCOL.ACTIVITY_REQUEST_KEYS)
-
-    def test_backup_disabled_shapes(self) -> None:
+    def test_activity_request_fixture_matches_the_documented_keys(self) -> None:
         self.assertEqual(
-            PROTOCOL.BACKUP_CONFIG_DISABLED_BODY,
-            {
-                "enabled": False,
-                "initial_sync_wifi_only": True,
-                "requires_external_power": True,
-                "max_file_bytes": PROTOCOL.MAX_BACKUP_BYTES,
-                "configuration_id": "",
-            },
-        )
-        self.assertEqual(
-            set(PROTOCOL.BACKUP_CONFIG_DISABLED_BODY.keys()),
-            PROTOCOL.BACKUP_CONFIG_RESPONSE_KEYS,
-        )
-        self.assertEqual(PROTOCOL.BACKUP_PRESIGN_DISABLED_STATUS, 503)
-        self.assertEqual(
-            PROTOCOL.BACKUP_PRESIGN_DISABLED_BODY,
-            {"error": "Media backup is disabled."},
+            set(_fixture("activity_request.json")), PROTOCOL.ACTIVITY_REQUEST_KEYS
         )
 
-    def test_fixture_files_are_stable(self) -> None:
-        fixtures_dir = ROOT / "tests" / "fixtures" / "protocol"
-        for name in (
-            "state_response.json",
-            "activity_request.json",
-            "backup_config_disabled.json",
-            "backup_presign_disabled.json",
-        ):
-            path = fixtures_dir / name
-            self.assertTrue(path.is_file(), f"missing {path}")
-            json.loads(path.read_text(encoding="utf-8"))
+    def test_the_installed_app_report_is_the_documented_shape(self) -> None:
+        apps = APPS.parse_installed_apps(
+            {"installed_apps": [{"package": "com.whatsapp", "label": "WhatsApp"}]}
+        )
+        self.assertEqual(set(apps[0]), PROTOCOL.INSTALLED_APP_KEYS)
+
+    def test_the_provision_shapes_are_the_documented_ones(self) -> None:
+        request = PROVISION.PendingRequest(
+            request_id="a" * 32,
+            child_name="Casey",
+            requested_at=datetime(2026, 10, 17, tzinfo=timezone.utc),
+        )
+        status_code, body = PROVISION.request_response(request)
+        self.assertEqual(status_code, 202)
+        self.assertEqual(set(body), PROTOCOL.PROVISION_PENDING_KEYS)
+
+        request.status = PROVISION.STATUS_APPROVED
+        request.device_id = "casey-phone"
+        request.api_key = "the-key"
+        status_code, body = PROVISION.collection_response(request)
+        self.assertEqual(status_code, 200)
+        self.assertEqual(set(body), PROTOCOL.PROVISION_APPROVED_KEYS)
 
 
 if __name__ == "__main__":

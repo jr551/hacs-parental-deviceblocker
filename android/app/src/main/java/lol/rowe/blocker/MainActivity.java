@@ -1,8 +1,9 @@
 package lol.rowe.blocker;
 
-import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.admin.DevicePolicyManager;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -16,6 +17,8 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.GridLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -28,7 +31,6 @@ import java.util.Locale;
 
 public final class MainActivity extends Activity {
     private static volatile MainActivity activeInstance;
-    private static final int MEDIA_PERMISSION_REQUEST = 2;
     static final String EXTRA_BLOCK_SCREEN = "block_screen";
     static final String EXTRA_BLOCKED = "blocked";
     static final String EXTRA_BLOCK_REQUESTED = "block_requested";
@@ -36,23 +38,32 @@ public final class MainActivity extends Activity {
     static final String EXTRA_EXTENSION_AVAILABLE = "extension_available";
     static final String EXTRA_ENFORCE_AT = "enforce_at";
     static final String EXTRA_EXTENSION_UNTIL = "extension_until";
+    static final String EXTRA_UNINSTALL_GUARD = "uninstall_guard";
+    static final String EXTRA_ALLOWED_APPS = "allowed_apps";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+    /** Separate from {@link #executor}: the approval wait blocks for up to 30 minutes. */
+    private final ScheduledExecutorService setupExecutor =
+            Executors.newSingleThreadScheduledExecutor();
     private ScrollView setupScroll;
     private View blockedPanel;
     private TextView statusText;
     private TextView blockTitle;
     private TextView blockMessage;
     private TextView blockCountdown;
-    private TextView mediaBackupStatus;
+    private TextView familyStatus;
     private Button extensionButton;
+    private Button pointsHourButton;
+    private GridLayout allowedApps;
     private EditText homeAssistantUrl;
-    private EditText deviceId;
-    private EditText deviceKey;
+    private EditText childName;
+    private View moreSection;
     private volatile Policy currentPolicy = Policy.UNBLOCKED;
-    /** The configuration editor stays hidden until a parent enters the PIN. */
+    /** Local PIN unlock for changing a phone that is already set up. */
     private boolean setupUnlocked;
+    private String pendingAfterPin;
+    private boolean uninstallGuard;
     private boolean pinDialogShowing;
     private int pinFailures;
     private long pinLockoutUntil;
@@ -84,47 +95,43 @@ public final class MainActivity extends Activity {
         blockTitle = findViewById(R.id.blockTitle);
         blockMessage = findViewById(R.id.blockMessage);
         blockCountdown = findViewById(R.id.blockCountdown);
-        mediaBackupStatus = findViewById(R.id.mediaBackupStatus);
+        familyStatus = findViewById(R.id.familyStatus);
         extensionButton = findViewById(R.id.extensionButton);
+        pointsHourButton = findViewById(R.id.pointsHourButton);
+        allowedApps = findViewById(R.id.allowedApps);
         homeAssistantUrl = findViewById(R.id.homeAssistantUrl);
-        deviceId = findViewById(R.id.deviceId);
-        deviceKey = findViewById(R.id.deviceKey);
+        childName = findViewById(R.id.childName);
+        moreSection = findViewById(R.id.moreSection);
 
-        AppConfig config = AppConfig.load(this);
-        homeAssistantUrl.setText(config.homeAssistantUrl);
-        deviceId.setText(config.deviceId);
-        deviceKey.setText(config.deviceKey);
-
-        findViewById(R.id.saveButton).setOnClickListener(view -> saveConfiguration());
+        findViewById(R.id.saveButton).setOnClickListener(view -> setUpThisPhone());
+        findViewById(R.id.moreButton).setOnClickListener(view -> toggleMore());
         findViewById(R.id.changePinButton).setOnClickListener(
                 view -> promptForNewParentPin(false));
-        findViewById(R.id.mediaBackupPermissionButton).setOnClickListener(
-                view -> requestMediaBackupAccess());
         findViewById(R.id.accessibilityButton).setOnClickListener(
                 view -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         findViewById(R.id.batteryButton).setOnClickListener(view -> requestUnrestrictedBattery());
-        findViewById(R.id.whatsAppButton).setOnClickListener(
-                view -> launchPackage(PolicyDecision.WHATSAPP, "WhatsApp is not installed."));
-        findViewById(R.id.mapsButton).setOnClickListener(
-                view -> launchPackage(PolicyDecision.GOOGLE_MAPS, "Google Maps is not installed."));
+        findViewById(R.id.uninstallGuardButton).setOnClickListener(view -> activateUninstallGuard());
+        findViewById(R.id.wakePermissionButton).setOnClickListener(view -> requestExactAlarmPermission());
         extensionButton.setOnClickListener(view -> requestExtension());
+        pointsHourButton.setOnClickListener(view -> requestPointsHour());
         findViewById(R.id.parentOverrideButton)
                 .setOnClickListener(view -> promptForParentOverride());
 
         // Publish the activity only after every view used by applyPolicy is ready.
         activeInstance = this;
 
-        // The layout ships with the editor visible; keep it hidden until either the
-        // block screen takes over or a parent unlocks it with the PIN.
-        setupScroll.setVisibility(View.GONE);
-        if (getIntent().getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
+        if (getIntent().getBooleanExtra(EXTRA_UNINSTALL_GUARD, false)) {
+            showUninstallGuard();
+        } else if (getIntent().getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
+            setupScroll.setVisibility(View.GONE);
             showBlocked(policyFromIntent(getIntent()));
         } else {
-            promptForParentPin();
+            showSetupForm();
         }
-        executor.scheduleWithFixedDelay(this::refreshPolicy, 0, 3, TimeUnit.SECONDS);
+        refreshWakeStatus();
+        executor.scheduleWithFixedDelay(this::refreshPolicyIfServiceIsDown, 0, ReportSchedule.POLICY_POLL_SECONDS, TimeUnit.SECONDS);
+        executor.scheduleWithFixedDelay(this::tickCountdown, 1, 1, TimeUnit.SECONDS);
         if (AppConfig.load(this).isConfigured()) {
-            MediaBackupScheduler.schedule(this);
             EnforcementWatchdogJobService.schedule(this);
             EnforcementWatchdogService.start(this);
         }
@@ -134,7 +141,10 @@ public final class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (intent.getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
+        if (intent.getBooleanExtra(EXTRA_UNINSTALL_GUARD, false)) {
+            showUninstallGuard();
+        } else if (intent.getBooleanExtra(EXTRA_BLOCK_SCREEN, false)) {
+            uninstallGuard = false;
             showBlocked(policyFromIntent(intent));
         }
     }
@@ -152,6 +162,7 @@ public final class MainActivity extends Activity {
             activeInstance = null;
         }
         executor.shutdownNow();
+        setupExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -204,6 +215,13 @@ public final class MainActivity extends Activity {
                         pinLockoutUntil = 0L;
                         savePinFailures();
                         unlockSetup();
+                        String pending = pendingAfterPin;
+                        pendingAfterPin = null;
+                        if ("setup".equals(pending)) {
+                            setUpThisPhone();
+                        } else if ("more".equals(pending)) {
+                            moreSection.setVisibility(View.VISIBLE);
+                        }
                         return;
                     }
                     pinFailures++;
@@ -348,6 +366,7 @@ public final class MainActivity extends Activity {
 
     private void unlockSetup() {
         setupUnlocked = true;
+        ParentMaintenance.allowForTenMinutes();
         // Ask once, from the parent-gated screen: without this the passive
         // position reader has nothing it is allowed to read.
         if (!PassiveLocation.hasPermission(this)) {
@@ -358,142 +377,108 @@ public final class MainActivity extends Activity {
         }
         setupScroll.setVisibility(View.VISIBLE);
         updateStatus();
-        updateMediaBackupStatus();
     }
 
-    private void saveConfiguration() {
-        AppConfig config = new AppConfig(
-                homeAssistantUrl.getText().toString().trim(),
-                deviceId.getText().toString().trim().toLowerCase(Locale.ROOT),
-                deviceKey.getText().toString().trim());
-        if (!config.isConfigured()) {
-            Toast.makeText(this, "Complete all three configuration fields.", Toast.LENGTH_LONG).show();
+    private void showSetupForm() {
+        AppConfig config = AppConfig.load(this);
+        childName.setText(ChildDevice.displayName(config.childName, config.deviceId));
+        if (homeAssistantUrl.getText().length() == 0) {
+            homeAssistantUrl.setText(config.homeAssistantUrl);
+        }
+        findViewById(R.id.moreButton).setVisibility(config.isConfigured() ? View.VISIBLE : View.GONE);
+        moreSection.setVisibility(View.GONE);
+        setupScroll.setVisibility(View.VISIBLE);
+        updateStatus();
+    }
+
+    private void toggleMore() {
+        if (moreSection.getVisibility() == View.VISIBLE) {
+            moreSection.setVisibility(View.GONE);
             return;
         }
-        if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
-            Toast.makeText(
-                    this,
-                    "Use HTTPS, or HTTP only for a local Home Assistant address.",
-                    Toast.LENGTH_LONG).show();
+        if (ParentPin.isSet(this) && !setupUnlocked) {
+            pendingAfterPin = "more";
+            promptForParentPin();
             return;
         }
-        if (!AppConfig.save(this, config)) {
-            Toast.makeText(
-                    this,
-                    "Could not seal the device key in the Android Keystore. Re-enter the key and try again.",
-                    Toast.LENGTH_LONG).show();
-            updateStatus();
+        moreSection.setVisibility(View.VISIBLE);
+    }
+
+    private void setUpThisPhone() {
+        String name = childName.getText().toString().trim();
+        String url = homeAssistantUrl.getText().toString().trim();
+        if (name.isEmpty() || url.isEmpty()) {
+            statusText.setText("Enter this child's name and your Home Assistant address.");
             return;
         }
-        MediaBackupScheduler.schedule(this);
+        if (!AppConfig.acceptsHomeAssistantUrl(url)) {
+            statusText.setText("That Home Assistant address needs to start with https://.");
+            return;
+        }
+        AppConfig existing = AppConfig.load(this);
+        if (existing.isConfigured() && ParentPin.isSet(this) && !setupUnlocked) {
+            pendingAfterPin = "setup";
+            promptForParentPin();
+            return;
+        }
+        statusText.setText("Asking Home Assistant for approval…");
+        View saveButton = findViewById(R.id.saveButton);
+        saveButton.setEnabled(false);
+        setupExecutor.execute(() -> {
+            ProvisionFlow flow = new ProvisionFlow(
+                    new HomeAssistantClient.ProvisionTransport(url),
+                    new ProvisionFlow.Clock() {
+                        @Override
+                        public long now() {
+                            return System.currentTimeMillis();
+                        }
+
+                        @Override
+                        public boolean await(long millis) {
+                            try {
+                                Thread.sleep(millis);
+                                return true;
+                            } catch (InterruptedException exception) {
+                                Thread.currentThread().interrupt();
+                                return false;
+                            }
+                        }
+                    });
+            ProvisionFlow.Outcome outcome = flow.run(name, () -> mainHandler.post(() -> {
+                if (!isFinishing() && !isDestroyed()) {
+                    statusText.setText("Waiting for a parent to approve in Home Assistant…");
+                }
+            }));
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                saveButton.setEnabled(true);
+                if (outcome.status == ProvisionFlow.Status.APPROVED) {
+                    finishSetup(url, outcome);
+                    return;
+                }
+                statusText.setText(outcome.message);
+            });
+        });
+    }
+
+    /** Save the approved credentials and run the post-setup steps. */
+    private void finishSetup(String url, ProvisionFlow.Outcome outcome) {
+        AppConfig.save(this, new AppConfig(
+                url, outcome.deviceId, outcome.deviceKey, outcome.childName));
+        childName.setText(outcome.childName);
+        statusText.setText("This phone is set up.");
+        findViewById(R.id.moreButton).setVisibility(View.VISIBLE);
+        if (!PassiveLocation.hasPermission(this)) {
+            requestPermissions(new String[] {
+                    android.Manifest.permission.ACCESS_FINE_LOCATION,
+                    android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            }, 1);
+        }
         EnforcementWatchdogJobService.schedule(this);
         EnforcementWatchdogService.start(this);
-        Toast.makeText(this, "Configuration saved.", Toast.LENGTH_SHORT).show();
-        updateStatus();
         executor.execute(this::refreshPolicy);
-    }
-
-    private void requestMediaBackupAccess() {
-        AppConfig config = AppConfig.load(this);
-        if (!config.isConfigured()) {
-            Toast.makeText(this, "Save the Home Assistant configuration first.",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        executor.execute(() -> {
-            try {
-                HomeAssistantClient.MediaBackupConfig backup =
-                        new HomeAssistantClient(config).getMediaBackupConfig();
-                mainHandler.post(() -> {
-                    if (!backup.enabled) {
-                        Toast.makeText(this,
-                                "Enable media backup in this device's Home Assistant options first.",
-                                Toast.LENGTH_LONG).show();
-                        updateMediaBackupStatus();
-                        return;
-                    }
-                    if (MediaBackupScheduler.hasMediaPermission(this)) {
-                        MediaBackupScheduler.schedule(this);
-                        Toast.makeText(this, "Media backup access is already granted.",
-                                Toast.LENGTH_SHORT).show();
-                        updateMediaBackupStatus();
-                        return;
-                    }
-                    String[] permissions;
-                    if (Build.VERSION.SDK_INT >= 34) {
-                        permissions = new String[] {
-                                    Manifest.permission.READ_MEDIA_IMAGES,
-                                    Manifest.permission.READ_MEDIA_VIDEO,
-                                    Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
-                            };
-                    } else if (Build.VERSION.SDK_INT >= 33) {
-                        permissions = new String[] {
-                                    Manifest.permission.READ_MEDIA_IMAGES,
-                                    Manifest.permission.READ_MEDIA_VIDEO,
-                            };
-                    } else {
-                        permissions = new String[] {
-                                Manifest.permission.READ_EXTERNAL_STORAGE,
-                        };
-                    }
-                    requestPermissions(permissions, MEDIA_PERMISSION_REQUEST);
-                });
-            } catch (Exception exception) {
-                mainHandler.post(() -> Toast.makeText(this,
-                        "Could not read media backup settings from Home Assistant.",
-                        Toast.LENGTH_LONG).show());
-            }
-        });
-    }
-
-    @Override
-    public void onRequestPermissionsResult(
-            int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != MEDIA_PERMISSION_REQUEST) {
-            return;
-        }
-        if (MediaBackupScheduler.hasMediaPermission(this)) {
-            MediaBackupScheduler.setInitialComplete(this, false);
-            MediaBackupScheduler.schedule(this);
-            Toast.makeText(this,
-                    "Backup access granted. Uploads wait for external power; initial sync also waits for Wi-Fi.",
-                    Toast.LENGTH_LONG).show();
-        } else {
-            Toast.makeText(this, "Full photo and video access was not granted.",
-                    Toast.LENGTH_LONG).show();
-        }
-        updateMediaBackupStatus();
-    }
-
-    private void updateMediaBackupStatus() {
-        AppConfig config = AppConfig.load(this);
-        if (!config.isConfigured()) {
-            mediaBackupStatus.setText("Optional media backup is not configured.");
-            return;
-        }
-        executor.execute(() -> {
-            String message;
-            try {
-                HomeAssistantClient.MediaBackupConfig backup =
-                        new HomeAssistantClient(config).getMediaBackupConfig();
-                if (!backup.enabled) {
-                    message = "Optional media backup is disabled in Home Assistant.";
-                } else if (!MediaBackupScheduler.hasMediaPermission(this)) {
-                    message = "Media backup is enabled; parent permission is required.";
-                } else if (!MediaBackupScheduler.isExternallyPowered(this)) {
-                    message = "Media backup is waiting for external power.";
-                } else if (!MediaBackupScheduler.isInitialComplete(this)) {
-                    message = "Initial photo/video sync is waiting for or using Wi-Fi while powered.";
-                } else {
-                    message = "Initial media sync is complete; powered incremental backup is scheduled.";
-                }
-            } catch (Exception exception) {
-                message = "Could not read media backup status from Home Assistant.";
-            }
-            String result = message;
-            mainHandler.post(() -> mediaBackupStatus.setText(result));
-        });
     }
 
     private void refreshPolicy() {
@@ -543,22 +528,25 @@ public final class MainActivity extends Activity {
 
     private void applyPolicy(Policy policy) {
         currentPolicy = policy;
+        WakeAlarm.applyServer(this, policy.wakeAlarm);
+        refreshWakeStatus();
         BlockAccessibilityService.applyPolicySnapshot(policy);
         if (policy.blockRequested || policy.blocked) {
+            uninstallGuard = false;
             showBlocked(policy);
+        } else if (uninstallGuard) {
+            showUninstallGuard();
         } else if (blockedPanel.getVisibility() == View.VISIBLE) {
             // The block just lifted while the block screen was showing. Leave the screen
             // entirely instead of revealing the configuration editor to the device holder.
             finish();
         } else {
             blockedPanel.setVisibility(View.GONE);
-            // Never reveal the editor (HA URL / device id / key) without the parent PIN.
-            if (setupUnlocked) {
-                setupScroll.setVisibility(View.VISIBLE);
-                updateStatus();
+            setupScroll.setVisibility(View.VISIBLE);
+            if (childName.getText().length() == 0) {
+                showSetupForm();
             } else {
-                setupScroll.setVisibility(View.GONE);
-                promptForParentPin();
+                updateStatus();
             }
             exitImmersiveMode();
         }
@@ -567,19 +555,33 @@ public final class MainActivity extends Activity {
     private void showBlocked(Policy policy) {
         currentPolicy = policy;
         blockMessage.setText(policy.message);
+        refreshAllowedApps();
+        refreshFamilyStatus();
         if (policy.blocked) {
             blockTitle.setText("This phone is paused");
-            blockCountdown.setText("Use WhatsApp or Google Maps while you wait for a parent to unpause this phone.");
+            blockCountdown.setText("The apps below stay available until a parent unpauses this phone.");
             extensionButton.setVisibility(View.GONE);
+            int cost = policy.pointsHourCost > 0 ? policy.pointsHourCost : 200;
+            String label = "Buy 1 hour for " + cost + " points";
+            if (policy.pointsBalance != null) {
+                label += " (" + policy.pointsBalance + " now)";
+            }
+            pointsHourButton.setText(label);
+            pointsHourButton.setVisibility(View.VISIBLE);
+            pointsHourButton.setEnabled(true);
         } else if (policy.isExtensionActive()) {
-            blockTitle.setText("5 extra minutes granted");
+            blockTitle.setText(policy.secondsUntilEnforcement() > 600
+                    ? "Extra time granted"
+                    : "5 extra minutes granted");
             blockCountdown.setText("Blocking in " + formatRemaining(policy.secondsUntilEnforcement()) + ". You can return to your app now.");
             extensionButton.setVisibility(View.GONE);
+            pointsHourButton.setVisibility(View.GONE);
         } else {
             blockTitle.setText("Phone time is ending");
             blockCountdown.setText("Save what you are doing — blocking in " + formatRemaining(policy.secondsUntilEnforcement()) + ".");
             extensionButton.setVisibility(policy.extensionAvailable ? View.VISIBLE : View.GONE);
             extensionButton.setEnabled(true);
+            pointsHourButton.setVisibility(View.GONE);
         }
         setupScroll.setVisibility(View.GONE);
         blockedPanel.setVisibility(View.VISIBLE);
@@ -590,6 +592,159 @@ public final class MainActivity extends Activity {
         } else {
             exitImmersiveMode();
         }
+    }
+
+    private void refreshPolicyIfServiceIsDown() {
+        if (AccessibilityEnforcement.isEnabled(this)) {
+            return;
+        }
+        refreshPolicy();
+    }
+
+    private void tickCountdown() {
+        mainHandler.post(() -> {
+            if (isFinishing() || blockedPanel.getVisibility() != View.VISIBLE || uninstallGuard) {
+                return;
+            }
+            if (!currentPolicy.shouldWarnGrace() && !currentPolicy.isExtensionActive()) {
+                return;
+            }
+            if (currentPolicy.isExtensionActive()) {
+                blockCountdown.setText("Blocking in " + formatRemaining(currentPolicy.secondsUntilEnforcement())
+                        + ". You can return to your app now.");
+            } else if (currentPolicy.shouldWarnGrace()) {
+                blockCountdown.setText("Save what you are doing — blocking in "
+                        + formatRemaining(currentPolicy.secondsUntilEnforcement()) + ".");
+            }
+        });
+    }
+
+    private void showUninstallGuard() {
+        uninstallGuard = true;
+        blockTitle.setText("Uninstall is locked");
+        blockMessage.setText("A parent has to turn uninstall protection off before this app can be removed.");
+        blockCountdown.setText("Leave Settings to go back to the phone.");
+        familyStatus.setVisibility(View.GONE);
+        extensionButton.setVisibility(View.GONE);
+        pointsHourButton.setVisibility(View.GONE);
+        refreshAllowedApps();
+        setupScroll.setVisibility(View.GONE);
+        blockedPanel.setVisibility(View.VISIBLE);
+        enterImmersiveMode();
+    }
+
+    static void clearUninstallGuard() {
+        MainActivity activity = activeInstance;
+        if (activity == null) {
+            return;
+        }
+        activity.mainHandler.post(() -> {
+            if (!activity.uninstallGuard) {
+                return;
+            }
+            activity.uninstallGuard = false;
+            if (!activity.currentPolicy.blockRequested && !activity.currentPolicy.blocked) {
+                activity.finish();
+            }
+        });
+    }
+
+    private void refreshWakeStatus() {
+        TextView status = findViewById(R.id.wakeStatus);
+        if (status == null) {
+            return;
+        }
+        status.setText(WakeAlarm.statusText(this));
+        View allow = findViewById(R.id.wakePermissionButton);
+        boolean needsPermission = WakeAlarm.isEnabled(this)
+                && Build.VERSION.SDK_INT >= 31
+                && !WakeAlarm.canScheduleExact(this);
+        allow.setVisibility(needsPermission ? View.VISIBLE : View.GONE);
+    }
+
+    private void requestExactAlarmPermission() {
+        Intent permission = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+        permission.setData(Uri.parse("package:" + getPackageName()));
+        try {
+            startActivity(permission);
+        } catch (RuntimeException exception) {
+            Toast.makeText(this, "Allow alarms for this app in system settings.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void requestPointsHour() {
+        pointsHourButton.setEnabled(false);
+        blockCountdown.setText("Spending points for 1 hour…");
+        executor.execute(() -> {
+            try {
+                String message = new HomeAssistantClient(AppConfig.load(this)).requestPointsHour();
+                Policy policy = new HomeAssistantClient(AppConfig.load(this)).getPolicy();
+                mainHandler.post(() -> {
+                    applyPolicy(policy);
+                    blockCountdown.setText(message);
+                    pointsHourButton.setEnabled(true);
+                });
+            } catch (Exception exception) {
+                mainHandler.post(() -> {
+                    pointsHourButton.setEnabled(true);
+                    blockCountdown.setText("Could not contact Home Assistant. Please try again.");
+                });
+            }
+        });
+    }
+
+    /** The child's other device, e.g. "Your PC is open — Roblox · seen 2 minutes ago". */
+    private void refreshFamilyStatus() {
+        // The PC is the interesting peer; a child with two phones has no PC.
+        Policy.FamilyPeer peer = currentPolicy.familyPc != null
+                ? currentPolicy.familyPc
+                : currentPolicy.familyPhone;
+        String line = FamilyStatus.line(peer, System.currentTimeMillis());
+        familyStatus.setText(line);
+        familyStatus.setVisibility(line.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void refreshAllowedApps() {
+        allowedApps.removeAllViews();
+        float density = getResources().getDisplayMetrics().density;
+        int iconSize = Math.round(56 * density);
+        int cellWidth = Math.round(84 * density);
+        for (AllowedApps.Shortcut shortcut
+                : AllowedApps.installed(getPackageManager(), currentPolicy.allowedApps)) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            ImageView icon = new ImageView(this);
+            icon.setImageDrawable(shortcut.icon);
+            cell.addView(icon, new LinearLayout.LayoutParams(iconSize, iconSize));
+            TextView label = new TextView(this);
+            label.setText(shortcut.label);
+            label.setTextColor(getColor(R.color.white));
+            label.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            label.setTextSize(12);
+            cell.addView(label);
+            cell.setOnClickListener(view -> launchPackage(
+                    shortcut.packageName, shortcut.label + " is not installed."));
+            GridLayout.LayoutParams params = new GridLayout.LayoutParams();
+            params.width = cellWidth;
+            params.setMargins(Math.round(6 * density), Math.round(8 * density), Math.round(6 * density), 0);
+            allowedApps.addView(cell, params);
+        }
+    }
+
+    private void activateUninstallGuard() {
+        DevicePolicyManager manager = getSystemService(DevicePolicyManager.class);
+        ComponentName admin = new ComponentName(this, BlockDeviceAdmin.class);
+        if (manager != null && manager.isAdminActive(admin)) {
+            Toast.makeText(this, "Uninstall protection is already on.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Intent intent = new Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
+        intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, admin);
+        intent.putExtra(
+                DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                "This stops the app being removed until a parent deactivates protection.");
+        startActivity(intent);
     }
 
     private void requestExtension() {
@@ -623,7 +778,13 @@ public final class MainActivity extends Activity {
                 intent.getStringExtra(EXTRA_BLOCK_MESSAGE),
                 intent.getBooleanExtra(EXTRA_EXTENSION_AVAILABLE, false),
                 intent.getStringExtra(EXTRA_ENFORCE_AT),
-                intent.getStringExtra(EXTRA_EXTENSION_UNTIL));
+                intent.getStringExtra(EXTRA_EXTENSION_UNTIL),
+                null,
+                0,
+                null,
+                intent.getStringArrayListExtra(EXTRA_ALLOWED_APPS),
+                null,
+                null);
     }
 
     private static String formatRemaining(long seconds) {
@@ -637,25 +798,12 @@ public final class MainActivity extends Activity {
     private void updateStatus() {
         AppConfig config = AppConfig.load(this);
         StringBuilder text = new StringBuilder();
-        if (DeviceKeyStore.needsKeyReentry(this)) {
-            text.append("The sealed device key could not be read. Re-enter the Home Assistant device key.");
-        } else if (!config.isConfigured()) {
-            text.append("Enter the Home Assistant device details below.");
+        if (!config.isConfigured()) {
+            text.append("Enter this child's name and your Home Assistant address.");
         } else if (!AppConfig.acceptsHomeAssistantUrl(config.homeAssistantUrl)) {
-            text.append("The saved URL must be HTTPS, or HTTP on a local network address.");
-        } else if (!isAccessibilityEnabled()) {
-            text.append("Configured, but Accessibility enforcement still needs to be enabled.");
+            text.append("That Home Assistant address needs to start with https://.");
         } else {
-            text.append("Configured. Accessibility enforcement is enabled.");
-        }
-        if (config.isConfigured() && DeviceKeyStore.keystoreUnavailable(this)) {
-            text.append(" Android Keystore sealing failed on the last save.");
-        } else if (config.isConfigured() && !DeviceKeyStore.isSealed(this)) {
-            text.append(" Device key is not sealed in the Android Keystore.");
-        }
-        String note = EnforcementNote.parentText(this);
-        if (!note.isEmpty()) {
-            text.append("\n").append(note);
+            text.append("This phone is set up.");
         }
         statusText.setText(text.toString());
     }
@@ -703,6 +851,7 @@ public final class MainActivity extends Activity {
             return;
         }
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        BlockAccessibilityService.noteAllowedLaunch(packageName);
         startActivity(launch);
     }
 

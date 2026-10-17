@@ -10,9 +10,8 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 /**
- * AES-GCM seal for the device API key. The Android Keystore holds the key;
- * this class only performs the cipher operations so unit tests can round-trip
- * them with a locally generated key.
+ * AES-GCM helper kept for unit tests. The device API key is stored in
+ * app-private preferences and is not sealed with the Android Keystore.
  */
 final class AesGcmSealer {
     private static final int IV_LENGTH = 12;

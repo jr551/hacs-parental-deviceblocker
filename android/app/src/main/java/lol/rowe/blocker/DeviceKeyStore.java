@@ -11,96 +11,158 @@ import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 
 /**
- * Stores the Home Assistant device API key in app-private preferences sealed
- * with an Android Keystore AES key. A legacy plaintext value is migrated on
- * the next read and then removed.
+ * Stores the Home Assistant device API key in app-private preferences.
+ *
+ * <p>Builds up to 0.4.13 sealed the key with an Android Keystore AES key in
+ * {@code device_key_enc} and removed the plaintext. This build stores the
+ * plaintext only, so {@link #read} unseals a leftover sealed value once and
+ * rewrites it as plaintext. Without that migration an upgraded phone reads an
+ * empty key, decides it is not configured, and silently stops enforcing and
+ * stops checking in.
  */
 final class DeviceKeyStore {
     static final String PREFS = "rowe_blocker";
     static final String PLAINTEXT = "device_key";
-    static final String SEALED = "device_key_enc";
-    static final String SEALED_UNREADABLE = "device_key_sealed_unreadable";
+    static final String LEGACY_SEALED = "device_key_enc";
+    static final String LEGACY_UNREADABLE = "device_key_sealed_unreadable";
+    static final String LEGACY_UNAVAILABLE = "device_key_keystore_unavailable";
+    /** Byte-identical to the alias older builds used, or the seal cannot be opened. */
     private static final String ALIAS = "lol.rowe.blocker.device_key";
-    private static final String KEYSTORE_UNAVAILABLE = "device_key_keystore_unavailable";
+
+    /**
+     * The preferences this store needs. The migration is unit-tested through
+     * this seam because the module has no Android framework in its tests.
+     */
+    interface Prefs {
+        String getString(String name, String fallback);
+
+        boolean getBoolean(String name, boolean fallback);
+
+        Editor edit();
+
+        interface Editor {
+            Editor putString(String name, String value);
+
+            Editor putBoolean(String name, boolean value);
+
+            Editor remove(String name);
+
+            void apply();
+        }
+    }
+
+    /** Supplies the AES key a legacy sealed value was written with. */
+    interface KeySource {
+        SecretKey key() throws Exception;
+    }
 
     private DeviceKeyStore() {
     }
 
     static String read(Context context) {
-        SharedPreferences preferences = preferences(context);
-        if (preferences.getBoolean(SEALED_UNREADABLE, false)) {
-            return "";
-        }
-        String sealed = preferences.getString(SEALED, "");
-        if (sealed != null && !sealed.isEmpty()) {
-            try {
-                return AesGcmSealer.open(keystoreKey(), sealed);
-            } catch (Exception exception) {
-                preferences.edit()
-                        .putBoolean(SEALED_UNREADABLE, true)
-                        .remove(SEALED)
-                        .apply();
-                return "";
-            }
-        }
-        String legacy = preferences.getString(PLAINTEXT, "");
-        if (legacy == null || legacy.isEmpty()) {
-            return "";
-        }
-        if (write(context, legacy)) {
-            return legacy;
-        }
-        return "";
+        return read(androidPrefs(context), DeviceKeyStore::keystoreKey);
     }
 
-    static boolean write(Context context, String deviceKey) {
-        SharedPreferences preferences = preferences(context);
-        String value = deviceKey == null ? "" : deviceKey;
-        if (value.isEmpty()) {
-            preferences.edit()
-                    .remove(PLAINTEXT)
-                    .remove(SEALED)
-                    .putBoolean(SEALED_UNREADABLE, false)
-                    .putBoolean(KEYSTORE_UNAVAILABLE, false)
-                    .apply();
-            return true;
+    /**
+     * The plaintext key, migrating a value sealed by an older build.
+     *
+     * <p>A sealed value that cannot be opened is dropped and flagged, exactly
+     * as 0.4.13 did: the parent has to run setup again rather than the phone
+     * quietly running with no key at all.
+     */
+    static String read(Prefs prefs, KeySource keys) {
+        String plaintext = prefs.getString(PLAINTEXT, "");
+        if (plaintext != null && !plaintext.isEmpty()) {
+            return plaintext;
         }
+        String sealed = prefs.getString(LEGACY_SEALED, "");
+        if (sealed == null || sealed.isEmpty()) {
+            return "";
+        }
+        String value;
         try {
-            String sealed = AesGcmSealer.seal(keystoreKey(), value);
-            preferences.edit()
-                    .putString(SEALED, sealed)
-                    .remove(PLAINTEXT)
-                    .putBoolean(SEALED_UNREADABLE, false)
-                    .putBoolean(KEYSTORE_UNAVAILABLE, false)
-                    .apply();
-            return true;
+            value = AesGcmSealer.open(keys.key(), sealed);
         } catch (Exception exception) {
-            preferences.edit()
-                    .remove(PLAINTEXT)
-                    .remove(SEALED)
-                    .putBoolean(SEALED_UNREADABLE, false)
-                    .putBoolean(KEYSTORE_UNAVAILABLE, true)
-                    .apply();
-            return false;
+            value = null;
         }
+        if (value == null || value.isEmpty()) {
+            prefs.edit()
+                    .putBoolean(LEGACY_UNREADABLE, true)
+                    .remove(LEGACY_SEALED)
+                    .apply();
+            return "";
+        }
+        // write() stores the plaintext and drops the sealed value in one edit.
+        write(prefs, value);
+        return value;
     }
 
-    static boolean isSealed(Context context) {
-        SharedPreferences preferences = preferences(context);
-        String sealed = preferences.getString(SEALED, "");
-        return sealed != null && !sealed.isEmpty();
+    /**
+     * Always stores the key in private preferences and returns true.
+     * Leftover keystore flags from older builds are cleared so the setup
+     * screen cannot keep reporting a seal failure.
+     */
+    static boolean write(Context context, String deviceKey) {
+        write(androidPrefs(context), deviceKey);
+        return true;
     }
 
-    static boolean needsKeyReentry(Context context) {
-        return preferences(context).getBoolean(SEALED_UNREADABLE, false);
+    static void write(Prefs prefs, String deviceKey) {
+        String value = deviceKey == null ? "" : deviceKey;
+        Prefs.Editor editor = prefs.edit();
+        if (value.isEmpty()) {
+            editor.remove(PLAINTEXT);
+        } else {
+            editor.putString(PLAINTEXT, value);
+        }
+        editor.remove(LEGACY_SEALED)
+                .putBoolean(LEGACY_UNREADABLE, false)
+                .putBoolean(LEGACY_UNAVAILABLE, false)
+                .apply();
     }
 
-    static boolean keystoreUnavailable(Context context) {
-        return preferences(context).getBoolean(KEYSTORE_UNAVAILABLE, false);
-    }
+    private static Prefs androidPrefs(Context context) {
+        SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return new Prefs() {
+            @Override
+            public String getString(String name, String fallback) {
+                return preferences.getString(name, fallback);
+            }
 
-    private static SharedPreferences preferences(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            @Override
+            public boolean getBoolean(String name, boolean fallback) {
+                return preferences.getBoolean(name, fallback);
+            }
+
+            @Override
+            public Editor edit() {
+                SharedPreferences.Editor editor = preferences.edit();
+                return new Editor() {
+                    @Override
+                    public Editor putString(String name, String value) {
+                        editor.putString(name, value);
+                        return this;
+                    }
+
+                    @Override
+                    public Editor putBoolean(String name, boolean value) {
+                        editor.putBoolean(name, value);
+                        return this;
+                    }
+
+                    @Override
+                    public Editor remove(String name) {
+                        editor.remove(name);
+                        return this;
+                    }
+
+                    @Override
+                    public void apply() {
+                        editor.apply();
+                    }
+                };
+            }
+        };
     }
 
     private static SecretKey keystoreKey() throws Exception {

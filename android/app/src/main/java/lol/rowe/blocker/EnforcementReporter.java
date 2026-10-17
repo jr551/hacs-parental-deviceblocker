@@ -3,17 +3,26 @@ package lol.rowe.blocker;
 import android.content.Context;
 
 /**
- * Reports a disabled Accessibility service to Home Assistant. While the service
- * is enabled, that service owns healthy and fail-open reports so the two
- * channels do not overwrite each other.
+ * The watchdog's check-in with Home Assistant, run on every watchdog pass.
+ *
+ * <p>While Accessibility is off, this reports that state so a parent sees why
+ * the phone is not enforcing. While Accessibility is on, the accessibility
+ * service owns the status fields, so this only refreshes the server's
+ * {@code last_seen}: its policy poller can stop silently while the service
+ * stays bound and enabled, and without a check-in from somewhere else that
+ * looks exactly like a healthy phone that has gone offline.
  */
 final class EnforcementReporter {
     private EnforcementReporter() {
     }
 
-    static void reportIfAccessibilityDisabled(Context context) {
+    static void checkIn(Context context) {
         AppConfig config = AppConfig.load(context);
-        if (!config.isConfigured() || AccessibilityEnforcement.isEnabled(context)) {
+        if (!config.isConfigured()) {
+            return;
+        }
+        if (AccessibilityEnforcement.isEnabled(context)) {
+            heartbeat(config);
             return;
         }
         String detail = "Accessibility is off, so this phone is not enforcing blocks.";
@@ -28,6 +37,18 @@ final class EnforcementReporter {
         } catch (Exception ignored) {
             // The periodic job retries. Until a report lands, Home Assistant
             // shows the agent offline.
+        }
+    }
+
+    /**
+     * A plain liveness check-in. The state read refreshes {@code last_seen}
+     * server-side and leaves the accessibility service's own status alone.
+     */
+    private static void heartbeat(AppConfig config) {
+        try {
+            new HomeAssistantClient(config).postHeartbeat();
+        } catch (Exception ignored) {
+            // The next watchdog pass retries.
         }
     }
 }

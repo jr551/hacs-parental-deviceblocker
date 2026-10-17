@@ -43,19 +43,33 @@ from .const import (
     DOMAIN,
     DEVICE_TYPE_ANDROID,
     DEVICE_TYPE_WINDOWS,
-    LEGACY_S3_OPTION_KEYS,
     MAX_SCREEN_INTERVAL_MINUTES,
     MIN_PARENT_PIN_LENGTH,
     MIN_SCREEN_INTERVAL_MINUTES,
+    OPTION_KEYS,
     SCREEN_SCHEDULE_MANUAL,
     SCREEN_SCHEDULE_MODES,
+)
+from .migration import ENTRY_VERSION
+from .wake_alarm import (
+    CONF_WAKE_ALARM_DAYS,
+    CONF_WAKE_ALARM_ENABLED,
+    CONF_WAKE_ALARM_TIME,
+    CONF_WAKE_ALARM_VOLUME,
+    DEFAULT_WAKE_DAYS,
+    DEFAULT_WAKE_TIME,
+    DEFAULT_WAKE_VOLUME,
+    WAKE_DAYS,
+    normalize_wake_alarm_form,
 )
 
 
 class ParentalDeviceBlockerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure one Windows PC or Android phone."""
 
-    VERSION = 2
+    # New entries start at the version the migration rules expect, so an entry
+    # created today is never migrated on its first load.
+    VERSION = ENTRY_VERSION
 
     @staticmethod
     def async_get_options_flow(config_entry) -> config_entries.OptionsFlow:
@@ -169,7 +183,7 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
         current = {
-            k: v for k, v in self.config_entry.options.items() if k not in LEGACY_S3_OPTION_KEYS
+            k: v for k, v in self.config_entry.options.items() if k in OPTION_KEYS
         }
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -192,6 +206,11 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
                 errors[CONF_PARENT_PIN] = "parent_pin_too_short"
             else:
                 data[CONF_PARENT_PIN] = str(data[CONF_PARENT_PIN]).strip()
+
+            normalized_alarm, alarm_errors = normalize_wake_alarm_form(data)
+            errors.update(alarm_errors)
+            if not alarm_errors:
+                data.update(normalized_alarm)
 
             if data[CONF_SCREEN_RANDOM_MIN] > data[CONF_SCREEN_RANDOM_MAX]:
                 errors[CONF_SCREEN_RANDOM_MAX] = "random_range"
@@ -225,6 +244,41 @@ class ParentalDeviceBlockerOptionsFlow(config_entries.OptionsFlow):
         )
         schema = vol.Schema(
             {
+                vol.Required(
+                    CONF_WAKE_ALARM_ENABLED,
+                    default=current.get(CONF_WAKE_ALARM_ENABLED, False),
+                ): bool,
+                vol.Required(
+                    CONF_WAKE_ALARM_TIME,
+                    default=current.get(CONF_WAKE_ALARM_TIME, DEFAULT_WAKE_TIME),
+                ): selector.TimeSelector(),
+                vol.Required(
+                    CONF_WAKE_ALARM_DAYS,
+                    default=list(current.get(CONF_WAKE_ALARM_DAYS, list(DEFAULT_WAKE_DAYS))),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": day, "label": label}
+                            for day, label in zip(
+                                WAKE_DAYS,
+                                (
+                                    "Monday",
+                                    "Tuesday",
+                                    "Wednesday",
+                                    "Thursday",
+                                    "Friday",
+                                    "Saturday",
+                                    "Sunday",
+                                ),
+                            )
+                        ],
+                        multiple=True,
+                    )
+                ),
+                vol.Required(
+                    CONF_WAKE_ALARM_VOLUME,
+                    default=current.get(CONF_WAKE_ALARM_VOLUME, DEFAULT_WAKE_VOLUME),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
                 vol.Required(
                     CONF_SCREEN_MONITOR_ENABLED,
                     default=current.get(CONF_SCREEN_MONITOR_ENABLED, False),

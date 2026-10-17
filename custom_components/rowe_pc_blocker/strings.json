@@ -4,18 +4,18 @@
     "step": {
       "user": {
         "title": "Add a device",
-        "description": "Create one entry per child PC or phone. Copy the generated API key into that device's agent — it is the only secret the agent needs.",
+        "description": "Create one entry per child PC or phone. Copy the generated API key into that device's agent — it is the only secret the agent needs. Points and the wake alarm follow this entry's child, not another device.",
         "data": {
           "device_id": "Device ID",
           "device_name": "Display name",
           "device_type": "Device type",
-          "windows_username": "Windows child username or Android owner label",
+          "windows_username": "Child name",
           "api_key": "Device API key"
         },
         "data_description": {
           "device_id": "Lowercase letters, numbers, hyphens, and underscores only. Used in API URLs and must match the agent configuration.",
           "device_name": "Shown on the Home Assistant device and dashboards.",
-          "windows_username": "Windows: the child's local account name. Android: a label for your reference.",
+          "windows_username": "The chore-manager child this device belongs to. Use that child's name. Each phone has its own device id and API key.",
           "api_key": "Auto-generated. Regenerating requires updating the agent on the device."
         }
       },
@@ -43,8 +43,12 @@
     "step": {
       "init": {
         "title": "Parental Device Blocker options",
-        "description": "Optional parent PIN override, screen assessment, and provider settings. Leave a password field blank to keep its saved value.",
+        "description": "Wake alarm, parent PIN override, screen assessment, and provider settings. The wake alarm is Android-only and is read on the phone's usual state poll. Volume is 0–100, where 100 is that phone's maximum alarm-stream volume. Leave a secret field blank to keep its saved value.",
         "data": {
+          "wake_alarm_enabled": "Wake alarm",
+          "wake_alarm_time": "Wake time",
+          "wake_alarm_days": "Wake days",
+          "wake_alarm_volume": "Alarm volume (0–100)",
           "screen_monitor_enabled": "Enable screen assessment",
           "vnc_host": "VNC host or IP address",
           "vnc_port": "VNC port",
@@ -62,6 +66,9 @@
           "screen_prompt": "Assessment instructions"
         },
         "data_description": {
+          "wake_alarm_enabled": "The person holding the phone can stop a ringing alarm. Changing the time, days, or volume is done here.",
+          "wake_alarm_days": "Monday–Friday is the starting selection.",
+          "wake_alarm_volume": "0 is silent. 100 is the phone's maximum alarm-stream volume.",
           "screen_schedule_mode": "Manual creates only the Check screen now button. Fixed and random also run automatically.",
           "kilo_base_url": "Leave unchanged to use the documented Kilo Gateway default.",
           "kilo_model": "The official balanced automatic route is kilo-auto/balanced.",
@@ -73,7 +80,11 @@
       "random_range": "The maximum interval must be greater than or equal to the minimum.",
       "invalid_provider_url": "Enter a valid HTTPS base URL without credentials, a query, or a fragment.",
       "parent_pin_too_short": "Use a parent PIN with at least four characters.",
-      "required_when_enabled": "Required when screen assessment is enabled."
+      "required_when_enabled": "This value is required when screen assessment is enabled.",
+      "invalid_wake_time": "Enter a wake time as HH:MM.",
+      "invalid_wake_days": "Choose weekdays from the list.",
+      "wake_days_required": "Choose at least one day when the wake alarm is on.",
+      "invalid_wake_volume": "Alarm volume must be a whole number from 0 to 100."
     }
   }
 }

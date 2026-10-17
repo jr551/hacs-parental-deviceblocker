@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- **Parent-approved phone setup.** A phone now asks to be set up instead of configuring itself: it sends the child's name, Home Assistant raises a pending request, and a parent approves or rejects it from the UI. `POST /api/rowe_pc_blocker/provision` returns `202 pending` with a request id; `GET /api/rowe_pc_blocker/provision/{request_id}` is polled until the parent decides. Requests expire after 30 minutes and approval reuses an existing phone entry for that child when one exists.
+- `sensor.rowe_pc_blocker_pending_setups` plus dynamic `button.rowe_pc_blocker_approve_*` / `button.rowe_pc_blocker_reject_*` entities for those requests.
+- **Per-child allowed apps managed from Home Assistant.** `text.<device>_allowed_apps` sets the apps a blocked phone may still open (empty means the client's built-in defaults), and `sensor.<device>_installed_apps` lists what the phone reports.
+- **Cross-device block screen.** The state payload now carries a `family` object with the same child's other devices, so a blocked PC shows the child's phone status and a blocked phone shows the PC's.
+- `rowe_pc_blocker_agent_stale` / `rowe_pc_blocker_agent_recovered` events, fired once per episode, plus a `last_seen` attribute on the agent-online sensor. `deploy/home-assistant/rowe_pc_blocker_agent_stale.yaml` alerts a parent when an agent stops checking in.
+- Android: watchdog heartbeat so a phone with a dead accessibility poller still checks in, and a self-healing poll scheduler.
+
+### Changed
+
+- Android app is now labelled **Android Settings** with a gear icon, so it is not obviously a parental-control app on the child's launcher.
+- Android setup is a single screen: Home Assistant address and the child's name, then wait for a parent to approve.
+- Android location reporting requests a fresh fix when the cached one is stale, instead of only ever reading cached fixes.
+- Android package queries use a `<queries>` launcher-intent declaration instead of `QUERY_ALL_PACKAGES`.
+
+### Removed
+
+- Android media/photo backup client code, permissions, and UI (the server side was removed in 0.10.0).
+
 ## 0.10.1
 
 ### Security

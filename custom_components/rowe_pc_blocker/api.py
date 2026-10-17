@@ -30,16 +30,31 @@ from .const import (
     CONF_PARENT_PIN,
     DOMAIN,
     EVENT_PARENT_OVERRIDE,
+    EVENT_POINTS_HOUR,
+    ONLINE_TIMEOUT_SECONDS,
     PARENT_OVERRIDE_MINUTES,
+    POINTS_HOUR_COST,
+    POINTS_HOUR_MINUTES,
     PARENT_PIN_LOCKOUT_MINUTES,
     PARENT_PIN_MAX_ATTEMPTS,
 )
-from .portal import PORTAL_HTML, build_portal_snapshot, resolve_child_identity
-from .protocol_surface import (
-    BACKUP_CONFIG_DISABLED_BODY,
-    BACKUP_PRESIGN_DISABLED_BODY,
-    BACKUP_PRESIGN_DISABLED_STATUS,
+from .apps import DEFAULT_ALLOWED_APPS, parse_allowed_apps
+from .family import family_peers
+from .pending import async_create_request, async_load_pending
+from .portal import (
+    PORTAL_HTML,
+    ChildIdentity,
+    build_portal_snapshot,
+    points_hour_refusal,
+    resolve_child_identity,
 )
+from .provision import (
+    collection_response,
+    match_child,
+    request_response,
+    unknown_child_response,
+)
+from .wake_alarm import wake_alarm_payload
 
 
 def _parent_pin(hass: HomeAssistant, runtime) -> str:
@@ -77,6 +92,15 @@ def _runtime_for_request(hass: HomeAssistant, device_id: str):
         ),
         None,
     )
+
+
+def _runtimes(hass: HomeAssistant) -> list:
+    """Every configured device runtime."""
+    return [
+        item
+        for item in hass.data.get(DOMAIN, {}).values()
+        if getattr(item, "device_id", None)
+    ]
 
 
 async def _require_runtime(
@@ -193,6 +217,17 @@ class PcStateView(HomeAssistantView):
                 ),
                 "extension_until": (
                     runtime.extension_until.isoformat() if runtime.extension_until else None
+                ),
+                "points_hour_cost": POINTS_HOUR_COST,
+                "points_balance": _points_balance(request.app["hass"], runtime),
+                "wake_alarm": _wake_alarm(request.app["hass"], runtime),
+                "allowed_apps": parse_allowed_apps(runtime.allowed_apps)
+                or list(DEFAULT_ALLOWED_APPS),
+                "family": family_peers(
+                    runtime,
+                    _runtimes(hass),
+                    dt_util.utcnow(),
+                    ONLINE_TIMEOUT_SECONDS,
                 ),
             }
         )
@@ -365,6 +400,101 @@ class PcPortalActionView(HomeAssistantView):
         return self.json({"ok": True})
 
 
+def _wake_alarm(hass: HomeAssistant, runtime) -> dict:
+    """Alarm for this device entry. A missing entry keeps the phone's last cache."""
+
+    entry = hass.config_entries.async_get_entry(runtime.entry_id)
+    options = entry.options if entry is not None else {}
+    return wake_alarm_payload(options)
+
+
+def _points_balance(hass: HomeAssistant, runtime) -> int | None:
+    context = _portal_context(hass, runtime)
+    if context is None:
+        return None
+    raw = context[1].get("points", {}).get("state")
+    try:
+        balance = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return balance if balance >= 0 else None
+
+
+class PcPointsHourView(HomeAssistantView):
+    """Spend Taskmate points for one hour of phone time."""
+
+    url = "/api/rowe_pc_blocker/{device_id}/points_hour"
+    name = "api:rowe_pc_blocker:points_hour"
+    requires_auth = False
+
+    async def post(self, request: web.Request, device_id: str) -> web.Response:
+        hass = request.app["hass"]
+        runtime = await _require_runtime(hass, request, device_id)
+        await read_json_object(request)
+        context = _portal_context(hass, runtime)
+        balance = _points_balance(hass, runtime)
+        refusal = points_hour_refusal(balance, runtime.blocked, POINTS_HOUR_COST)
+        if refusal == "not_blocked":
+            return self.json({"error": "This phone is not blocked."}, status_code=409)
+        if refusal == "no_points":
+            return self.json(
+                {"error": "Taskmate points are not available for this phone."},
+                status_code=404,
+            )
+        if refusal == "insufficient":
+            return self.json(
+                {
+                    "error": f"Not enough points. An hour costs {POINTS_HOUR_COST}.",
+                    "points_balance": balance,
+                    "points_hour_cost": POINTS_HOUR_COST,
+                },
+                status_code=402,
+            )
+        child = context[0]
+        try:
+            await hass.services.async_call(
+                "taskmate",
+                "remove_points",
+                {
+                    "child_id": child.child_id,
+                    "points": POINTS_HOUR_COST,
+                    "reason": "Bought 1 hour of phone time",
+                },
+                blocking=True,
+            )
+        except Exception:
+            return self.json(
+                {"error": "Could not spend Taskmate points."},
+                status_code=502,
+            )
+        until = await runtime.async_grant_points_hour()
+        if until is None:
+            return self.json(
+                {"error": "Points were spent but the phone is no longer blocked."},
+                status_code=409,
+            )
+        hass.bus.async_fire(
+            EVENT_POINTS_HOUR,
+            {
+                "device_id": device_id,
+                "device_name": runtime.device_name,
+                "child_id": child.child_id,
+                "child_name": child.name,
+                "points": POINTS_HOUR_COST,
+                "minutes": POINTS_HOUR_MINUTES,
+                "until": until.isoformat(),
+            },
+        )
+        return self.json(
+            {
+                "ok": True,
+                "minutes": POINTS_HOUR_MINUTES,
+                "points": POINTS_HOUR_COST,
+                "until": until.isoformat(),
+            }
+        )
+
+
 class PcParentOverrideView(HomeAssistantView):
     """Let a parent grant one extra hour at the locked device with the parent PIN."""
 
@@ -462,63 +592,85 @@ class PcParentOverrideView(HomeAssistantView):
         )
 
 
-class AndroidBackupConfigView(HomeAssistantView):
-    """Legacy Android backup probe; server-side backup was removed in 0.10.0."""
+def _provision_children(hass: HomeAssistant) -> list[ChildIdentity]:
+    children: list[ChildIdentity] = []
+    seen: set[str] = set()
+    for state in hass.states.async_all("sensor"):
+        entity_id = state.entity_id
+        if not entity_id.startswith("sensor.family_chore_manager_"):
+            continue
+        if not entity_id.endswith("_points"):
+            continue
+        child_id = str(state.attributes.get("child_id", "")).strip()
+        name = str(state.attributes.get("child_name", "")).strip()
+        if not child_id or not name or child_id in seen:
+            continue
+        seen.add(child_id)
+        children.append(ChildIdentity(child_id=child_id, name=name))
+    return children
 
-    url = "/api/rowe_pc_blocker/{device_id}/backup/config"
-    name = "api:rowe_pc_blocker:backup_config"
+
+class AndroidProvisionView(HomeAssistantView):
+    """Let a phone ask to be set up from a child name.
+
+    The request waits for a parent to approve it from the dashboard; only an
+    approved request hands the phone a device id and API key. The rules live in
+    provision.py.
+    """
+
+    url = "/api/rowe_pc_blocker/provision"
+    name = "api:rowe_pc_blocker:provision"
     requires_auth = False
 
-    async def get(self, request: web.Request, device_id: str) -> web.Response:
+    async def post(self, request: web.Request) -> web.Response:
         hass = request.app["hass"]
-        await _require_runtime(hass, request, device_id)
-        return self.json(BACKUP_CONFIG_DISABLED_BODY)
+        try:
+            payload = await read_json_object(request)
+        except web.HTTPBadRequest:
+            return self.json({"error": "Expected a JSON object."}, status_code=400)
+
+        child_name = str(payload.get("child_name", "")).strip()
+        child = match_child(child_name, _provision_children(hass))
+        if child is None:
+            status_code, body = unknown_child_response()
+            return self.json(body, status_code=status_code)
+        pending = await async_create_request(hass, child.name)
+        status_code, body = request_response(pending)
+        return self.json(body, status_code=status_code)
 
 
-class AndroidBackupPresignView(HomeAssistantView):
-    """Legacy presign endpoint; always disabled after 0.10.0."""
+class AndroidProvisionStatusView(HomeAssistantView):
+    """Let a phone collect the answer to its setup request.
 
-    url = "/api/rowe_pc_blocker/{device_id}/backup/presign"
-    name = "api:rowe_pc_blocker:backup_presign"
+    Collection is idempotent: an approved request keeps returning the same
+    credentials until it expires.
+    """
+
+    url = "/api/rowe_pc_blocker/provision/{request_id}"
+    name = "api:rowe_pc_blocker:provision_status"
     requires_auth = False
 
-    async def post(self, request: web.Request, device_id: str) -> web.Response:
+    async def get(self, request: web.Request, request_id: str) -> web.Response:
         hass = request.app["hass"]
-        await _require_runtime(hass, request, device_id)
-        await read_json_object(request)
-        return self.json(
-            BACKUP_PRESIGN_DISABLED_BODY,
-            status_code=BACKUP_PRESIGN_DISABLED_STATUS,
+        store = await async_load_pending(hass)
+        status_code, body = collection_response(
+            store.get(request_id[:64], dt_util.utcnow())
         )
-
-
-class AndroidBackupStatusView(HomeAssistantView):
-    """Accept bounded backup progress for the parent-facing status sensor."""
-
-    url = "/api/rowe_pc_blocker/{device_id}/backup/status"
-    name = "api:rowe_pc_blocker:backup_status"
-    requires_auth = False
-
-    async def post(self, request: web.Request, device_id: str) -> web.Response:
-        hass = request.app["hass"]
-        runtime = await _require_runtime(hass, request, device_id)
-        payload = await read_json_object(request)
-        runtime.update_backup_status(payload)
-        return self.json({"ok": True})
+        return self.json(body, status_code=status_code)
 
 
 def async_register_api(hass: HomeAssistant) -> None:
     """Register API views once."""
     if hass.data.setdefault(DOMAIN, {}).get("_api_registered"):
         return
+    hass.http.register_view(AndroidProvisionView)
+    hass.http.register_view(AndroidProvisionStatusView)
     hass.http.register_view(PcStateView)
     hass.http.register_view(PcParentOverrideView)
+    hass.http.register_view(PcPointsHourView)
     hass.http.register_view(PcActivityView)
     hass.http.register_view(PcExtensionView)
     hass.http.register_view(PcPortalView)
     hass.http.register_view(PcPortalDataView)
     hass.http.register_view(PcPortalActionView)
-    hass.http.register_view(AndroidBackupConfigView)
-    hass.http.register_view(AndroidBackupPresignView)
-    hass.http.register_view(AndroidBackupStatusView)
     hass.data[DOMAIN]["_api_registered"] = True

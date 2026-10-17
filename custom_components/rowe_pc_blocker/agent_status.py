@@ -12,6 +12,11 @@ DEGRADED_UI_STATUSES = frozenset(
     }
 )
 
+# One stale episode: alert once when the agent goes silent, once when it
+# returns. A still-silent agent must not repeat the stale event.
+AGENT_STALE = "stale"
+AGENT_RECOVERED = "recovered"
+
 # Statuses that mean the points portal is not broken. `idle` is what the
 # Windows activity app reports while the kiosk is hidden; older builds reported
 # a sticky `starting` value in that same situation.
@@ -46,6 +51,31 @@ def resolve_ui_error(previous: str, payload: dict) -> str:
 
 def is_portal_error_status(status: str) -> bool:
     return status.startswith("portal_") and status not in HEALTHY_PORTAL_STATUSES
+
+
+def agent_is_online(
+    last_seen: datetime | None, now: datetime, timeout_seconds: int
+) -> bool:
+    """True when the agent checked in within the timeout."""
+    if last_seen is None:
+        return False
+    return (now - last_seen).total_seconds() < timeout_seconds
+
+
+def agent_stale_transition(
+    was_stale: bool, online: bool, seen: bool
+) -> tuple[bool, str | None]:
+    """Track one stale episode across checks.
+
+    Returns the new stale flag and, when this check crosses a boundary, either
+    ``AGENT_STALE`` or ``AGENT_RECOVERED``. A device that has never checked in
+    is not stale: there is no episode to report.
+    """
+    if online:
+        return (False, AGENT_RECOVERED) if was_stale else (False, None)
+    if seen and not was_stale:
+        return True, AGENT_STALE
+    return was_stale, None
 
 
 def should_notify_enforcement_degraded(

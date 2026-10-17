@@ -8,7 +8,7 @@ import android.content.ComponentName;
 import android.content.Context;
 
 /**
- * Backup check when the foreground watchdog has been killed. Periodic jobs
+ * Watchdog check when the foreground service has been killed. Periodic jobs
  * cannot run faster than every 15 minutes.
  */
 public final class EnforcementWatchdogJobService extends JobService {
@@ -23,7 +23,7 @@ public final class EnforcementWatchdogJobService extends JobService {
                 JOB_ID, new ComponentName(context, EnforcementWatchdogJobService.class))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setPersisted(true)
-                .setPeriodic(15 * 60 * 1000L)
+                .setPeriodic(ReportSchedule.HOURLY_REPORT_MS)
                 .build();
         scheduler.schedule(job);
     }
@@ -31,7 +31,13 @@ public final class EnforcementWatchdogJobService extends JobService {
     @Override
     public boolean onStartJob(JobParameters params) {
         new Thread(() -> {
-            EnforcementReporter.reportIfAccessibilityDisabled(this);
+            try {
+                EnforcementReporter.checkIn(this);
+            } catch (Throwable ignored) {
+                // A failed check-in must not skip jobFinished, or the periodic
+                // job would never be rescheduled.
+            }
+            AppUpdater.check(this);
             jobFinished(params, false);
         }).start();
         return true;

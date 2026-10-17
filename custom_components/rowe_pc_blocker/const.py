@@ -21,6 +21,9 @@ PARENT_PIN_MAX_ATTEMPTS = 2
 PARENT_PIN_LOCKOUT_MINUTES = 15
 PARENT_OVERRIDE_MINUTES = 60
 EVENT_PARENT_OVERRIDE = "rowe_pc_blocker_parent_override"
+POINTS_HOUR_COST = 200
+POINTS_HOUR_MINUTES = 60
+EVENT_POINTS_HOUR = "rowe_pc_blocker_points_hour"
 
 CONF_SCREEN_MONITOR_ENABLED = "screen_monitor_enabled"
 CONF_VNC_HOST = "vnc_host"
@@ -36,17 +39,29 @@ CONF_KILO_MODEL = "kilo_model"
 CONF_SCREEN_PROMPT = "screen_prompt"
 CONF_CLEAR_SCREEN_CREDENTIALS = "clear_screen_credentials"
 
-# Removed in 0.10.0; kept for config-entry migration only.
-LEGACY_S3_OPTION_KEYS = frozenset(
+# Every option the options flow writes. The config-entry migration keeps only
+# these keys, so options from removed features are dropped on upgrade. The wake
+# alarm keys are repeated from wake_alarm.py, which stays import-free so its
+# schedule rules can be tested without Home Assistant.
+OPTION_KEYS = frozenset(
     {
-        "media_backup_enabled",
-        "s3_endpoint",
-        "s3_region",
-        "s3_bucket",
-        "s3_access_key",
-        "s3_secret_key",
-        "s3_prefix",
-        "clear_s3_credentials",
+        CONF_PARENT_PIN,
+        CONF_SCREEN_MONITOR_ENABLED,
+        CONF_VNC_HOST,
+        CONF_VNC_PORT,
+        CONF_VNC_PASSWORD,
+        CONF_SCREEN_SCHEDULE_MODE,
+        CONF_SCREEN_FIXED_INTERVAL,
+        CONF_SCREEN_RANDOM_MIN,
+        CONF_SCREEN_RANDOM_MAX,
+        CONF_KILO_API_KEY,
+        CONF_KILO_BASE_URL,
+        CONF_KILO_MODEL,
+        CONF_SCREEN_PROMPT,
+        "wake_alarm_enabled",
+        "wake_alarm_time",
+        "wake_alarm_days",
+        "wake_alarm_volume",
     }
 )
 
@@ -54,11 +69,19 @@ DEVICE_TYPE_WINDOWS = "windows"
 DEVICE_TYPE_ANDROID = "android"
 
 DEFAULT_MESSAGE = "This device has been paused by a parent."
-ONLINE_TIMEOUT_SECONDS = 90
+# Policy polls are about once a minute. Allow two missed polls before
+# Agent online turns off, so one slow request does not flap the sensor.
+ONLINE_TIMEOUT_SECONDS = 180
 INITIAL_GRACE_SECONDS = 30
 EXTENSION_SECONDS = 300
 EXTENSION_COOLDOWN_SECONDS = 3600
 SIGNAL_UPDATE = f"{DOMAIN}_update_{{}}"
+SIGNAL_PENDING = f"{DOMAIN}_pending"
+
+# Fired once when an agent crosses the offline threshold and once when it
+# checks in again; a still-silent agent does not repeat the stale event.
+EVENT_AGENT_STALE = "rowe_pc_blocker_agent_stale"
+EVENT_AGENT_RECOVERED = "rowe_pc_blocker_agent_recovered"
 
 SCREEN_SCHEDULE_MANUAL = "manual"
 SCREEN_SCHEDULE_FIXED = "fixed"

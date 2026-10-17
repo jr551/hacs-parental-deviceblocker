@@ -123,10 +123,10 @@ fi
 ha_url="${ha_url%/}"
 
 step "5/8  Writing the app configuration"
-# Debug builds are debuggable, so run-as can seed plaintext preferences. The
-# app seals the device key into the Android Keystore on next launch and deletes
-# the plaintext copy. Release builds are not debuggable: run-as will fail and
-# the parent types the key into the PIN-gated screen.
+# Debug builds are debuggable, so run-as can seed private preferences. The
+# device key stays in those preferences; it is not sealed in the Android
+# Keystore. Release builds are not debuggable: run-as will fail and the parent
+# types the key into the PIN-gated screen.
 prefs_xml=$(cat <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>

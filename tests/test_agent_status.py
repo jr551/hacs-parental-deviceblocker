@@ -110,5 +110,52 @@ class AgentStatusTests(unittest.TestCase):
         )
 
 
+class AgentOnlineTests(unittest.TestCase):
+    def test_a_device_that_never_checked_in_is_offline(self) -> None:
+        now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        self.assertFalse(STATUS.agent_is_online(None, now, 180))
+
+    def test_the_timeout_is_the_boundary(self) -> None:
+        now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        self.assertTrue(STATUS.agent_is_online(now - timedelta(seconds=179), now, 180))
+        self.assertFalse(STATUS.agent_is_online(now - timedelta(seconds=180), now, 180))
+
+
+class AgentStaleTransitionTests(unittest.TestCase):
+    """One event per offline episode, and one when the agent comes back."""
+
+    def test_a_device_that_never_checked_in_is_not_stale(self) -> None:
+        self.assertEqual(
+            STATUS.agent_stale_transition(False, False, False), (False, None)
+        )
+
+    def test_going_silent_fires_once(self) -> None:
+        self.assertEqual(
+            STATUS.agent_stale_transition(False, False, True),
+            (True, STATUS.AGENT_STALE),
+        )
+        # Still silent: no repeat, however many checks run.
+        self.assertEqual(STATUS.agent_stale_transition(True, False, True), (True, None))
+        self.assertEqual(STATUS.agent_stale_transition(True, False, True), (True, None))
+
+    def test_coming_back_fires_once(self) -> None:
+        self.assertEqual(
+            STATUS.agent_stale_transition(True, True, True),
+            (False, STATUS.AGENT_RECOVERED),
+        )
+        self.assertEqual(STATUS.agent_stale_transition(False, True, True), (False, None))
+
+    def test_a_second_episode_fires_again(self) -> None:
+        stale, event = STATUS.agent_stale_transition(False, False, True)
+        self.assertEqual(event, STATUS.AGENT_STALE)
+        stale, event = STATUS.agent_stale_transition(stale, True, True)
+        self.assertEqual(event, STATUS.AGENT_RECOVERED)
+        stale, event = STATUS.agent_stale_transition(stale, False, True)
+        self.assertEqual((stale, event), (True, STATUS.AGENT_STALE))
+
+    def test_an_agent_that_has_never_checked_in_never_recovers(self) -> None:
+        self.assertEqual(STATUS.agent_stale_transition(False, True, False), (False, None))
+
+
 if __name__ == "__main__":
     unittest.main()
