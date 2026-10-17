@@ -1,9 +1,9 @@
 # Android deploy checklist
 
-Use this before installing Parental Device Blocker on a child's phone. Android **0.5.0** belongs with Home Assistant **0.10.0** or newer. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
+Use this before installing Parental Device Blocker on a child's phone. Android **0.5.1** belongs with Home Assistant **0.10.0** or newer. The HACS zip does not contain the APK. The release asset to install is the non-debug package:
 
-- `ParentalDeviceBlocker-0.5.0.apk`
-- `ParentalDeviceBlocker-0.5.0.apk.sha256`
+- `ParentalDeviceBlocker-0.5.1.apk`
+- `ParentalDeviceBlocker-0.5.1.apk.sha256`
 
 Verify the checksum before install. Do not install `*-debug.apk` on a phone a child uses.
 
@@ -21,12 +21,18 @@ Documented Samsung targets: Galaxy S20 (SM-G980F/G981B), Galaxy S20+ (SM-G986B),
 - [ ] Set a distinct Home Assistant parent-override PIN, or leave the override disabled on purpose. This PIN is not the phone's local configuration PIN.
 - [ ] Choose an HTTPS Home Assistant URL that the phone can reach on Wi-Fi and on mobile data. Plain HTTP is accepted only for a local address.
 - [ ] Server-mediated S3 backup was removed in integration 0.10.0; skip media-backup planning unless you use a separate tool.
-- [ ] Download the **0.5.0** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.5.0.apk.sha256`.
+- [ ] Download the **0.5.1** release APK and check its SHA-256 against `ParentalDeviceBlocker-0.5.1.apk.sha256`.
+
+## Upgrading a phone that is already set up
+
+- [ ] Install over the existing app with the same signing key (`adb install -r`). App data is preserved, so the stored device id and API key survive.
+- [ ] Builds up to 0.4.13 sealed the API key with an Android Keystore AES key; 0.5.x stores it in app-private preferences. The first read after the upgrade unseals the old value and rewrites it, so no re-setup is needed. If the sealed value cannot be opened (the keystore key was lost, e.g. after a factory reset or a restore to different hardware), the phone reads no key and behaves as unconfigured — run **Set up this phone** again.
+- [ ] After the upgrade, confirm within a minute that Home Assistant shows the agent online and that `EnforcementWatchdogService` is running on the phone. A phone that reads no key never starts the watchdog and never checks in.
 
 ## Per phone
 
 - [ ] The parent Google account is the device owner. The child is not a device admin.
-- [ ] Install `ParentalDeviceBlocker-0.5.0.apk` (package `lol.rowe.blocker`, not `lol.rowe.blocker.debug`).
+- [ ] Install `ParentalDeviceBlocker-0.5.1.apk` (package `lol.rowe.blocker`, not `lol.rowe.blocker.debug`).
 - [ ] Create a local configuration PIN of at least four digits. There is no default and no recovery PIN. Two wrong attempts lock the setup screen for 15 minutes.
 - [ ] Enter the child's name and the Home Assistant address, then tap **Set up this phone**. The screen waits for a parent to approve the request in Home Assistant (`sensor.rowe_pc_blocker_pending_setups`, then the approve button). The phone stores the device id and API key; the parent does not type the key. A declined or expired request saves nothing.
 - [ ] Turn Accessibility on for Parental Device Blocker (the app installs as **Android Settings** on the launcher; the accessibility service keeps its own name). Allow restricted settings if Android asks.

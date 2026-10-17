@@ -113,6 +113,45 @@ Returns HTML kiosk page. Query `key` allowed for auth.
 
 **503** if PIN not configured; **403** / **429** on wrong PIN or lockout; **409** if not blocked.
 
+## Buying an hour with points (Android)
+
+### `POST /api/rowe_pc_blocker/{device_id}/points_hour`
+
+**Request:** `{}` (empty object)
+
+Spends the child's Taskmate points for one hour of phone time. The phone calls this from the block screen; the parent never types anything.
+
+**Response 200** — the hour was granted:
+
+```json
+{
+  "ok": true,
+  "minutes": 60,
+  "points": 200,
+  "until": "2026-01-01T12:05:00+00:00"
+}
+```
+
+**Response 409** — the phone is not blocked: `{"error": "This phone is not blocked."}`
+
+**Response 409** — the block lifted between the check and the spend: `{"error": "Points were spent but the phone is no longer blocked."}`
+
+**Response 404** — no Taskmate child for this phone: `{"error": "Taskmate points are not available for this phone."}`
+
+**Response 402** — not enough points:
+
+```json
+{
+  "error": "Not enough points. An hour costs 200.",
+  "points_balance": 40,
+  "points_hour_cost": 200
+}
+```
+
+**Response 502** — the Taskmate service call failed: `{"error": "Could not spend Taskmate points."}`
+
+A successful call fires the `rowe_pc_blocker_points_hour` event with `device_id`, `device_name`, `child_id`, `child_name`, `points`, `minutes`, and `until`.
+
 ## Android setup (provisioning)
 
 A phone asks to be set up from a child name and then waits for a parent to approve the request in Home Assistant. Only an approved request hands the phone a device id and API key, so the parent never types a key. Pending requests live in `.storage/rowe_pc_blocker.pending` and expire after **30 minutes**. Collection is idempotent: an approved request keeps returning the same credentials until it expires.
