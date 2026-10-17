@@ -1,74 +1,87 @@
-# Parental Device Blocker - agent stale alert.
+# Parental Device Blocker - agent offline for a day.
 #
-# Fires on the integration's own events, so it needs no per-device trigger list:
-#   rowe_pc_blocker_agent_stale     -> a device stopped checking in
-#   rowe_pc_blocker_agent_recovered -> that device came back
+# A parent does not want a warning every time a phone sleeps or a PC is
+# switched off for a few minutes. The only silence worth acting on is a whole
+# day, which is the same threshold the PC agent enforces on itself.
 #
-# A PC that is simply switched off is not a fault, so a device whose plug
-# reports no real draw is skipped: silence from a powered-off PC is expected.
-# Phones have no entry in `power_sensors` and are always expected to check in.
+# A check runs every fifteen minutes over every `*_agent_online` sensor rather
+# than reacting to the integration's first stale event, because that event
+# fires once after three minutes and would never be seen again.
+#
+# A PC whose smart plug reports no real draw is skipped: silence from a
+# powered-off PC is expected. Phones have no power sensor and always count.
 #
 # Deploy to /config/automations/rowe_pc_blocker_agent_stale.yaml and reload
 # automations. Uses the live ha-notify Hermes route (rest_command.notify_john).
 - id: parental_device_blocker_agent_stale_alert
-  alias: Parental Device Blocker - Agent Stale Alert
+  alias: Parental Device Blocker - Agent offline for a day
   description: >-
-    Alerts a parent when a blocker agent stops checking in, and again when it
-    recovers. Enforcement cannot be trusted while an agent is offline.
-  mode: queued
-  max: 10
+    Alerts a parent once a device's blocker agent has been silent for 24 hours,
+    and clears the notice when it checks in again.
+  mode: single
+  max_exceeded: silent
   trigger:
-    - platform: event
-      event_type: rowe_pc_blocker_agent_stale
-      id: stale
+    - platform: time_pattern
+      minutes: "/15"
+      id: check
     - platform: event
       event_type: rowe_pc_blocker_agent_recovered
       id: recovered
   action:
     - variables:
-        # device_id -> the smart-plug power sensor that proves the device is on.
-        # Replace with your own entities; an empty map means every device alerts.
-        power_sensors: {}
-        # Watts above which the device counts as powered on.
+        threshold: 86400
+        # One phone push per outage: only the check that lands within twenty
+        # minutes of crossing the threshold sends one.
+        push_window: 1200
         power_on_watts: 10
-        device_id: "{{ trigger.event.data.device_id | default('unknown') }}"
-        device_type: "{{ trigger.event.data.device_type | default('') }}"
-        minutes: "{{ trigger.event.data.minutes_offline | default(0) | int }}"
-        friendly: >-
-          {{ state_attr('binary_sensor.' ~ device_id | replace('-', '_') ~ '_agent_online',
-                        'friendly_name') or device_id }}
-        power_entity: "{{ power_sensors.get(device_id) }}"
-        powered_off: >-
-          {{ power_entity is not none
-             and states(power_entity) | float(0) <= power_on_watts }}
-        stale_message: >-
-          {{ friendly }} has not checked in for {{ minutes }} minutes.
-          Blocks may not be enforced on it.
-        recovered_message: "{{ friendly }} is checking in again."
-    # A powered-off PC is expected to be silent; only report it if it is on.
+    # A device coming back only needs its notice taking down.
     - if:
         - condition: template
-          value_template: "{{ trigger.id == 'stale' and powered_off }}"
+          value_template: "{{ trigger.id == 'recovered' }}"
       then:
-        - stop: "{{ friendly }} is powered off; silence is expected."
-    - variables:
-        message: >-
-          {{ stale_message if trigger.id == 'stale' else recovered_message }}
-    - service: persistent_notification.create
-      data:
-        title: >-
-          {{ 'Agent offline - ' ~ friendly if trigger.id == 'stale'
-             else 'Agent back - ' ~ friendly }}
-        message: "{{ message }}"
-        notification_id: "parental_device_agent_{{ device_id }}"
-    - if:
-        - condition: template
-          value_template: "{{ trigger.id == 'stale' }}"
-      then:
-        - service: rest_command.notify_john
-          data:
-            message: "{{ message }}"
-      else:
+        - variables:
+            gone: "{{ trigger.event.data.device_id | default('unknown') }}"
         - service: persistent_notification.dismiss
           data:
-            notification_id: "parental_device_agent_{{ device_id }}"
+            notification_id: "parental_device_agent_{{ gone }}"
+        - service: persistent_notification.dismiss
+          data:
+            notification_id: "parental_device_agent_{{ gone | replace('-', '_') }}"
+        - stop: "Recovery clears the notice."
+    - repeat:
+        for_each: >-
+          {{ states.binary_sensor
+             | selectattr('entity_id', 'match', '.*_agent_online')
+             | map(attribute='entity_id') | list }}
+        sequence:
+          - variables:
+              sensor: "{{ repeat.item }}"
+              prefix: >-
+                {{ repeat.item | replace('binary_sensor.', '')
+                   | replace('_agent_online', '') }}
+              age: "{{ state_attr(sensor, 'last_seen_age_seconds') | int(-1) }}"
+              watts: "{{ states('sensor.' ~ prefix ~ '_power') | float(-1) }}"
+              friendly: "{{ state_attr(sensor, 'friendly_name') or sensor }}"
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ age >= threshold and (watts < 0 or watts > power_on_watts) }}
+            then:
+              - service: persistent_notification.create
+                data:
+                  title: "Offline for a day - {{ friendly }}"
+                  message: >-
+                    {{ friendly }} has not checked in for
+                    {{ (age / 3600) | round(1) }} hours. Blocks and the phone
+                    tamper check cannot be verified on it.
+                  notification_id: "parental_device_agent_{{ prefix }}"
+              - if:
+                  - condition: template
+                    value_template: "{{ age < threshold + push_window }}"
+                then:
+                  - service: rest_command.notify_john
+                    data:
+                      message: >-
+                        {{ friendly }} has not checked in for over a day. It may
+                        be switched off, or its agent may have been tampered
+                        with.
