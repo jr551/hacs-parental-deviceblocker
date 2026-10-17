@@ -25,6 +25,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private final ScheduledExecutorService updateExecutor = Executors.newSingleThreadScheduledExecutor();
     /** Posts the day's notification dump; never the poll thread. */
     private final ScheduledExecutorService notificationExecutor = Executors.newSingleThreadScheduledExecutor();
+    /** Fetches one on-demand location fix; never the poll thread. */
+    private final ScheduledExecutorService locationExecutor = Executors.newSingleThreadScheduledExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean pollRunning = new AtomicBoolean();
     private final AtomicBoolean pollScheduled = new AtomicBoolean();
@@ -49,8 +51,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private long lastHeartbeat;
     /** The status Home Assistant last received, so a change posts at once. */
     private volatile String lastPostedStatus = "";
-    /** Elapsed time of the last report that carried a position. */
-    private long lastLocationReport;
+    /** The location request id this phone last answered or gave up on. */
+    private volatile String lastLocationRequest = "";
     private PolicyDecision decision;
 
     @Override
@@ -59,6 +61,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
         activeInstance = this;
         decision = new PolicyDecision(getPackageName());
         refreshPendingUpdate();
+        lastLocationRequest = OnDemandLocation.lastRequestId(this);
         if (AppConfig.load(this).isConfigured()) {
             EnforcementWatchdogJobService.schedule(this);
             EnforcementWatchdogService.start(this);
@@ -213,6 +216,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
         activityExecutor.shutdownNow();
         updateExecutor.shutdownNow();
         notificationExecutor.shutdownNow();
+        locationExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -253,7 +257,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
                     "",
                     false);
             MainActivity.applyPolicySnapshot(policy);
-            reportLocationIfDue();
+            answerLocationRequest(policy);
             if (decision.shouldShowBlockScreen(kioskActive(policy), foregroundPackage)) {
                 showBlockScreen(policy);
             } else if (policy.shouldWarnGrace()) {
@@ -324,25 +328,50 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Send a position as soon as one is available instead of waiting for the
-     * hourly batch. {@link PassiveLocation#latest} also asks a provider for a
-     * fresh fix when the cache is stale, so the poll both warms the cache and
-     * reports it. Reading a cached fix is free; the request itself is throttled
-     * inside PassiveLocation, so this adds no extra wakeups.
+     * Answer a parent's location request. Nothing touches the provider until
+     * one arrives, and each request id is answered at most once: a fix that
+     * cannot be fetched inside the timeout is left unanswered rather than
+     * filled with a stale position.
      */
-    private void reportLocationIfDue() {
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastLocationReport < ReportSchedule.LOCATION_REPORT_INTERVAL_MS) {
+    private void answerLocationRequest(Policy policy) {
+        Policy.LocationRequest request = policy.locationRequest;
+        if (request == null || !OnDemandLocation.shouldFetch(request.id, lastLocationRequest)) {
             return;
         }
-        android.location.Location location = PassiveLocation.latest(this);
-        if (location == null) {
-            // Nothing recent enough yet; the request above will fill the cache.
+        if (!OnDemandLocation.hasPermission(this)) {
+            // Never prompt from the background; the setup screen offers the button.
             return;
         }
-        lastLocationReport = now;
-        String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
-        activityExecutor.execute(() -> postReport(application, "", true));
+        lastLocationRequest = request.id;
+        OnDemandLocation.rememberRequestId(this, request.id);
+        locationExecutor.execute(() -> {
+            android.location.Location fix = OnDemandLocation.fetch(this, OnDemandLocation.TIMEOUT_MILLIS);
+            if (fix == null) {
+                return;
+            }
+            long ageSeconds = Math.max(0L, (System.currentTimeMillis() - fix.getTime()) / 1000L);
+            Double latitude = fix.getLatitude();
+            Double longitude = fix.getLongitude();
+            if (!OnDemandLocation.isSendable(latitude, longitude, ageSeconds)) {
+                return;
+            }
+            try {
+                AppConfig config = AppConfig.load(this);
+                if (!config.isConfigured()) {
+                    return;
+                }
+                new HomeAssistantClient(config).postLocation(
+                        request.id,
+                        latitude,
+                        longitude,
+                        fix.hasAccuracy() ? fix.getAccuracy() : 0f,
+                        fix.getProvider() == null ? "" : fix.getProvider(),
+                        ageSeconds);
+            } catch (Exception ignored) {
+                // A failed upload must not affect blocking, the challenge or the
+                // poll, and the request is not retried in a loop.
+            }
+        });
     }
 
     private void reportActivityIfNeeded(String packageName, String title) {
@@ -355,7 +384,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
         lastHeartbeat = now;
         String application = packageName;
         String window = title;
-        activityExecutor.execute(() -> postReport(application, window, true));
+        activityExecutor.execute(() -> postReport(application, window));
     }
 
     private void adoptAllowedLaunch(String packageName) {
@@ -461,16 +490,11 @@ public final class BlockAccessibilityService extends AccessibilityService {
     }
 
     private void postReport(String application, String window) {
-        postReport(application, window, false);
-    }
-
-    private void postReport(String application, String window, boolean includeLocation) {
         try {
             AppConfig config = AppConfig.load(this);
             if (!config.isConfigured()) {
                 return;
             }
-            android.location.Location location = includeLocation ? PassiveLocation.latest(this) : null;
             List<InstalledApps.App> apps = InstalledApps.launchable(getPackageManager());
             String fingerprint = InstalledApps.fingerprint(apps);
             boolean changed = InstalledApps.shouldSend(
@@ -478,7 +502,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
             new HomeAssistantClient(config).postActivity(
                     application,
                     window,
-                    location,
+                    null,
                     enforcementStatus,
                     enforcementDetail,
                     changed ? apps : null);

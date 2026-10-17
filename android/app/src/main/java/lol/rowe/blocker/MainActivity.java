@@ -449,7 +449,7 @@ public final class MainActivity extends Activity {
         ParentMaintenance.allowForTenMinutes();
         // Ask once, from the parent-gated screen: without this the passive
         // position reader has nothing it is allowed to read.
-        if (!PassiveLocation.hasPermission(this)) {
+        if (!OnDemandLocation.hasPermission(this)) {
             requestPermissions(new String[] {
                     android.Manifest.permission.ACCESS_FINE_LOCATION,
                     android.Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -550,7 +550,7 @@ public final class MainActivity extends Activity {
         childName.setText(outcome.childName);
         statusText.setText("This phone is set up.");
         findViewById(R.id.moreButton).setVisibility(View.VISIBLE);
-        if (!PassiveLocation.hasPermission(this)) {
+        if (!OnDemandLocation.hasPermission(this)) {
             requestPermissions(new String[] {
                     android.Manifest.permission.ACCESS_FINE_LOCATION,
                     android.Manifest.permission.ACCESS_COARSE_LOCATION,

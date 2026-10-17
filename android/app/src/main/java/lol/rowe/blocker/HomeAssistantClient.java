@@ -217,7 +217,8 @@ final class HomeAssistantClient {
                     readStringList(body, "allowed_apps"),
                     readFamilyPeer(body, "phone"),
                     readFamilyPeer(body, "pc"),
-                    readChallenge(body));
+                    readChallenge(body),
+                    readLocationRequest(body));
         } finally {
             connection.disconnect();
         }
@@ -538,6 +539,48 @@ final class HomeAssistantClient {
         }
     }
 
+    /**
+     * POST /api/rowe_pc_blocker/{device}/location. One fix, answering one
+     * request: the parent asked for a position and this is it.
+     */
+    void postLocation(
+            String requestId,
+            double latitude,
+            double longitude,
+            float accuracy,
+            String provider,
+            long fixAgeSeconds) throws Exception {
+        HttpURLConnection connection = open("location", "POST");
+        try {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+            byte[] bytes = new JSONObject()
+                    .put("request_id", requestId)
+                    .put("latitude", latitude)
+                    .put("longitude", longitude)
+                    .put("accuracy", accuracy)
+                    .put("provider", provider)
+                    .put("fix_age_seconds", fixAgeSeconds)
+                    .toString()
+                    .getBytes(StandardCharsets.UTF_8);
+            connection.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(bytes);
+            }
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) {
+                InputStream stream = connection.getErrorStream();
+                String body = stream == null ? "" : readAll(stream);
+                String detail = errorText(body);
+                throw new IOException(detail.isEmpty()
+                        ? "Home Assistant returned " + status
+                        : "Home Assistant returned " + status + ": " + detail);
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
+
     private HttpURLConnection open(String endpoint, String method) throws Exception {
         String id = URLEncoder.encode(config.deviceId, StandardCharsets.UTF_8.name());
         URI uri = URI.create(config.homeAssistantUrl + "/api/rowe_pc_blocker/" + id + "/" + endpoint);
@@ -596,6 +639,19 @@ final class HomeAssistantClient {
             }
         }
         return values;
+    }
+
+    /** A parent's on-demand location request, or null when there is none. */
+    private static Policy.LocationRequest readLocationRequest(JSONObject body) {
+        JSONObject request = body.optJSONObject("location_request");
+        if (request == null) {
+            return null;
+        }
+        String id = request.optString("id", "").trim();
+        if (id.isEmpty()) {
+            return null;
+        }
+        return new Policy.LocationRequest(id, optionalString(request, "requested_at"));
     }
 
     /** The active chore challenge, or null when there is none. */

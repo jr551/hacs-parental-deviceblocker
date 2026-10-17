@@ -59,6 +59,19 @@ final class Policy {
     final FamilyPeer familyPc;
     /** The active chore challenge, or null when there is none. */
     final Challenge challenge;
+    /** A parent's on-demand location request, or null when there is none. */
+    final LocationRequest locationRequest;
+
+    /** A parent asking this phone for one position. */
+    static final class LocationRequest {
+        final String id;
+        final String requestedAt;
+
+        LocationRequest(String id, String requestedAt) {
+            this.id = id == null ? "" : id.trim();
+            this.requestedAt = requestedAt == null ? "" : requestedAt;
+        }
+    }
 
     Policy(
             boolean blocked,
@@ -131,6 +144,38 @@ final class Policy {
             FamilyPeer familyPhone,
             FamilyPeer familyPc,
             Challenge challenge) {
+        this(
+                blocked,
+                blockRequested,
+                message,
+                extensionAvailable,
+                enforceAt,
+                extensionUntil,
+                pointsBalance,
+                pointsHourCost,
+                wakeAlarm,
+                allowedApps,
+                familyPhone,
+                familyPc,
+                challenge,
+                null);
+    }
+
+    Policy(
+            boolean blocked,
+            boolean blockRequested,
+            String message,
+            boolean extensionAvailable,
+            String enforceAt,
+            String extensionUntil,
+            Integer pointsBalance,
+            int pointsHourCost,
+            WakeSchedule.Update wakeAlarm,
+            List<String> allowedApps,
+            FamilyPeer familyPhone,
+            FamilyPeer familyPc,
+            Challenge challenge,
+            LocationRequest locationRequest) {
         this.blocked = blocked;
         this.blockRequested = blockRequested;
         this.message = message == null || message.trim().isEmpty()
@@ -148,6 +193,7 @@ final class Policy {
         this.familyPhone = familyPhone;
         this.familyPc = familyPc;
         this.challenge = challenge;
+        this.locationRequest = locationRequest;
     }
 
     /**
@@ -185,7 +231,8 @@ final class Policy {
                 allowedApps,
                 familyPhone,
                 familyPc,
-                replacement);
+                replacement,
+                locationRequest);
     }
 
     boolean isExtensionActive() {
