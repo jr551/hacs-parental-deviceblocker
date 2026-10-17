@@ -19,6 +19,28 @@ run_dotnet() {
     dotnet "$@"
 }
 
+# The Windows runner has no `zip`, but it does ship bsdtar and 7-Zip. Pick
+# whichever archiver this host has so the same script works on macOS, Linux and
+# Windows. Python caches and macOS resource forks never belong in a release.
+zip_tree() {
+  local archive="$1"
+  local directory="$2"
+  local list
+  list="$(mktemp)"
+  find "$directory" \
+    \( -name '__pycache__' -o -name '._*' \) -prune -o \
+    -type f -print > "$list"
+  rm -f "$archive"
+  if command -v zip >/dev/null 2>&1; then
+    zip -q -@ "$archive" < "$list"
+  elif command -v 7z >/dev/null 2>&1; then
+    7z a -tzip -bso0 -bsp0 "$archive" -i@"$list" >/dev/null
+  else
+    tar -a -c -f "$archive" -T "$list"
+  fi
+  rm -f "$list"
+}
+
 rm -rf "$release_root"
 mkdir -p "$release_root/payload/service" "$release_root/payload/activity"
 
@@ -36,15 +58,12 @@ cp "$repo_root/deploy/windows/"*.ps1 "$release_root/"
 
 (
   cd "$repo_root/artifacts"
-  rm -f "ParentalDeviceBlocker-$version-win-x64.zip"
-  zip -qr "ParentalDeviceBlocker-$version-win-x64.zip" "ParentalDeviceBlocker-$version-win-x64"
+  zip_tree "ParentalDeviceBlocker-$version-win-x64.zip" "ParentalDeviceBlocker-$version-win-x64"
 )
 
 (
   cd "$repo_root"
-  rm -f "artifacts/parental_device_blocker-hacs-$version.zip"
-  zip -qr "artifacts/parental_device_blocker-hacs-$version.zip" custom_components/rowe_pc_blocker \
-    -x '*/__pycache__/*' -x '*/._*'
+  zip_tree "artifacts/parental_device_blocker-hacs-$version.zip" custom_components/rowe_pc_blocker
 )
 
 echo "$release_root.zip"

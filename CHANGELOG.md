@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.1
+
+### Fixed
+
+- **A local PIN unlock no longer hides a parent's block.** The phone's own unlock — granted when Home Assistant refuses an override or cannot be reached — was stored with only a deadline, and `Policy.enforced` let it turn every successful poll back into "unblocked" for the whole hour. Nothing could revoke it: `LocalOverride.clear` had no caller, so turning the switch off and on, or pressing block again, changed nothing and the phone kept reporting `monitoring` while Home Assistant said the block was `enforced`. The override now records when it was granted, and a block a parent starts afterwards — a fresh `enforce_at` — supersedes it, so toggling the switch revokes a local unlock. An override written by an older build has no grant timestamp, so its grant is derived from its deadline, which is what makes an existing stuck phone recover on its first poll after updating.
+- **The enforcement sensor says why a block is not in force.** `sensor.<device>_enforcement_status` reports `monitoring` with a `detail` that names the cause — a local PIN unlock and how long it has left, a grace period and the seconds remaining, or an active extension — instead of an empty attribute a parent has to guess at.
+- **The release build no longer fails on Windows.** `scripts/build-release.sh` called `zip`, which the Windows runner does not have, so the Windows installer job died before the GitHub release was created. It now uses `zip`, `7z` or `tar` — whichever the host provides — and the file list feeds the archiver, so `__pycache__` and macOS resource forks still stay out of the HACS zip.
+
 ## 0.12.0
 
 ### Added

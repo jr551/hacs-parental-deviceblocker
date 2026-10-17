@@ -218,7 +218,7 @@ public final class BlockAccessibilityService extends AccessibilityService {
             refreshPendingUpdate();
             publishStatus(
                     policy.blocked ? EnforcementStatus.ENFORCING : EnforcementStatus.MONITORING,
-                    "",
+                    policy.blocked || !policy.blockRequested ? "" : notEnforcingReason(policy),
                     false);
             MainActivity.applyPolicySnapshot(policy);
             answerLocationRequest(policy);
@@ -428,6 +428,28 @@ public final class BlockAccessibilityService extends AccessibilityService {
         AppUpdater.challengeActive = currentPolicy.challengePending();
         MainActivity.applyPolicySnapshot(currentPolicy);
         publishStatus(status, detail == null ? "" : detail, true);
+    }
+
+    /**
+     * Why a block a parent asked for is not in force yet, in words a parent can
+     * act on. A local PIN unlock used to silence enforcement for the rest of
+     * the hour with no visible cause; naming it here makes that recoverable.
+     */
+    private String notEnforcingReason(Policy policy) {
+        if (LocalOverride.isActive(this)) {
+            long minutes = Math.max(
+                    1L, (LocalOverride.activeUntil(this) - System.currentTimeMillis()) / 60_000L);
+            return "Local PIN unlock active for another " + minutes
+                    + " minute(s); turn the block off and on to revoke it.";
+        }
+        if (policy.shouldWarnGrace()) {
+            return "Grace period: enforcement starts in "
+                    + policy.secondsUntilEnforcement() + " second(s).";
+        }
+        if (policy.isExtensionActive()) {
+            return "An extension is holding the block off.";
+        }
+        return "The agent has not applied the block yet.";
     }
 
     private void publishStatus(String status, String detail, boolean force) {
