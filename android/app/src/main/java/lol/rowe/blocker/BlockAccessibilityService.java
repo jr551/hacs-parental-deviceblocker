@@ -36,6 +36,8 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private String lastReportedPackage = "";
     private String lastReportedTitle = "";
     private long lastHeartbeat;
+    /** The status Home Assistant last received, so a change posts at once. */
+    private volatile String lastPostedStatus = "";
     /** Elapsed time of the last report that carried a position. */
     private long lastLocationReport;
     private PolicyDecision decision;
@@ -324,14 +326,17 @@ public final class BlockAccessibilityService extends AccessibilityService {
         enforcementDetail = detail;
         EnforcementNote.record(this, status, detail);
         long now = SystemClock.elapsedRealtime();
-        // Local fail-open already happened. Status, activity, and location share
-        // one hourly upload. The unused force flag stays so callers can ask for
-        // a report without bypassing that batch.
-        if (!ReportSchedule.due(lastHeartbeat, now)) {
+        // A status change is what a parent watches for after flipping the
+        // switch, so it must not wait for the hourly batch: Home Assistant
+        // would keep showing the previous status and the block would look
+        // broken. An unchanged status still rides that batch.
+        boolean changed = !status.equals(lastPostedStatus);
+        if (!changed && !ReportSchedule.due(lastHeartbeat, now)) {
             return;
         }
         lastHeartbeat = now;
         lastStatusPost = now;
+        lastPostedStatus = status;
         String application = foregroundPackage.isEmpty() ? "unknown" : foregroundPackage;
         activityExecutor.execute(() -> postReport(application, ""));
     }
