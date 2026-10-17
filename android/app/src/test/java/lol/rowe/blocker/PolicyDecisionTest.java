@@ -272,17 +272,6 @@ public class PolicyDecisionTest {
         assertFalse(decision.shouldShowBlockScreen(locked, "com.android.chrome"));
     }
 
-    @Test
-    public void theCapturePackageIsAllowedWhileTheShotIsTaken() {
-        decision.setCapturePackage("com.android.camera");
-
-        assertFalse(decision.shouldShowBlockScreen(true, "com.android.camera"));
-        assertTrue(decision.shouldShowBlockScreen(true, "com.android.chrome"));
-
-        decision.setCapturePackage("");
-        assertTrue(decision.shouldShowBlockScreen(true, "com.android.camera"));
-    }
-
     private static Policy challengePolicy(String extensionUntil) {
         return challengePolicy(extensionUntil, Challenge.STATUS_PENDING);
     }

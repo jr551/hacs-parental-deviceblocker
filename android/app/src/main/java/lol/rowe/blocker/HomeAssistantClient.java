@@ -218,7 +218,8 @@ final class HomeAssistantClient {
                     readFamilyPeer(body, "phone"),
                     readFamilyPeer(body, "pc"),
                     readChallenge(body),
-                    readLocationRequest(body));
+                    readLocationRequest(body),
+                    readRequestBudget(body));
         } finally {
             connection.disconnect();
         }
@@ -667,6 +668,25 @@ final class HomeAssistantClient {
         return values;
     }
 
+    /** The child's unblock-request budget, or none when Home Assistant sent neither half. */
+    private static Policy.RequestBudget readRequestBudget(JSONObject body) {
+        Integer pending = optionalInt(body, "unblock_requests_pending");
+        Integer limit = optionalInt(body, "unblock_requests_limit");
+        if (pending == null && limit == null) {
+            return Policy.RequestBudget.NONE;
+        }
+        return new Policy.RequestBudget(pending, limit);
+    }
+
+    /** An optional whole number, or null when the field is missing or not a number. */
+    private static Integer optionalInt(JSONObject body, String name) {
+        if (!body.has(name) || body.isNull(name)) {
+            return null;
+        }
+        Object value = body.opt(name);
+        return value instanceof Number ? ((Number) value).intValue() : null;
+    }
+
     /** A parent's on-demand location request, or null when there is none. */
     private static Policy.LocationRequest readLocationRequest(JSONObject body) {
         JSONObject request = body.optJSONObject("location_request");
@@ -696,7 +716,9 @@ final class HomeAssistantClient {
                 phrase,
                 optionalString(challenge, "sent_at"),
                 optionalString(challenge, "status"),
-                optionalString(challenge, "submitted_at"));
+                optionalString(challenge, "submitted_at"),
+                challenge.optInt("attempt", 0),
+                optionalString(challenge, "auto_approve_at"));
     }
 
     /** The child's other device; null when Home Assistant did not send one. */

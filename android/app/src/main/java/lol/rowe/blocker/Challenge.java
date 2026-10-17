@@ -19,14 +19,19 @@ final class Challenge {
     private static final String HELD_PHRASE = "challenge_held_phrase";
     private static final String HELD_STATUS = "challenge_held_status";
     private static final String HELD_SUBMITTED_AT = "challenge_held_submitted_at";
+    private static final String HELD_ATTEMPT = "challenge_held_attempt";
+    private static final String HELD_AUTO_APPROVE_AT = "challenge_held_auto_approve_at";
 
     /** The child is filling the challenge in. */
     static final String STATUS_PENDING = "pending";
     /** The photo is in and a parent has to approve it. */
     static final String STATUS_SUBMITTED = "submitted";
 
-    /** How long a parent is given to approve, as the waiting view counts it down. */
-    static final long APPROVAL_WINDOW_SECONDS = 3600L;
+    /**
+     * How long a parent is given to answer before the challenge approves
+     * itself, used when Home Assistant sends no {@code auto_approve_at}.
+     */
+    static final long APPROVAL_WINDOW_SECONDS = 2 * 3600L;
 
     final String id;
     final String phrase;
@@ -35,6 +40,10 @@ final class Challenge {
     final String status;
     /** ISO-8601 when the child submitted, or "" while they have not. */
     final String submittedAt;
+    /** Which attempt this is, 1-based, or 0 when Home Assistant did not say. */
+    final int attempt;
+    /** ISO-8601 when the challenge approves itself, or "" when it was not sent. */
+    final String autoApproveAt;
 
     /** What Home Assistant said about an evidence upload or a submit. */
     static final class Outcome {
@@ -65,15 +74,28 @@ final class Challenge {
     }
 
     Challenge(String id, String phrase, String sentAt) {
-        this(id, phrase, sentAt, STATUS_PENDING, null);
+        this(id, phrase, sentAt, STATUS_PENDING, null, 0, null);
     }
 
     Challenge(String id, String phrase, String sentAt, String status, String submittedAt) {
+        this(id, phrase, sentAt, status, submittedAt, 0, null);
+    }
+
+    Challenge(
+            String id,
+            String phrase,
+            String sentAt,
+            String status,
+            String submittedAt,
+            int attempt,
+            String autoApproveAt) {
         this.id = id == null ? "" : id.trim();
         this.phrase = phrase == null ? "" : phrase.trim();
         this.sentAt = sentAt == null ? "" : sentAt;
         this.status = normalizeStatus(status);
         this.submittedAt = submittedAt == null ? "" : submittedAt;
+        this.attempt = Math.max(0, attempt);
+        this.autoApproveAt = autoApproveAt == null ? "" : autoApproveAt;
     }
 
     /**
@@ -99,6 +121,44 @@ final class Challenge {
     /** True when the child may send the challenge: the phrase and the photo are both in. */
     static boolean canSubmit(boolean phraseMatches, boolean hasPhoto) {
         return phraseMatches && hasPhoto;
+    }
+
+    /** What the child may do next, from what they have done so far. */
+    static final class Gates {
+        /** True when the camera may be opened. */
+        final boolean takePhoto;
+        /** True when the challenge may be sent for approval. */
+        final boolean send;
+
+        Gates(boolean takePhoto, boolean send) {
+            this.takePhoto = takePhoto;
+            this.send = send;
+        }
+    }
+
+    /**
+     * The phrase is the first gate: the camera stays shut until the typed
+     * answer matches, and the send button needs the phrase and the photo. A
+     * photo taken before the phrase was corrected never unlocks the send.
+     */
+    static Gates gates(boolean phraseMatches, boolean hasPhoto) {
+        return new Gates(phraseMatches, canSubmit(phraseMatches, hasPhoto));
+    }
+
+    /**
+     * Whether the panel is showing a parent's rejection. It goes up when the
+     * challenge comes back from a parent and stays until the child starts
+     * again, so the red screen cannot outlive the attempt it belongs to.
+     *
+     * @param deniedNow whether the rejection is on screen right now
+     * @param rejected whether this status change is a parent sending it back
+     * @param childResumed true when the child has just started again
+     */
+    static boolean denied(boolean deniedNow, boolean rejected, boolean childResumed) {
+        if (childResumed) {
+            return false;
+        }
+        return deniedNow || rejected;
     }
 
     /** The step the child is on: type the phrase, take the photo, then send it. */
@@ -149,13 +209,65 @@ final class Challenge {
         return TRANSITION_NONE;
     }
 
-    /** The countdown line for the waiting view, from the seconds since the child sent it. */
-    static String countdownText(long elapsedSeconds) {
-        long remaining = APPROVAL_WINDOW_SECONDS - Math.max(0L, elapsedSeconds);
+    /**
+     * The phrase as the child must type it, with the attempt appended when
+     * Home Assistant said which one this is. An older Home Assistant sends no
+     * attempt, and the phrase stands alone.
+     */
+    static String attemptLabel(String phrase, int attempt) {
+        String text = phrase == null ? "" : phrase.trim();
+        return attempt >= 1 ? text + " — attempt " + attempt : text;
+    }
+
+    /**
+     * When the challenge approves itself: Home Assistant's own
+     * {@code auto_approve_at} when it sent one, otherwise the submission time
+     * plus {@link #APPROVAL_WINDOW_SECONDS}, otherwise the moment this phone
+     * sent it. Zero when none of the three is known.
+     */
+    static long approvalDeadlineMillis(
+            String autoApproveAt, String submittedAt, long localSubmittedAtMillis) {
+        long explicit = epochMillis(autoApproveAt);
+        if (explicit > 0) {
+            return explicit;
+        }
+        long submitted = epochMillis(submittedAt);
+        if (submitted > 0) {
+            return submitted + APPROVAL_WINDOW_SECONDS * 1000L;
+        }
+        return localSubmittedAtMillis > 0
+                ? localSubmittedAtMillis + APPROVAL_WINDOW_SECONDS * 1000L
+                : 0L;
+    }
+
+    /**
+     * The countdown line for the waiting view, from the seconds left before the
+     * challenge approves itself. The phone never unlocks on this countdown: a
+     * parent's approval, or Home Assistant's own, is what lifts the lock.
+     */
+    static String countdownText(long remainingSeconds) {
+        long remaining = Math.max(0L, remainingSeconds);
         if (remaining <= 0) {
             return "A parent still needs to approve this.";
         }
-        return String.format(Locale.US, "%d:%02d left", remaining / 60, remaining % 60);
+        long hours = remaining / 3600;
+        long minutes = (remaining % 3600) / 60;
+        long seconds = remaining % 60;
+        if (hours > 0) {
+            return String.format(Locale.US, "%d:%02d:%02d left", hours, minutes, seconds);
+        }
+        return String.format(Locale.US, "%d:%02d left", minutes, seconds);
+    }
+
+    /** What happens when the countdown reaches zero, in the phone's own time. */
+    static String autoApproveText(long deadlineMillis) {
+        if (deadlineMillis <= 0L) {
+            return "";
+        }
+        String time = Instant.ofEpochMilli(deadlineMillis)
+                .atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale.US));
+        return "Approved automatically at " + time + " if a parent has not answered.";
     }
 
     /** The epoch millis of an ISO-8601 timestamp, or 0 when it is missing or unreadable. */
@@ -208,7 +320,9 @@ final class Challenge {
                 phrase,
                 null,
                 preferences.getString(HELD_STATUS, STATUS_PENDING),
-                preferences.getString(HELD_SUBMITTED_AT, null));
+                preferences.getString(HELD_SUBMITTED_AT, null),
+                preferences.getInt(HELD_ATTEMPT, 0),
+                preferences.getString(HELD_AUTO_APPROVE_AT, null));
     }
 
     /** Hold {@code challenge}, or clear the held one when it is null. */
@@ -219,12 +333,16 @@ final class Challenge {
             editor.remove(HELD_ID)
                     .remove(HELD_PHRASE)
                     .remove(HELD_STATUS)
-                    .remove(HELD_SUBMITTED_AT);
+                    .remove(HELD_SUBMITTED_AT)
+                    .remove(HELD_ATTEMPT)
+                    .remove(HELD_AUTO_APPROVE_AT);
         } else {
             editor.putString(HELD_ID, challenge.id)
                     .putString(HELD_PHRASE, challenge.phrase)
                     .putString(HELD_STATUS, challenge.status)
-                    .putString(HELD_SUBMITTED_AT, challenge.submittedAt);
+                    .putString(HELD_SUBMITTED_AT, challenge.submittedAt)
+                    .putInt(HELD_ATTEMPT, challenge.attempt)
+                    .putString(HELD_AUTO_APPROVE_AT, challenge.autoApproveAt);
         }
         editor.apply();
     }

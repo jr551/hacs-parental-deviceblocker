@@ -16,8 +16,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class BlockAccessibilityService extends AccessibilityService {
     private static volatile BlockAccessibilityService activeInstance;
-    /** How long a capture may keep the camera allowed before the allowance lapses. */
-    static final long CAPTURE_ALLOWANCE_MS = 5 * 60 * 1000L;
 
     private final ScheduledExecutorService policyExecutor = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService activityExecutor = Executors.newSingleThreadScheduledExecutor();
@@ -36,9 +34,6 @@ public final class BlockAccessibilityService extends AccessibilityService {
     private volatile String foregroundPackage = "";
     /** The verified update waiting to be installed, or null. */
     private volatile AppUpdater.Pending pendingUpdate;
-    /** The package allowed while the challenge photo is being captured, or "". */
-    private volatile String capturePackage = "";
-    private volatile long captureUntil;
     /** Allow-listed package just opened from the block screen, if any. */
     private volatile String pendingAllowedPackage;
     private volatile long pendingAllowedAt;
@@ -99,42 +94,12 @@ public final class BlockAccessibilityService extends AccessibilityService {
         service.adoptAllowedLaunch(packageName);
     }
 
-    /**
-     * Allow the system camera while the challenge photo is being captured. The
-     * camera is not on the allow-list, so without this the lock screen would
-     * cover it mid-shot and the evidence could never be taken.
-     */
-    static void beginCapture(String packageName) {
-        BlockAccessibilityService service = activeInstance;
-        if (service == null || packageName == null || packageName.isEmpty()) {
-            return;
-        }
-        service.capturePackage = packageName.trim();
-        service.captureUntil = SystemClock.elapsedRealtime() + CAPTURE_ALLOWANCE_MS;
-        if (service.decision != null) {
-            service.decision.setCapturePackage(service.capturePackage);
-        }
-    }
-
-    /** The shot came back (or the lock went away): stop allowing the camera. */
-    static void endCapture() {
-        BlockAccessibilityService service = activeInstance;
-        if (service == null) {
-            return;
-        }
-        service.capturePackage = "";
-        if (service.decision != null) {
-            service.decision.setCapturePackage("");
-        }
-    }
-
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         CharSequence packageName = event.getPackageName();
         if (packageName == null || decision == null) {
             return;
         }
-        expireCapture();
         String eventPackage = packageName.toString();
         boolean windowStateChanged =
                 event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
@@ -317,13 +282,6 @@ public final class BlockAccessibilityService extends AccessibilityService {
                 LocalOverride.isActive(this));
     }
 
-    /** Drop the camera allowance when a capture never came back. */
-    private void expireCapture() {
-        if (!capturePackage.isEmpty() && SystemClock.elapsedRealtime() > captureUntil) {
-            endCapture();
-        }
-    }
-
     /**
      * Answer a parent's location request. Nothing touches the provider until
      * one arrives, and each request id is answered at most once: a fix that
@@ -428,7 +386,11 @@ public final class BlockAccessibilityService extends AccessibilityService {
                     .putExtra(MainActivity.EXTRA_CHALLENGE_STATUS, policy.challenge.status)
                     .putExtra(
                             MainActivity.EXTRA_CHALLENGE_SUBMITTED_AT,
-                            policy.challenge.submittedAt);
+                            policy.challenge.submittedAt)
+                    .putExtra(MainActivity.EXTRA_CHALLENGE_ATTEMPT, policy.challenge.attempt)
+                    .putExtra(
+                            MainActivity.EXTRA_CHALLENGE_AUTO_APPROVE_AT,
+                            policy.challenge.autoApproveAt);
         }
         mainHandler.post(() -> {
             if (kiosk && decision != null && decision.isAllowed(true, foregroundPackage)) {

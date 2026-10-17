@@ -1,23 +1,25 @@
 package lol.rowe.blocker;
 
+import android.animation.ArgbEvaluator;
 import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.Context;
-import android.content.Intent;
-import android.content.pm.ResolveInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
-import android.net.Uri;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Parcelable;
-import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.AttributeSet;
 import android.view.Gravity;
+import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -27,6 +29,7 @@ import android.widget.TextView;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.time.Instant;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -37,28 +40,45 @@ import java.util.concurrent.ScheduledExecutorService;
  * the phone stays locked until a parent approves the photo in Home Assistant.
  * It lives inside the block screen, so an unapproved challenge is enforced by
  * the same path as a parent block and cannot be dismissed on its own.
+ *
+ * <p>The photo is taken by a camera preview inside this panel, not by handing
+ * the shot to the system camera app. The lock screen is what covers every
+ * disallowed app, so an external camera activity would be covered by our own
+ * lock the moment anything re-raised it, and the child could never take the
+ * evidence photo.
  */
 public final class ChallengePanel extends LinearLayout {
     /** The longest edge of the thumbnail shown on the lock. */
     private static final int THUMBNAIL_EDGE = 512;
-    private static final int REQUEST_CAPTURE = 0x43484C;
+    /** Asking for the camera the first time the child takes a photo. */
+    private static final int REQUEST_CAMERA_PERMISSION = 0x43484D;
     /** One half of the highlight pulse. */
     private static final long PULSE_MILLIS = 700L;
     /** How often the waiting view re-reads the clock. */
     private static final long COUNTDOWN_MILLIS = 1000L;
+    /** The preview's height, in dp. */
+    private static final int PREVIEW_HEIGHT_DP = 320;
     private static final String STATE_SUPER = "super";
     private static final String STATE_CHALLENGE_ID = "challenge_id";
     private static final String STATE_PHRASE = "phrase";
     private static final String STATE_ANSWER = "answer";
     private static final String STATE_MESSAGE = "message";
     private static final String STATE_PHOTO = "photo";
-    private static final String STATE_PENDING_PHOTO = "pending_photo";
     private static final String STATE_STATUS = "status";
     private static final String STATE_SUBMITTED_AT = "submitted_at";
+    private static final String STATE_ATTEMPT = "attempt";
+    private static final String STATE_AUTO_APPROVE_AT = "auto_approve_at";
+    private static final String STATE_DENIED = "denied";
 
     /** Told when Home Assistant no longer has the challenge, so the lock can go. */
     interface Listener {
         void onChallengeGone();
+
+        /**
+         * The panel's denial state changed. The block screen behind the panel
+         * follows it, so a parent's "no" is visible on the whole screen.
+         */
+        void onChallengeDenied(boolean denied);
     }
 
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
@@ -71,8 +91,15 @@ public final class ChallengePanel extends LinearLayout {
     private String submittedAt = "";
     /** When the child sent the challenge, for the waiting view's countdown. */
     private long submittedAtMillis;
+    /** Which attempt this is, 1-based, or 0 when Home Assistant did not say. */
+    private int attempt;
+    /** The server's auto-approval time, or "" when it has not sent one. */
+    private String autoApproveAt = "";
+    /** True while the panel is showing a parent's rejection. */
+    private boolean denied;
     private LinearLayout form;
     private LinearLayout waiting;
+    private TextView title;
     private TextView phraseView;
     private EditText answer;
     private Button submitButton;
@@ -80,10 +107,15 @@ public final class ChallengePanel extends LinearLayout {
     private Button retake;
     private ImageView thumbnail;
     private TextView statusLine;
+    private TextView waitingHint;
     private TextView countdown;
+    private LinearLayout cameraView;
+    private TextureView preview;
+    private Button captureButton;
+    private Button cancelCapture;
+    /** The open camera, or null when the preview is not running. */
+    private android.hardware.Camera camera;
     private File photoFile;
-    /** The file the camera is writing to, until the shot comes back. */
-    private File pendingPhotoFile;
     private boolean uploading;
     /** A message that outranks the step hints until the child changes something. */
     private String message = "";
@@ -92,6 +124,11 @@ public final class ChallengePanel extends LinearLayout {
     private ObjectAnimator pulse;
     /** The text colour the highlighted element had before a static highlight. */
     private Integer originalTextColour;
+    /** The answer field's own background, so the whole box can glow. */
+    private GradientDrawable answerBackground;
+    /** The background glow, in step with the alpha pulse. */
+    private ValueAnimator answerGlow;
+    private int answerStrokeWidth;
 
     public ChallengePanel(Context context, AttributeSet attributes) {
         super(context, attributes);
@@ -113,23 +150,33 @@ public final class ChallengePanel extends LinearLayout {
             hide();
             return;
         }
-        if (!challengeId.equals(challenge.id)) {
+        String previousStatus = status;
+        boolean sameChallenge = challengeId.equals(challenge.id);
+        boolean rejected = sameChallenge
+                && Challenge.statusTransition(previousStatus, challenge.status)
+                        == Challenge.TRANSITION_REJECTED;
+        if (!sameChallenge) {
+            // A different challenge is a fresh start: nothing from the last one
+            // carries over, including a parent's rejection.
             challengeId = challenge.id;
             phrase = challenge.phrase;
-            phraseView.setText(phrase);
             answer.setText("");
             clearPhoto();
             message = "";
             submittedAtMillis = 0;
-        } else if (Challenge.statusTransition(status, challenge.status)
-                == Challenge.TRANSITION_REJECTED) {
+            setDenied(Challenge.denied(denied, false, true));
+        } else if (rejected) {
             // A parent sent the challenge back: the photo they saw is gone, so
             // the child has to take a new one. What they typed stays put.
             clearPhoto();
             message = "A parent asked for a new photo. Please retake it.";
+            setDenied(Challenge.denied(denied, true, false));
         }
         status = challenge.status;
         submittedAt = challenge.submittedAt;
+        attempt = challenge.attempt;
+        autoApproveAt = challenge.autoApproveAt;
+        phraseView.setText(Challenge.attemptLabel(phrase, attempt));
         applyState(Challenge.panelState(status, true));
         setVisibility(VISIBLE);
     }
@@ -139,20 +186,31 @@ public final class ChallengePanel extends LinearLayout {
         setVisibility(GONE);
         stopPulse();
         stopCountdown();
-        endCapture();
+        closeCamera();
     }
 
     /** The block screen is going away for good. */
     void release() {
         stopPulse();
         stopCountdown();
-        endCapture();
+        closeCamera();
         executor.shutdownNow();
+    }
+
+    /** The block screen is no longer in front: the camera must not stay open. */
+    void onPause() {
+        closeCamera();
+    }
+
+    /** True while the panel is showing a parent's rejection. */
+    boolean isDenied() {
+        return denied;
     }
 
     /** Show the form or the wait, and keep the countdown running only while waiting. */
     private void applyState(int state) {
         if (state == Challenge.PANEL_WAITING) {
+            closeCamera();
             applySubmittedAt();
             form.setVisibility(GONE);
             waiting.setVisibility(VISIBLE);
@@ -162,14 +220,15 @@ public final class ChallengePanel extends LinearLayout {
         }
         stopCountdown();
         waiting.setVisibility(GONE);
-        form.setVisibility(VISIBLE);
+        form.setVisibility(cameraView.getVisibility() == VISIBLE ? GONE : VISIBLE);
         updateSubmitState();
     }
 
     /**
-     * Point the countdown at the server's submission time when it has one, and
-     * at the moment this phone sent it otherwise — an older Home Assistant
-     * sends no {@code submitted_at}, and the wait still has to be counted.
+     * Point the countdown at Home Assistant's auto-approval time when it sent
+     * one, at the server's submission time plus the approval window when it did
+     * not, and at the moment this phone sent it when there is no submission
+     * time either — an older Home Assistant sends neither.
      */
     private void applySubmittedAt() {
         long parsed = Challenge.epochMillis(submittedAt);
@@ -178,6 +237,10 @@ public final class ChallengePanel extends LinearLayout {
         } else if (submittedAtMillis == 0) {
             submittedAtMillis = System.currentTimeMillis();
         }
+        long deadline = Challenge.approvalDeadlineMillis(
+                autoApproveAt, submittedAt, submittedAtMillis);
+        waitingHint.setText(Challenge.autoApproveText(deadline));
+        waitingHint.setVisibility(deadline > 0 ? VISIBLE : GONE);
     }
 
     private void startCountdown() {
@@ -191,8 +254,12 @@ public final class ChallengePanel extends LinearLayout {
     }
 
     private void refreshCountdown() {
-        long elapsed = Math.max(0L, (System.currentTimeMillis() - submittedAtMillis) / 1000L);
-        countdown.setText(Challenge.countdownText(elapsed));
+        long deadline = Challenge.approvalDeadlineMillis(
+                autoApproveAt, submittedAt, submittedAtMillis);
+        long remaining = deadline <= 0
+                ? 0L
+                : Math.max(0L, (deadline - System.currentTimeMillis()) / 1000L);
+        countdown.setText(Challenge.countdownText(remaining));
     }
 
     /** Re-reads the clock once a second for as long as the waiting view is up. */
@@ -206,41 +273,24 @@ public final class ChallengePanel extends LinearLayout {
         }
     };
 
-    /** @return true when the result belonged to the challenge camera. */
-    boolean onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode != REQUEST_CAPTURE) {
-            return false;
+    /** The child answered the camera permission prompt. */
+    void onRequestPermissionsResult(int requestCode, int[] grantResults) {
+        if (requestCode != REQUEST_CAMERA_PERMISSION) {
+            return;
         }
-        endCapture();
-        File captured = pendingPhotoFile;
-        pendingPhotoFile = null;
-        if (resultCode != Activity.RESULT_OK || captured == null || !captured.exists()
-                || captured.length() == 0) {
-            if (captured != null) {
-                captured.delete();
-            }
-            if (hasPhoto()) {
-                // The child backed out of the camera; the earlier photo stands.
-                updateSubmitState();
-            } else {
-                showMessage("No photo was taken.");
-            }
-            return true;
+        boolean granted = grantResults != null
+                && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        if (granted) {
+            openCamera();
+        } else {
+            showMessage("A parent has to allow the camera on this phone.");
         }
-        if (photoFile != null && !photoFile.equals(captured)) {
-            photoFile.delete();
-        }
-        photoFile = captured;
-        message = "";
-        showThumbnail();
-        updateSubmitState();
-        return true;
     }
 
     /**
      * Keep the challenge, the typed answer and the photo across a recreation.
-     * The camera can push this screen out of memory, and the child must come
-     * back to what they had rather than to an empty lock.
+     * The child must come back to what they had rather than to an empty lock.
      */
     @Override
     protected Parcelable onSaveInstanceState() {
@@ -251,11 +301,11 @@ public final class ChallengePanel extends LinearLayout {
         state.putString(STATE_ANSWER, answer.getText().toString());
         state.putString(STATE_MESSAGE, message);
         state.putString(STATE_PHOTO, photoFile == null ? null : photoFile.getAbsolutePath());
-        state.putString(
-                STATE_PENDING_PHOTO,
-                pendingPhotoFile == null ? null : pendingPhotoFile.getAbsolutePath());
         state.putString(STATE_STATUS, status);
         state.putLong(STATE_SUBMITTED_AT, submittedAtMillis);
+        state.putInt(STATE_ATTEMPT, attempt);
+        state.putString(STATE_AUTO_APPROVE_AT, autoApproveAt);
+        state.putBoolean(STATE_DENIED, denied);
         return state;
     }
 
@@ -269,13 +319,16 @@ public final class ChallengePanel extends LinearLayout {
         super.onRestoreInstanceState(saved.getParcelable(STATE_SUPER));
         challengeId = text(saved.getString(STATE_CHALLENGE_ID));
         phrase = text(saved.getString(STATE_PHRASE));
-        phraseView.setText(phrase);
         answer.setText(text(saved.getString(STATE_ANSWER)));
         message = text(saved.getString(STATE_MESSAGE));
         photoFile = file(saved.getString(STATE_PHOTO));
-        pendingPhotoFile = file(saved.getString(STATE_PENDING_PHOTO));
         status = Challenge.normalizeStatus(saved.getString(STATE_STATUS));
         submittedAtMillis = saved.getLong(STATE_SUBMITTED_AT, 0L);
+        attempt = saved.getInt(STATE_ATTEMPT, 0);
+        autoApproveAt = text(saved.getString(STATE_AUTO_APPROVE_AT));
+        denied = saved.getBoolean(STATE_DENIED, false);
+        phraseView.setText(Challenge.attemptLabel(phrase, attempt));
+        applyDeniedTone();
         if (hasPhoto()) {
             showThumbnail();
         }
@@ -296,7 +349,7 @@ public final class ChallengePanel extends LinearLayout {
         float density = getResources().getDisplayMetrics().density;
         int padding = Math.round(24 * density);
 
-        TextView title = new TextView(getContext());
+        title = new TextView(getContext());
         title.setText("Chore challenge");
         title.setTextColor(getContext().getColor(R.color.white));
         title.setTextSize(30);
@@ -328,6 +381,13 @@ public final class ChallengePanel extends LinearLayout {
         answer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         answer.setTextColor(getContext().getColor(R.color.white));
         answer.setHintTextColor(getContext().getColor(R.color.muted));
+        answer.setPadding(padding, padding / 2, padding, padding / 2);
+        answerStrokeWidth = Math.round(2 * density);
+        answerBackground = new GradientDrawable();
+        answerBackground.setShape(GradientDrawable.RECTANGLE);
+        answerBackground.setCornerRadius(12 * density);
+        answer.setBackground(answerBackground);
+        paintAnswerField(0f);
         answer.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence text, int start, int count, int after) {
@@ -340,6 +400,9 @@ public final class ChallengePanel extends LinearLayout {
             @Override
             public void afterTextChanged(Editable text) {
                 message = "";
+                // The child is trying again: a parent's "no" stops being the
+                // thing the screen is about.
+                clearDenied();
                 updateSubmitState();
             }
         });
@@ -376,6 +439,47 @@ public final class ChallengePanel extends LinearLayout {
 
         addView(form);
 
+        cameraView = new LinearLayout(getContext());
+        cameraView.setOrientation(VERTICAL);
+        cameraView.setGravity(Gravity.CENTER_HORIZONTAL);
+        cameraView.setVisibility(GONE);
+
+        preview = new TextureView(getContext());
+        preview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override
+            public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+                startPreview(surface);
+            }
+
+            @Override
+            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+            }
+
+            @Override
+            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                closeCamera();
+                return true;
+            }
+
+            @Override
+            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+            }
+        });
+        cameraView.addView(preview, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, Math.round(PREVIEW_HEIGHT_DP * density)));
+
+        captureButton = new Button(getContext());
+        captureButton.setText("Capture");
+        captureButton.setOnClickListener(view -> capturePhoto());
+        cameraView.addView(captureButton, buttonParams(density));
+
+        cancelCapture = new Button(getContext());
+        cancelCapture.setText("Cancel");
+        cancelCapture.setOnClickListener(view -> showForm());
+        cameraView.addView(cancelCapture, buttonParams(density));
+
+        addView(cameraView);
+
         waiting = new LinearLayout(getContext());
         waiting.setOrientation(VERTICAL);
         waiting.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -389,8 +493,7 @@ public final class ChallengePanel extends LinearLayout {
         waitingTitle.setPadding(0, padding / 2, 0, 0);
         waiting.addView(waitingTitle);
 
-        TextView waitingHint = new TextView(getContext());
-        waitingHint.setText("This can take up to 1 hour.");
+        waitingHint = new TextView(getContext());
         waitingHint.setTextColor(getContext().getColor(R.color.muted));
         waitingHint.setTextSize(16);
         waitingHint.setGravity(Gravity.CENTER);
@@ -417,11 +520,18 @@ public final class ChallengePanel extends LinearLayout {
         return params;
     }
 
-    /** The phrase and the photo are both required; the hint says which is missing. */
+    /**
+     * The phrase and the photo are both required, and the phrase comes first:
+     * the camera stays disabled until the typed answer matches, so the pulse
+     * and the enabled state never disagree.
+     */
     private void updateSubmitState() {
         boolean phraseMatches = Challenge.matches(phrase, answer.getText().toString());
         boolean hasPhoto = hasPhoto();
-        submitButton.setEnabled(Challenge.canSubmit(phraseMatches, hasPhoto) && !uploading);
+        Challenge.Gates gates = Challenge.gates(phraseMatches, hasPhoto);
+        takePhoto.setEnabled(gates.takePhoto);
+        retake.setEnabled(gates.takePhoto);
+        submitButton.setEnabled(gates.send && !uploading);
         highlight(Challenge.step(phraseMatches, hasPhoto));
         if (!message.isEmpty()) {
             statusLine.setText(message);
@@ -453,36 +563,199 @@ public final class ChallengePanel extends LinearLayout {
         takePhoto.setVisibility(VISIBLE);
     }
 
+    /** Show a parent's rejection on the whole panel, or take it back down. */
+    private void setDenied(boolean value) {
+        if (denied == value) {
+            return;
+        }
+        denied = value;
+        applyDeniedTone();
+        Listener target = listener;
+        if (target != null) {
+            target.onChallengeDenied(denied);
+        }
+    }
+
+    /** The child is starting again, so the rejection is over. */
+    private void clearDenied() {
+        setDenied(Challenge.denied(denied, false, true));
+    }
+
+    private void applyDeniedTone() {
+        title.setTextColor(getContext().getColor(
+                denied ? R.color.challenge_denied_heading : R.color.white));
+        title.setText(denied ? "A parent said no" : "Chore challenge");
+    }
+
+    /**
+     * Open the camera preview inside the panel. The phrase is the first gate:
+     * a child who has not typed it back cannot reach the camera at all.
+     */
     private void takePhoto() {
-        Activity activity = activity();
-        if (activity == null) {
+        if (!Challenge.matches(phrase, answer.getText().toString())) {
+            showMessage("Type the phrase first, then take the photo.");
+            return;
+        }
+        clearDenied();
+        if (!hasCameraPermission()) {
+            Activity activity = activity();
+            if (activity == null) {
+                return;
+            }
+            activity.requestPermissions(
+                    new String[] {android.Manifest.permission.CAMERA},
+                    REQUEST_CAMERA_PERMISSION);
+            return;
+        }
+        openCamera();
+    }
+
+    private boolean hasCameraPermission() {
+        return getContext().checkSelfPermission(android.Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void openCamera() {
+        if (getVisibility() != VISIBLE) {
+            // The lock went away while the permission prompt was up.
+            return;
+        }
+        message = "";
+        updateSubmitState();
+        cameraView.setVisibility(VISIBLE);
+        form.setVisibility(GONE);
+        if (preview.isAvailable()) {
+            startPreview(preview.getSurfaceTexture());
+        }
+    }
+
+    /** Start the preview once the panel's surface exists. */
+    private void startPreview(SurfaceTexture surface) {
+        if (camera != null || surface == null || cameraView.getVisibility() != VISIBLE) {
             return;
         }
         try {
-            File directory = ChallengeFileProvider.directory(getContext());
-            if (!directory.exists() && !directory.mkdirs()) {
-                showMessage("Could not prepare the camera.");
+            camera = android.hardware.Camera.open();
+            if (camera == null) {
+                showCameraFailure("The camera is not available.");
                 return;
             }
-            File file = new File(directory, "evidence-" + System.currentTimeMillis() + ".jpg");
-            Uri uri = ChallengeFileProvider.uriFor(getContext(), file);
-            Intent capture = new Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                    .putExtra(MediaStore.EXTRA_OUTPUT, uri)
-                    .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            ResolveInfo camera = getContext().getPackageManager().resolveActivity(capture, 0);
-            if (camera == null || camera.activityInfo == null) {
-                showMessage("No camera app is available.");
-                return;
-            }
-            // The camera is not on the allow-list, so the lock screen would
-            // cover it mid-shot. Allow it until the shot comes back.
-            BlockAccessibilityService.beginCapture(camera.activityInfo.packageName);
-            pendingPhotoFile = file;
-            message = "";
-            activity.startActivityForResult(capture, REQUEST_CAPTURE);
+            android.hardware.Camera.CameraInfo info = new android.hardware.Camera.CameraInfo();
+            android.hardware.Camera.getCameraInfo(0, info);
+            camera.setDisplayOrientation(displayOrientation(info.orientation));
+            camera.setPreviewTexture(surface);
+            camera.startPreview();
         } catch (Exception exception) {
-            showMessage("Could not open the camera.");
+            showCameraFailure("The camera could not be opened.");
         }
+    }
+
+    /** The rotation that makes the preview upright on this display. */
+    private int displayOrientation(int cameraOrientation) {
+        int rotation = 0;
+        android.view.Display display = getDisplay();
+        if (display != null) {
+            rotation = display.getRotation();
+        }
+        int degrees = rotation * 90;
+        return (cameraOrientation - degrees + 360) % 360;
+    }
+
+    private void showCameraFailure(String text) {
+        showForm();
+        showMessage(text);
+    }
+
+    /** Take the shot; the JPEG comes back on the camera's own thread. */
+    private void capturePhoto() {
+        final android.hardware.Camera open = camera;
+        if (open == null) {
+            showCameraFailure("The camera is not ready.");
+            return;
+        }
+        captureButton.setEnabled(false);
+        try {
+            open.takePicture(null, null, (data, source) -> writePhoto(data));
+        } catch (Exception exception) {
+            captureButton.setEnabled(true);
+            showCameraFailure("The photo could not be taken.");
+        }
+    }
+
+    /** Keep the shot, then put the form back with the new thumbnail on it. */
+    private void writePhoto(byte[] data) {
+        File directory = photoDirectory(getContext());
+        if (data == null || data.length == 0) {
+            post(() -> {
+                captureButton.setEnabled(true);
+                showCameraFailure("The photo could not be taken.");
+            });
+            return;
+        }
+        if (!directory.exists() && !directory.mkdirs()) {
+            post(() -> {
+                captureButton.setEnabled(true);
+                showCameraFailure("Could not save the photo.");
+            });
+            return;
+        }
+        File file = new File(directory, "evidence-" + System.currentTimeMillis() + ".jpg");
+        boolean written = false;
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(data);
+            written = true;
+        } catch (Exception exception) {
+            // The message below says what happened; the file is cleaned up.
+        }
+        if (!written) {
+            file.delete();
+            post(() -> {
+                captureButton.setEnabled(true);
+                showCameraFailure("Could not save the photo.");
+            });
+            return;
+        }
+        post(() -> {
+            captureButton.setEnabled(true);
+            showForm();
+            if (photoFile != null && !photoFile.equals(file)) {
+                photoFile.delete();
+            }
+            photoFile = file;
+            message = "";
+            showThumbnail();
+            updateSubmitState();
+        });
+    }
+
+    /** Stop the preview and release the camera; safe to call at any time. */
+    private void closeCamera() {
+        android.hardware.Camera open = camera;
+        camera = null;
+        if (open != null) {
+            try {
+                open.stopPreview();
+            } catch (Exception ignored) {
+                // The preview was already stopped.
+            }
+            try {
+                open.release();
+            } catch (Exception ignored) {
+                // The camera was already released.
+            }
+        }
+        if (cameraView != null) {
+            cameraView.setVisibility(GONE);
+        }
+        if (captureButton != null) {
+            captureButton.setEnabled(true);
+        }
+    }
+
+    /** Put the form back after the camera closes. */
+    private void showForm() {
+        closeCamera();
+        applyState(Challenge.panelState(status, true));
     }
 
     /**
@@ -553,7 +826,9 @@ public final class ChallengePanel extends LinearLayout {
                             phrase,
                             null,
                             Challenge.STATUS_SUBMITTED,
-                            Instant.now().toString()));
+                            Instant.now().toString(),
+                            attempt,
+                            ""));
                     applyState(Challenge.PANEL_WAITING);
                     return;
                 }
@@ -741,6 +1016,9 @@ public final class ChallengePanel extends LinearLayout {
         }
         stopPulse();
         pulsing = target;
+        if (target == answer) {
+            startAnswerGlow();
+        }
         if (animationsDisabled()) {
             target.setAlpha(1f);
             if (target instanceof TextView) {
@@ -763,6 +1041,7 @@ public final class ChallengePanel extends LinearLayout {
             pulse.cancel();
             pulse = null;
         }
+        stopAnswerGlow();
         if (pulsing != null) {
             pulsing.setAlpha(1f);
             if (originalTextColour != null && pulsing instanceof TextView) {
@@ -771,6 +1050,52 @@ public final class ChallengePanel extends LinearLayout {
             originalTextColour = null;
             pulsing = null;
         }
+    }
+
+    /**
+     * Glow the answer field itself, not just its text: the fill and the outline
+     * move between the normal field colours and the highlight colour in step
+     * with the alpha pulse, so the whole box reads as one glowing element.
+     */
+    private void startAnswerGlow() {
+        stopAnswerGlow();
+        if (animationsDisabled()) {
+            paintAnswerField(1f);
+            return;
+        }
+        answerGlow = ValueAnimator.ofFloat(0f, 1f);
+        answerGlow.setDuration(PULSE_MILLIS);
+        answerGlow.setRepeatMode(ValueAnimator.REVERSE);
+        answerGlow.setRepeatCount(ValueAnimator.INFINITE);
+        answerGlow.addUpdateListener(
+                animation -> paintAnswerField((float) animation.getAnimatedValue()));
+        answerGlow.start();
+    }
+
+    private void stopAnswerGlow() {
+        if (answerGlow != null) {
+            answerGlow.cancel();
+            answerGlow = null;
+        }
+        paintAnswerField(0f);
+    }
+
+    /** Paint the field at {@code fraction} of the way to the highlight colour. */
+    private void paintAnswerField(float fraction) {
+        if (answerBackground == null) {
+            return;
+        }
+        ArgbEvaluator blend = new ArgbEvaluator();
+        int fill = (int) blend.evaluate(
+                fraction,
+                getContext().getColor(R.color.challenge_field),
+                getContext().getColor(R.color.challenge_field_highlight));
+        int stroke = (int) blend.evaluate(
+                fraction,
+                getContext().getColor(R.color.challenge_field_stroke),
+                getContext().getColor(R.color.challenge_highlight));
+        answerBackground.setColor(fill);
+        answerBackground.setStroke(answerStrokeWidth, stroke);
     }
 
     /** True when the system asks apps not to animate. */
@@ -790,8 +1115,9 @@ public final class ChallengePanel extends LinearLayout {
         updateSubmitState();
     }
 
-    private void endCapture() {
-        BlockAccessibilityService.endCapture();
+    /** The cache directory the challenge photos live in. */
+    private static File photoDirectory(Context context) {
+        return new File(context.getCacheDir(), "challenge");
     }
 
     /** The block screen this panel lives in. */

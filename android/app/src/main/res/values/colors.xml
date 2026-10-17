@@ -10,4 +10,11 @@
     <!-- The chore challenge has its own tone, so it never reads as an ordinary pause. -->
     <color name="challenge_background">#1E1B4B</color>
     <color name="challenge_highlight">#A78BFA</color>
+    <!-- A parent's rejection is the one thing the child must not miss. -->
+    <color name="challenge_denied_background">#7F1D1D</color>
+    <color name="challenge_denied_heading">#FCA5A5</color>
+    <!-- The answer field, so the whole box can glow with the step pulse. -->
+    <color name="challenge_field">#312E81</color>
+    <color name="challenge_field_stroke">#4338CA</color>
+    <color name="challenge_field_highlight">#4C1D95</color>
 </resources>

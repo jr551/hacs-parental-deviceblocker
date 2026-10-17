@@ -17,6 +17,11 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The challenge photo is taken by the preview inside the lock screen, so
+         the app holds the camera itself instead of handing the shot to the
+         system camera app, which the lock screen would cover. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <queries>
         <!-- Lists the launchable apps a parent can allow (see InstalledApps).
@@ -25,10 +30,8 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
-        <!-- The challenge lock launches the system camera to capture evidence. -->
-        <intent>
-            <action android:name="android.media.action.IMAGE_CAPTURE" />
-        </intent>
+        <!-- The challenge lock takes its own photo, so no camera app has to be
+             visible to this app. -->
         <package android:name="com.whatsapp" />
         <package android:name="com.google.android.apps.maps" />
         <package android:name="com.google.android.apps.classroom" />
@@ -110,14 +113,6 @@
             android:exported="false"
             android:showWhenLocked="true"
             android:turnScreenOn="true" />
-
-        <!-- Serves the challenge photo to the system camera, so the app needs no
-             CAMERA permission of its own. -->
-        <provider
-            android:name=".ChallengeFileProvider"
-            android:authorities="${applicationId}.challengefiles"
-            android:exported="false"
-            android:grantUriPermissions="true" />
 
         <!-- Records the day's notifications for the parent's daily digest. The
              listener is optional: without notification access the dump is empty. -->

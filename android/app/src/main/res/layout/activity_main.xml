@@ -318,6 +318,13 @@
             android:columnCount="4"
             android:useDefaultMargins="true" />
 
+        <Button
+            android:id="@+id/requestAppButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="18dp"
+            android:text="Request another app" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

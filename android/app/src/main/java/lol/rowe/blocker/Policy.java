@@ -61,6 +61,32 @@ final class Policy {
     final Challenge challenge;
     /** A parent's on-demand location request, or null when there is none. */
     final LocationRequest locationRequest;
+    /** How many unblock requests the child has pending, and the parent's cap. */
+    final RequestBudget requestBudget;
+
+    /**
+     * The child's "ask a parent to allow another app" budget, as Home Assistant
+     * reports it. Both halves are null when an older Home Assistant sends
+     * neither, which leaves the child free to ask.
+     */
+    static final class RequestBudget {
+        /** Requests already waiting for a parent, or null when it was not sent. */
+        final Integer pending;
+        /** The most requests a parent will look at, or null when it was not sent. */
+        final Integer limit;
+
+        static final RequestBudget NONE = new RequestBudget(null, null);
+
+        RequestBudget(Integer pending, Integer limit) {
+            this.pending = pending;
+            this.limit = limit;
+        }
+
+        /** True when a parent is already looking at as many requests as they will. */
+        boolean exhausted() {
+            return pending != null && limit != null && limit > 0 && pending >= limit;
+        }
+    }
 
     /** A parent asking this phone for one position. */
     static final class LocationRequest {
@@ -176,6 +202,40 @@ final class Policy {
             FamilyPeer familyPc,
             Challenge challenge,
             LocationRequest locationRequest) {
+        this(
+                blocked,
+                blockRequested,
+                message,
+                extensionAvailable,
+                enforceAt,
+                extensionUntil,
+                pointsBalance,
+                pointsHourCost,
+                wakeAlarm,
+                allowedApps,
+                familyPhone,
+                familyPc,
+                challenge,
+                locationRequest,
+                RequestBudget.NONE);
+    }
+
+    Policy(
+            boolean blocked,
+            boolean blockRequested,
+            String message,
+            boolean extensionAvailable,
+            String enforceAt,
+            String extensionUntil,
+            Integer pointsBalance,
+            int pointsHourCost,
+            WakeSchedule.Update wakeAlarm,
+            List<String> allowedApps,
+            FamilyPeer familyPhone,
+            FamilyPeer familyPc,
+            Challenge challenge,
+            LocationRequest locationRequest,
+            RequestBudget requestBudget) {
         this.blocked = blocked;
         this.blockRequested = blockRequested;
         this.message = message == null || message.trim().isEmpty()
@@ -194,6 +254,7 @@ final class Policy {
         this.familyPc = familyPc;
         this.challenge = challenge;
         this.locationRequest = locationRequest;
+        this.requestBudget = requestBudget == null ? RequestBudget.NONE : requestBudget;
     }
 
     /**
@@ -233,7 +294,8 @@ final class Policy {
                 familyPhone,
                 familyPc,
                 replacement,
-                locationRequest);
+                locationRequest,
+                requestBudget);
     }
 
     boolean isExtensionActive() {

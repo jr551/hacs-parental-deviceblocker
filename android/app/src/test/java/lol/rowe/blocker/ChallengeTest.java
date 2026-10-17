@@ -106,14 +106,102 @@ public class ChallengeTest {
     }
 
     @Test
-    public void theWaitingViewCountsTheHourDown() {
-        assertEquals("60:00 left", Challenge.countdownText(0));
-        assertEquals("59:59 left", Challenge.countdownText(1));
-        assertEquals("1:00 left", Challenge.countdownText(3540));
-        assertEquals("0:01 left", Challenge.countdownText(3599));
-        assertEquals("A parent still needs to approve this.", Challenge.countdownText(3600));
-        assertEquals("A parent still needs to approve this.", Challenge.countdownText(7200));
-        assertEquals("60:00 left", Challenge.countdownText(-5));
+    public void theWaitingViewCountsDownToTheAutoApproval() {
+        assertEquals("2:00:00 left", Challenge.countdownText(7200));
+        assertEquals("1:59:59 left", Challenge.countdownText(7199));
+        assertEquals("1:00:00 left", Challenge.countdownText(3600));
+        assertEquals("59:59 left", Challenge.countdownText(3599));
+        assertEquals("1:00 left", Challenge.countdownText(60));
+        assertEquals("0:01 left", Challenge.countdownText(1));
+        assertEquals("A parent still needs to approve this.", Challenge.countdownText(0));
+        assertEquals("A parent still needs to approve this.", Challenge.countdownText(-5));
+    }
+
+    @Test
+    public void theDeadlineIsTheServersOwnAutoApprovalTime() {
+        long auto = java.time.Instant.parse("2026-10-17T14:32:00Z").toEpochMilli();
+
+        assertEquals(
+                auto,
+                Challenge.approvalDeadlineMillis(
+                        "2026-10-17T14:32:00Z", "2026-10-17T12:32:00Z", 0L));
+    }
+
+    @Test
+    public void theDeadlineFallsBackToTwoHoursAfterSubmission() {
+        long submitted = java.time.Instant.parse("2026-10-17T12:00:00Z").toEpochMilli();
+        long twoHoursLater = submitted + 2 * 3600_000L;
+
+        assertEquals(twoHoursLater, Challenge.approvalDeadlineMillis(null, "2026-10-17T12:00:00Z", 0L));
+        assertEquals(twoHoursLater, Challenge.approvalDeadlineMillis("", "2026-10-17T12:00:00Z", 0L));
+        assertEquals(
+                twoHoursLater,
+                Challenge.approvalDeadlineMillis("not a time", "2026-10-17T12:00:00Z", 0L));
+    }
+
+    @Test
+    public void theDeadlineFallsBackToTheLocalSubmitTime() {
+        long local = 1_700_000_000_000L;
+
+        assertEquals(local + 2 * 3600_000L, Challenge.approvalDeadlineMillis(null, null, local));
+        assertEquals(0L, Challenge.approvalDeadlineMillis(null, null, 0L));
+        assertEquals(0L, Challenge.approvalDeadlineMillis("", "", 0L));
+    }
+
+    @Test
+    public void theAutoApprovalTimeIsSaidInThePhonesOwnTime() {
+        long deadline = java.time.Instant.parse("2026-10-17T14:32:00Z").toEpochMilli();
+        String expected = java.time.Instant.ofEpochMilli(deadline)
+                .atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale.US));
+
+        assertEquals(
+                "Approved automatically at " + expected + " if a parent has not answered.",
+                Challenge.autoApproveText(deadline));
+        assertEquals("", Challenge.autoApproveText(0L));
+    }
+
+    @Test
+    public void theAttemptIsAppendedToThePhraseWhenHomeAssistantSendsOne() {
+        assertEquals(
+                "I have brushed my teeth — attempt 2",
+                Challenge.attemptLabel("I have brushed my teeth", 2));
+        assertEquals(
+                "I have brushed my teeth — attempt 1",
+                Challenge.attemptLabel("I have brushed my teeth", 1));
+        // An older Home Assistant sends no attempt, and the phrase stands alone.
+        assertEquals("I have brushed my teeth", Challenge.attemptLabel("I have brushed my teeth", 0));
+        assertEquals(
+                "I have brushed my teeth",
+                Challenge.attemptLabel("  I have brushed my teeth  ", 0));
+    }
+
+    @Test
+    public void thePhraseGatesTheCameraAndTheSendButton() {
+        // The phrase is the first gate: no camera until the answer matches.
+        assertFalse(Challenge.gates(false, false).takePhoto);
+        assertFalse(Challenge.gates(false, true).takePhoto);
+        assertTrue(Challenge.gates(true, false).takePhoto);
+        assertTrue(Challenge.gates(true, true).takePhoto);
+        // A photo that predates a corrected phrase never unlocks the send.
+        assertFalse(Challenge.gates(false, true).send);
+        assertFalse(Challenge.gates(true, false).send);
+        assertTrue(Challenge.gates(true, true).send);
+    }
+
+    @Test
+    public void theDeniedStateIsEnteredOnARejectionAndClearedWhenTheChildResumes() {
+        boolean rejected = Challenge.statusTransition(
+                Challenge.STATUS_SUBMITTED, Challenge.STATUS_PENDING)
+                == Challenge.TRANSITION_REJECTED;
+
+        assertTrue(rejected);
+        assertTrue(Challenge.denied(false, rejected, false));
+        // It stays up until the child starts again...
+        assertTrue(Challenge.denied(true, false, false));
+        // ...and the child starting again clears it.
+        assertFalse(Challenge.denied(true, false, true));
+        assertFalse(Challenge.denied(false, false, false));
     }
 
     @Test

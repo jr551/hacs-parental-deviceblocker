@@ -43,8 +43,17 @@ final class AppUpdater {
     private static final String PENDING_APK = "update_pending_apk";
     private static final String UPDATE_DIR = "update";
     private static final String PARTIAL_NAME = "update.apk.part";
+    /**
+     * The file the verified update is kept in. The name is fixed on purpose:
+     * a release asset name is text from outside this app, and no part of it
+     * may reach a file path. The version that was downloaded lives in
+     * {@link #PENDING_VERSION} and on the update screen.
+     */
+    private static final String APK_NAME = "ParentalDeviceBlocker.apk";
     private static final Pattern APK_VERSION =
             Pattern.compile("ParentalDeviceBlocker-(\\d+(?:\\.\\d+)*)\\.apk");
+    /** A release version: digits and dots only, e.g. "0.5.8". */
+    private static final Pattern VERSION = Pattern.compile("\\d+(?:\\.\\d+)*");
     private static final long MIN_INTERVAL_MS = ReportSchedule.HOURLY_REPORT_MS;
     private static final int MAX_APK_BYTES = 30 * 1024 * 1024;
 
@@ -60,6 +69,32 @@ final class AppUpdater {
             this.version = version;
             this.apk = apk;
         }
+    }
+
+    /**
+     * True when a release version is digits and dots only, e.g. "0.5.8". A
+     * version that is anything else is refused, so no release-supplied text
+     * can reach a file path, a comparison or the update screen.
+     */
+    static boolean isValidVersion(String version) {
+        return version != null && VERSION.matcher(version).matches();
+    }
+
+    /**
+     * The version in a release asset name, or "" when the name is not one of
+     * ours or carries a version that is not digits and dots. A release whose
+     * asset name does not parse is rejected rather than repaired.
+     */
+    static String versionFromAssetName(String name) {
+        if (name == null) {
+            return "";
+        }
+        Matcher matcher = APK_VERSION.matcher(name);
+        if (!matcher.matches()) {
+            return "";
+        }
+        String version = matcher.group(1);
+        return isValidVersion(version) ? version : "";
     }
 
     /** The verified update waiting to be installed, or null. */
@@ -186,11 +221,12 @@ final class AppUpdater {
                 if (name.contains("debug")) {
                     continue;
                 }
-                Matcher matcher = APK_VERSION.matcher(name);
-                if (!matcher.matches()) {
+                String version = versionFromAssetName(name);
+                if (version.isEmpty()) {
+                    // Not one of our APKs, or a version that is not digits and
+                    // dots: the release is refused, never repaired.
                     continue;
                 }
-                String version = matcher.group(1);
                 if (UpdateGate.isNewer(bestVersion, version)) {
                     bestVersion = version;
                     bestName = name;
@@ -222,13 +258,17 @@ final class AppUpdater {
     }
 
     private static void downloadAndVerify(Context context, Release release) throws Exception {
+        if (!isValidVersion(release.version)) {
+            Log.w(TAG, "refusing an update whose version is not digits and dots");
+            return;
+        }
         File directory = new File(context.getFilesDir(), UPDATE_DIR);
         if (!directory.isDirectory() && !directory.mkdirs()) {
             Log.w(TAG, "could not create " + directory);
             return;
         }
         File partial = new File(directory, PARTIAL_NAME);
-        File apk = new File(directory, "ParentalDeviceBlocker-" + release.version + ".apk");
+        File apk = new File(directory, APK_NAME);
         try {
             download(release.apkUrl, partial);
             String expected = fetchText(release.checksumUrl, 4096);
